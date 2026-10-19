@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+env/
+venv/
+.venv/
+ENV/
+
+# C++ / OS Build Artifacts
+bin/
+*.o
+*.obj
+*.elf
+*.efi
+*.img
+*.bin
+*.out
+*.app
+*.a
+*.lib
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+gcm.cache/
+
+# External Reference Repos / Toolchains
+vendor/
+edk2/
+osbook/
+*.pdf
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Environments & Secrets
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
