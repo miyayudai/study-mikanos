@@ -3,6 +3,9 @@
 from common.os_sim import (
     BitmapMemoryManager,
     FrameBufferSimulator,
+    HISTORICAL_OS_METRICS,
+    MIKANOS_GROWTH_METRICS,
+    OSCodebaseMetric,
     PageTableAddress,
     PixelFormat,
     setup_plot_style,
@@ -11,6 +14,9 @@ from common.os_sim import (
 __all__ = [
     "BitmapMemoryManager",
     "FrameBufferSimulator",
+    "HISTORICAL_OS_METRICS",
+    "MIKANOS_GROWTH_METRICS",
+    "OSCodebaseMetric",
     "PageTableAddress",
     "PixelFormat",
     "setup_plot_style",

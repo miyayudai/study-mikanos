@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-6%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-0%25%20(0%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-10%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-0.4%25%20(1%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -87,7 +87,7 @@ cmake --build build
 
 | Chapter | タイトル | 節数 | 対応タグ範囲 | 主なトピック | 演習問題 | 状態 |
 |:---:|---|:---:|:---:|---|:---:|:---:|
-| **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | `0_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
+| **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | `0_Exercises.ipynb` | `[-]` 進行中 (1/6) |
 | **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | `1_Exercises.ipynb` | `[ ]` 未着手 (0/10) |
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[ ]` 未着手 (0/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -124,10 +124,11 @@ cmake --build build
 
 ## 📓 6. ノートブック一覧 & Google Colab リンク
 
-> [!NOTE]
-> 各節の完了に伴い、順次 Notebook リンクおよび Google Colab 起動バッジがここに追加されます。最新の作業状態は [TASK.md](TASK.md) を参照してください。
+### 第0章 OSって個人で作れるの？ (`0/`)
 
-*(現在プロビジョニング完了・第0章より順次追加中)*
+| ノートブック | 内容 | Colab で開く |
+|---|---|:---:|
+| [`0.1_How_to_Build_an_OS.ipynb`](0/0.1_How_to_Build_an_OS.ipynb) | 0.1 OSの作り方（コード規模の定量比較・既存改造 vs フルスクラッチ・段階的成長曲線） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/0/0.1_How_to_Build_an_OS.ipynb) |
 
 ---
 

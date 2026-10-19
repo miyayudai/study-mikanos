@@ -170,3 +170,40 @@ class BitmapMemoryManager:
         if start_frame < 0 or num_frames <= 0 or start_frame + num_frames > self.num_frames:
             raise ValueError("Frame range out of bounds")
         self.alloc_map[start_frame : start_frame + num_frames] = False
+
+
+@dataclass(frozen=True)
+class OSCodebaseMetric:
+    """Represents codebase size and architectural characteristics of an OS."""
+
+    name: str
+    release_year: int
+    lines_of_code: int
+    architecture: str
+    category: str
+
+    def lines_per_day(self, days: int = 30) -> float:
+        """Compute average lines of code written per day over a given study period."""
+        if days <= 0:
+            raise ValueError("days must be positive")
+        return self.lines_of_code / float(days)
+
+
+HISTORICAL_OS_METRICS: tuple[OSCodebaseMetric, ...] = (
+    OSCodebaseMetric("Haribote OS (30-day OS)", 2006, 4_249, "x86 (32-bit BIOS)", "Educational"),
+    OSCodebaseMetric("Linux 0.01", 1991, 10_239, "x86 (32-bit)", "Early Monolithic"),
+    OSCodebaseMetric("MikanOS (Final Kernel)", 2021, 11_071, "x86-64 (64-bit UEFI)", "Educational"),
+    OSCodebaseMetric("Linux 4.10", 2017, 21_000_000, "Multi-arch", "Production Monolithic"),
+)
+
+# Measured kernel + loader file counts and LOC across official MikanOS git tags
+MIKANOS_GROWTH_METRICS: tuple[tuple[str, int, int, str], ...] = (
+    ("day02b", 1, 144, "EDK II Bootloader & Memory Map"),
+    ("day05f", 13, 725, "PixelWriter, Font & Console printk"),
+    ("day10g", 79, 7_119, "PCI, xHCI USB Mouse, IDT, Memory & Windows"),
+    ("day15d", 84, 8_431, "ACPI Timer, Keyboard, Multitasking & Terminal"),
+    ("day20e", 89, 9_597, "FAT Filesystem, ELF App, 4-Level Paging & Syscall"),
+    ("day25c", 90, 10_417, "GUI Events, Multi-Terminal, File Read & Regex"),
+    ("day30f", 92, 11_596, "Demand Paging, CoW, UTF-8/FreeType, Pipes & Apps"),
+)
+
