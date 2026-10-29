@@ -96,6 +96,11 @@ from common.os_sim import (
     LegacyBiosVsUefiComparator,
     plot_legacy_bios_vs_uefi_boot_flow,
     plot_mbr_vs_gpt_disk_layout,
+    TargetTriple,
+    FreestandingEnvironmentModel,
+    CompilerToolchainPipeline,
+    plot_llvm_toolchain_and_build_pipeline,
+    plot_freestanding_vs_hosted_environment,
 )
 
 __all__ = [
@@ -194,4 +199,9 @@ __all__ = [
     "LegacyBiosVsUefiComparator",
     "plot_legacy_bios_vs_uefi_boot_flow",
     "plot_mbr_vs_gpt_disk_layout",
+    "TargetTriple",
+    "FreestandingEnvironmentModel",
+    "CompilerToolchainPipeline",
+    "plot_llvm_toolchain_and_build_pipeline",
+    "plot_freestanding_vs_hosted_environment",
 ]

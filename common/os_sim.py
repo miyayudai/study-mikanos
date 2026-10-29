@@ -4253,3 +4253,405 @@ def plot_mbr_vs_gpt_disk_layout(output_path: str = "1/result/fig1_14_mbr_vs_gpt_
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 1.8: OSを作る道具 (LLVM/Clang Toolchain & Freestanding Environment)
+# ==============================================================================
+
+@dataclass(frozen=True)
+class TargetTriple:
+    """Represents a compiler target triple (arch-vendor-os-environment)."""
+
+    arch: str
+    vendor: str
+    os_name: str
+    environment: Optional[str] = None
+
+    @classmethod
+    def parse(cls, triple_str: str) -> TargetTriple:
+        """Parse a target triple string such as 'x86_64-pc-win32-coff', 'x86_64-unknown-linux-gnu', or 'x86_64-elf'."""
+        parts = [p for p in triple_str.strip().split("-") if p]
+        if not parts:
+            raise ValueError(f"Invalid empty target triple string")
+        if len(parts) == 1:
+            return cls(arch=parts[0], vendor="unknown", os_name="none", environment=None)
+        if len(parts) == 2:
+            return cls(arch=parts[0], vendor="unknown", os_name=parts[1], environment=None)
+        if len(parts) == 3:
+            return cls(arch=parts[0], vendor=parts[1], os_name=parts[2], environment=None)
+        arch = parts[0]
+        vendor = parts[1]
+        os_name = parts[2]
+        env = "-".join(parts[3:])
+        return cls(arch=arch, vendor=vendor, os_name=os_name, environment=env)
+
+    @property
+    def canonical_string(self) -> str:
+        """Return the normalized target triple string."""
+        if self.environment:
+            return f"{self.arch}-{self.vendor}-{self.os_name}-{self.environment}"
+        return f"{self.arch}-{self.vendor}-{self.os_name}"
+
+    def is_cross_compile(self, host: Union[str, TargetTriple]) -> bool:
+        """Determine whether compiling for this target from host is a cross-compilation."""
+        if isinstance(host, str):
+            host = TargetTriple.parse(host)
+        return (
+            self.arch != host.arch
+            or self.os_name != host.os_name
+            or self.environment != host.environment
+        )
+
+    def is_uefi_compatible(self) -> bool:
+        """Check if this target produces PE/COFF binaries suitable for UEFI x86-64."""
+        if self.arch != "x86_64":
+            return False
+        # Windows / COFF targets generate PE32+ for UEFI
+        return (
+            "win32" in self.os_name.lower()
+            or "windows" in self.os_name.lower()
+            or (self.environment and "coff" in self.environment.lower())
+        )
+
+    def object_format(self) -> str:
+        """Return expected relocatable object file format."""
+        if self.is_uefi_compatible() or (self.environment and "coff" in self.environment.lower()):
+            return "COFF"
+        if "linux" in self.os_name.lower() or "elf" in self.os_name.lower() or "elf" in (self.environment or "").lower() or "none" in self.os_name.lower():
+            return "ELF"
+        if "darwin" in self.os_name.lower() or "macos" in self.os_name.lower():
+            return "Mach-O"
+        return "Unknown"
+
+    def executable_format(self) -> str:
+        """Return final executable binary format."""
+        if self.is_uefi_compatible():
+            return "PE32+"
+        if "linux" in self.os_name.lower() or "elf" in self.os_name.lower() or "elf" in (self.environment or "").lower():
+            return "ELF64"
+        if "darwin" in self.os_name.lower() or "macos" in self.os_name.lower():
+            return "Mach-O 64"
+        return "Unknown"
+
+
+class FreestandingEnvironmentModel:
+    """Models ISO C/C++ Freestanding Environment constraints for OS development."""
+
+    STANDARD_FREESTANDING_HEADERS: set[str] = {
+        "float.h",
+        "iso646.h",
+        "limits.h",
+        "stdalign.h",
+        "stdarg.h",
+        "stdbool.h",
+        "stddef.h",
+        "stdint.h",
+        "stdnoreturn.h",
+    }
+
+    HOSTED_ONLY_HEADERS: set[str] = {
+        "stdio.h",
+        "stdlib.h",
+        "string.h",
+        "math.h",
+        "time.h",
+        "assert.h",
+        "signal.h",
+        "setjmp.h",
+        "errno.h",
+        "ctype.h",
+        "locale.h",
+        "wchar.h",
+        "wctype.h",
+        "unistd.h",
+        "fcntl.h",
+        "sys/types.h",
+        "pthread.h",
+    }
+
+    REQUIRED_BUILTIN_MEM_FUNCTIONS: list[str] = [
+        "memcpy",
+        "memmove",
+        "memset",
+        "memcmp",
+    ]
+
+    @classmethod
+    def is_header_allowed(cls, header: str) -> bool:
+        """Check whether a given header file is permitted in a freestanding environment."""
+        clean_header = header.strip("<> \"'")
+        return clean_header in cls.STANDARD_FREESTANDING_HEADERS
+
+    @classmethod
+    def analyze_includes(cls, source_code: str) -> Dict[str, Any]:
+        """Analyze #include directives in C/C++ source code for freestanding compliance."""
+        import re
+
+        include_pattern = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
+        found_headers = include_pattern.findall(source_code)
+
+        allowed = []
+        forbidden = []
+        unknown = []
+
+        for h in found_headers:
+            if h in cls.STANDARD_FREESTANDING_HEADERS:
+                allowed.append(h)
+            elif h in cls.HOSTED_ONLY_HEADERS:
+                forbidden.append(h)
+            else:
+                unknown.append(h)
+
+        is_compliant = len(forbidden) == 0
+        return {
+            "total_includes": len(found_headers),
+            "allowed_freestanding": allowed,
+            "forbidden_hosted": forbidden,
+            "custom_or_unknown": unknown,
+            "is_compliant": is_compliant,
+            "status_message": (
+                "PASS: 全てのヘッダがフリースタンディング環境に適合しています。"
+                if is_compliant
+                else f"VIOLATION: ホスト環境依存ヘッダ ({', '.join(forbidden)}) が含まれています。OSカーネル/UEFIアプリでは利用できません。"
+            ),
+        }
+
+
+class CompilerToolchainPipeline:
+    """Simulates the 4 stages of C/C++ compilation pipeline to PE32+ UEFI / ELF."""
+
+    ESSENTIAL_OS_FLAGS: dict[str, str] = {
+        "-ffreestanding": "ホスト libc への依存を遮断し、フリースタンディング環境としてコンパイル",
+        "-mno-red-zone": "割り込みやファームウェア呼び出し時のスタック128バイトRed Zone破壊を防止",
+        "-fno-stack-protector": "スタックカナリア未定義参照 (__stack_chk_fail) の発生を抑制",
+        "-fshort-wchar": "UEFI規格の16-bit Unicode (CHAR16) に wchar_t のサイズを合致",
+    }
+
+    @classmethod
+    def validate_compiler_flags(cls, flags: List[str]) -> Dict[str, Any]:
+        """Inspect flags for critical OS bare-metal / UEFI requirements."""
+        flag_set = set(flags)
+        present = {}
+        missing = {}
+
+        for opt, desc in cls.ESSENTIAL_OS_FLAGS.items():
+            if opt in flag_set:
+                present[opt] = desc
+            else:
+                missing[opt] = desc
+
+        score = (len(present) / len(cls.ESSENTIAL_OS_FLAGS)) * 100.0
+        return {
+            "score_percent": score,
+            "present_flags": present,
+            "missing_flags": missing,
+            "is_safe_for_os_dev": len(missing) == 0,
+        }
+
+    @classmethod
+    def trace_stages(cls, source_name: str, target_triple: str) -> List[Dict[str, str]]:
+        """Trace the 4 stages of compilation for a given source and target."""
+        triple = TargetTriple.parse(target_triple)
+        base = Path(source_name).stem
+
+        return [
+            {
+                "stage": "1. プリプロセッサ (Preprocessing)",
+                "tool": "clang -E",
+                "input": f"{base}.c / {base}.cpp",
+                "output": f"{base}.i / {base}.ii",
+                "description": "#include ヘッダ展開、#define マクロ置換、条件付きコンパイル (#ifdef) の評価",
+            },
+            {
+                "stage": "2. コンパイラ (Compilation)",
+                "tool": "clang -S (or -emit-llvm)",
+                "input": f"{base}.i",
+                "output": f"{base}.s (Assembly) / {base}.ll (LLVM IR)",
+                "description": "構文解析、中間表現 (LLVM IR) 最適化、ターゲットアーキテクチャ依存のアセンブリ言語生成",
+            },
+            {
+                "stage": "3. アセンブラ (Assembler)",
+                "tool": "clang -c (llvm-mc)",
+                "input": f"{base}.s",
+                "output": f"{base}.o ({triple.object_format()} Relocatable Object)",
+                "description": f"アセンブリから機械語バイナリへの変換、未解決外部シンボルと再配置情報の生成 ({triple.object_format()}形式)",
+            },
+            {
+                "stage": "4. リンカ (Linker)",
+                "tool": "lld-link / ld.lld",
+                "input": f"{base}.o + Libs",
+                "output": f"{base}.efi ({triple.executable_format()})",
+                "description": f"複数オブジェクトと静的ライブラリの結合、シンボルアドレス解決、最終実行可能バイナリ ({triple.executable_format()}) の出力",
+            },
+        ]
+
+
+def plot_llvm_toolchain_and_build_pipeline(
+    output_path: str = "1/result/fig1_15_llvm_toolchain_and_build_pipeline.png"
+) -> str:
+    """Generate high-DPI architecture diagram of LLVM Toolchain & 4-Stage Build Pipeline."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax_llvm, ax_pipe) = plt.subplots(2, 1, figsize=(14, 11), gridspec_kw={"height_ratios": [1.1, 1.3]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Top: LLVM Modular Architecture
+    ax_llvm.set_title("LLVM モジュラーアーキテクチャ — 中間表現 (LLVM IR) によるクロスコンパイルの超汎用化",
+                     fontsize=12, fontweight="bold", pad=12, color="#1A237E")
+    ax_llvm.set_xlim(0, 100)
+    ax_llvm.set_ylim(0, 100)
+    ax_llvm.axis("off")
+
+    # Frontends
+    frontends = [
+        (4, 70, 18, 16, "Clang\n(C / C++)", "#E3F2FD", "#1565C0"),
+        (4, 48, 18, 16, "rustc\n(Rust)", "#FFE0B2", "#E65100"),
+        (4, 26, 18, 16, "Swift / Go\n(Other)", "#EDE7F6", "#512DA8"),
+    ]
+    for x, y, w, h, label, fc, ec in frontends:
+        ax_llvm.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.5", facecolor=fc, edgecolor=ec, lw=1.5))
+        ax_llvm.text(x + w / 2, y + h / 2, label, fontsize=9.5, fontweight="bold", ha="center", va="center", color=ec)
+
+    # Arrows to IR
+    for _, y, _, h, _, _, _ in frontends:
+        ax_llvm.annotate("", xy=(30, 56), xytext=(22, y + h / 2),
+                         arrowprops=dict(arrowstyle="-|>", color="#546E7A", lw=1.5))
+
+    # Core: LLVM IR & Optimizer
+    ax_llvm.add_patch(FancyBboxPatch((30, 26), 36, 60, boxstyle="round,pad=0.8", facecolor="#E8F5E9", edgecolor="#2E7D32", lw=2))
+    ax_llvm.text(48, 77, "LLVM 共通中間表現\n(LLVM IR: .ll / .bc)", fontsize=11, fontweight="bold", ha="center", va="center", color="#1B5E20")
+    ax_llvm.text(48, 62, "• 静的単一代入形式 (SSA Form)\n• 無限個の仮想レジスタ\n• ハードウェア非依存の共通コードモデル",
+                 fontsize=8.5, ha="center", va="center", color="#2E7D32")
+    
+    ax_llvm.add_patch(FancyBboxPatch((34, 30), 28, 22, boxstyle="round,pad=0.4", facecolor="#C8E6C9", edgecolor="#388E3C", lw=1.5))
+    ax_llvm.text(48, 41, "LLVM オプティマイザ\n(Target-Independent Passes)\nインライン展開 / 定数畳み込み / 死滅コード除去",
+                 fontsize=8.5, fontweight="bold", ha="center", va="center", color="#1B5E20")
+
+    # Arrows to Backends
+    backends = [
+        (74, 70, 22, 16, "x86-64 Backend\n(PE32+ / ELF64)\n-> MikanOS / UEFI", "#FFEBEE", "#C62828"),
+        (74, 48, 22, 16, "AArch64 Backend\n(ARM64 ELF)\n-> Apple M / RPi", "#F3E5F5", "#6A1B9A"),
+        (74, 26, 22, 16, "RISC-V Backend\n(RV64GC ELF)\n-> 組み込みオープンOS", "#FFF8E1", "#F57F17"),
+    ]
+    for x, y, w, h, label, fc, ec in backends:
+        ax_llvm.annotate("", xy=(x, y + h / 2), xytext=(66, 56),
+                         arrowprops=dict(arrowstyle="-|>", color="#546E7A", lw=1.5))
+        ax_llvm.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.5", facecolor=fc, edgecolor=ec, lw=1.5))
+        ax_llvm.text(x + w / 2, y + h / 2, label, fontsize=8.5, fontweight="bold", ha="center", va="center", color=ec)
+
+    ax_llvm.text(50, 6,
+                 "★ 単一コンパイラバイナリ (clang) で、-target を指定するだけで任意のOS・CPUアーキテクチャのバイナリをクロス生成可能",
+                 fontsize=9.5, fontweight="bold", ha="center", color="#0D47A1",
+                 bbox=dict(boxstyle="square,pad=0.4", facecolor="#E3F2FD", edgecolor="#1976D2", alpha=0.9))
+
+    # Bottom: 4-Stage Build Pipeline
+    ax_pipe.set_title("C/C++ ビルドパイプラインの4段階 — ソースコードから UEFI 実行バイナリ (.efi) までの完全フロー",
+                      fontsize=12, fontweight="bold", pad=12, color="#004D40")
+    ax_pipe.set_xlim(0, 100)
+    ax_pipe.set_ylim(0, 100)
+    ax_pipe.axis("off")
+
+    stages = [
+        (3, 30, 20, 52, "1. プリプロセッサ\n(Preprocessor)", "clang -E", "source.c\nsource.h", "source.i\n(プリプロセス済み)",
+         "#E0F2F1", "#00695C", "# include 展開\n# define 置換\nコメント除去"),
+        (27, 30, 20, 52, "2. コンパイラ\n(Compiler)", "clang -S\n(-ffreestanding)", "source.i", "source.s\n(アセンブリ)",
+         "#FFF3E0", "#E65100", "構文解析 (AST)\nLLVM IR生成\nx86-64 機械語変換"),
+        (51, 30, 20, 52, "3. アセンブラ\n(Assembler)", "clang -c\n(llvm-mc)", "source.s", "source.o\n(COFF / ELF)",
+         "#EDE7F6", "#4527A0", "機械語バイナリ化\nシンボルテーブル\n再配置情報生成"),
+        (75, 30, 22, 52, "4. リンカ\n(Linker)", "lld-link\n(/subsystem:efi_app)", "source.o\n+ Libs", "BOOTX64.EFI\n(PE32+ 実行形式)",
+         "#E8F5E9", "#2E7D32", "複数オブジェクト結合\nアドレス・シンボル解決\nPE32+/COFF出力"),
+    ]
+
+    for i, (x, y, w, h, title, tool, in_file, out_file, fc, ec, detail) in enumerate(stages):
+        ax_pipe.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.5", facecolor=fc, edgecolor=ec, lw=1.8))
+        ax_pipe.text(x + w / 2, y + 44, title, fontsize=9.5, fontweight="bold", ha="center", va="center", color=ec)
+        ax_pipe.text(x + w / 2, y + 33, f"ツール: {tool}", fontsize=7.8, fontweight="bold", ha="center", va="center",
+                     bbox=dict(boxstyle="square,pad=0.2", facecolor="#FFFFFF", edgecolor=ec, lw=0.8))
+        ax_pipe.text(x + w / 2, y + 21, f"入力: {in_file}\n出力: {out_file}", fontsize=7.8, ha="center", va="center", color="#263238")
+        ax_pipe.text(x + w / 2, y + 8, detail, fontsize=7.2, ha="center", va="center", color="#37474F")
+
+        if i < len(stages) - 1:
+            ax_pipe.annotate("", xy=(stages[i + 1][0], y + 26), xytext=(x + w, y + 26),
+                             arrowprops=dict(arrowstyle="-|>", color="#00695C", lw=2.2))
+
+    ax_pipe.text(50, 10,
+                 "★ OSカーネル自作では、第4段階のリンカにホスト標準ライブラリ (libc.so / crt0.o) を渡さず、自作エントリポイント (EfiMain / KernelMain) を直接指定する",
+                 fontsize=9.0, fontweight="bold", ha="center", color="#B71C1C",
+                 bbox=dict(boxstyle="square,pad=0.4", facecolor="#FFEBEE", edgecolor="#C62828", alpha=0.9))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_freestanding_vs_hosted_environment(
+    output_path: str = "1/result/fig1_16_freestanding_vs_hosted_environment.png"
+) -> str:
+    """Generate high-DPI architecture diagram comparing Hosted vs Freestanding Environments."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax_host, ax_free) = plt.subplots(1, 2, figsize=(15, 8.5), gridspec_kw={"width_ratios": [1, 1]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: Hosted Environment
+    ax_host.set_title("ホスト環境 (Hosted Environment)\n— 一般アプリケーション開発の世界",
+                      fontsize=12, fontweight="bold", pad=12, color="#1565C0")
+    ax_host.set_xlim(0, 100)
+    ax_host.set_ylim(0, 100)
+    ax_host.axis("off")
+
+    host_layers = [
+        (10, 80, 80, 13, "ユーザーアプリケーション\n(int main(int argc, char** argv))", "#E3F2FD", "#1565C0", "printf(\"Hello, World\\n\");"),
+        (10, 61, 80, 14, "C/C++ 標準ライブラリ (libc / glibc / MSVCRT)\nstdio.h / stdlib.h / string.h / malloc() / exit()", "#BBDEFB", "#0D47A1", "バッファリング / ヒープ管理"),
+        (10, 42, 80, 14, "システムコール境界 (Ring 3 -> Ring 0 特権移行)\nwrite(1, buf, len) / mmap() / exit_group()", "#FFE0B2", "#E65100", "SYSCALL / INT 0x80 命令"),
+        (10, 23, 80, 14, "既存 OS カーネル (Linux / Windows NT)\nプロセス管理 / 仮想メモリ / デバイスドライバ", "#FFCDD2", "#C62828", "完全な抽象化と保護"),
+        (10, 4, 80, 14, "物理ハードウェア (CPU / RAM / ディスプレイ)", "#ECEFF1", "#37474F", "MMIO / ポートI/O / 割り込み"),
+    ]
+
+    for x, y, w, h, label, fc, ec, note in host_layers:
+        ax_host.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.5", facecolor=fc, edgecolor=ec, lw=1.8))
+        ax_host.text(x + w / 2, y + h / 2 + 1.5, label, fontsize=9.0, fontweight="bold", ha="center", va="center", color=ec)
+        ax_host.text(x + w / 2, y + 2.5, f"[{note}]", fontsize=7.5, ha="center", va="center", color="#37474F")
+
+    for i in range(len(host_layers) - 1):
+        ax_host.annotate("", xy=(50, host_layers[i + 1][1] + host_layers[i + 1][3]),
+                         xytext=(50, host_layers[i][1]),
+                         arrowprops=dict(arrowstyle="-|>", color="#1565C0", lw=2.0))
+
+    # Right: Freestanding Environment
+    ax_free.set_title("フリースタンディング環境 (Freestanding Environment)\n— OS カーネル & UEFI アプリ自作の世界 (-ffreestanding)",
+                      fontsize=12, fontweight="bold", pad=12, color="#2E7D32")
+    ax_free.set_xlim(0, 100)
+    ax_free.set_ylim(0, 100)
+    ax_free.axis("off")
+
+    free_layers = [
+        (10, 78, 80, 16, "MikanOS カーネル / UEFI アプリケーション\n(EfiMain(ImageHandle, SystemTable) / KernelMain)",
+         "#E8F5E9", "#2E7D32", "標準libcなし！printf/malloc使用不能！"),
+        (10, 52, 80, 21, "フリースタンディング標準ヘッダ (言語仕様のみ)\n<stdint.h> (uint64_t) / <stddef.h> (size_t, NULL)\n<stdarg.h> (va_list) / <limits.h> / <stdbool.h>",
+         "#C8E6C9", "#1B5E20", "★ OS非依存の型定義・マクロ・組み込み関数のみ提供\n(stdio.h や stdlib.h は存在しない)"),
+        (10, 28, 80, 18, "UEFI ファームウェア / ベアメタルインターフェース\nSystemTable->ConOut->OutputString() / GOP VRAM直書き",
+         "#FFF9C4", "#F57F17", "ファームウェアサービスを直接呼び出し / レジスタ直制御"),
+        (10, 4, 80, 18, "物理ハードウェア (x86-64 CPU / 物理RAM / VRAM)\nCR0〜CR4 / ページテーブル / PCI / APIC",
+         "#ECEFF1", "#37474F", "メモリマップ・特権命令・スタックを自力制御"),
+    ]
+
+    for x, y, w, h, label, fc, ec, note in free_layers:
+        ax_free.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.5", facecolor=fc, edgecolor=ec, lw=1.8))
+        ax_free.text(x + w / 2, y + h / 2 + 2.5, label, fontsize=9.0, fontweight="bold", ha="center", va="center", color=ec)
+        ax_free.text(x + w / 2, y + 3.5, f"[{note}]", fontsize=7.5, fontweight="bold", ha="center", va="center", color="#C62828")
+
+    for i in range(len(free_layers) - 1):
+        ax_free.annotate("", xy=(50, free_layers[i + 1][1] + free_layers[i + 1][3]),
+                         xytext=(50, free_layers[i][1]),
+                         arrowprops=dict(arrowstyle="-|>", color="#2E7D32", lw=2.0))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+

@@ -51,6 +51,10 @@ add_test(NAME test_ch01_binary_mutation_tester COMMAND ch01_binary_mutation_test
 add_executable(ch01_bios_uefi_comparator src/ch01/bios_uefi_comparator.cpp)
 add_test(NAME test_ch01_bios_uefi_comparator COMMAND ch01_bios_uefi_comparator)
 
+add_executable(ch01_toolchain_inspector src/ch01/toolchain_inspector.cpp)
+add_test(NAME test_ch01_toolchain_inspector COMMAND ch01_toolchain_inspector)
+
+
 
 
 
