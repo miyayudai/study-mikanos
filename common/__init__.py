@@ -79,6 +79,12 @@ from common.os_sim import (
     UefiBootManagerSimulator,
     plot_cpu_reset_to_uefi_phases,
     plot_uefi_boot_device_and_file_resolution,
+    MutationOutcome,
+    BinaryPatch,
+    BinaryDiffEntry,
+    BinaryMutator,
+    plot_hands_on_experiment_cycle,
+    plot_binary_mutation_anatomy,
 )
 
 __all__ = [
@@ -160,4 +166,10 @@ __all__ = [
     "UefiBootManagerSimulator",
     "plot_cpu_reset_to_uefi_phases",
     "plot_uefi_boot_device_and_file_resolution",
+    "MutationOutcome",
+    "BinaryPatch",
+    "BinaryDiffEntry",
+    "BinaryMutator",
+    "plot_hands_on_experiment_cycle",
+    "plot_binary_mutation_anatomy",
 ]

@@ -45,6 +45,10 @@ add_test(NAME test_ch01_qemu_launch_builder COMMAND ch01_qemu_launch_builder)
 add_executable(ch01_boot_sequence_tracer src/ch01/boot_sequence_tracer.cpp)
 add_test(NAME test_ch01_boot_sequence_tracer COMMAND ch01_boot_sequence_tracer --test)
 
+add_executable(ch01_binary_mutation_tester src/ch01/binary_mutation_tester.cpp)
+add_test(NAME test_ch01_binary_mutation_tester COMMAND ch01_binary_mutation_tester)
+
+
 
 
 

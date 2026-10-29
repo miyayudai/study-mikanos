@@ -9,7 +9,7 @@ from pathlib import Path
 import struct
 from typing import Any, Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle, FancyBboxPatch
+from matplotlib.patches import Rectangle, FancyBboxPatch, ArrowStyle
 import numpy as np
 
 
@@ -3502,3 +3502,392 @@ def plot_uefi_boot_device_and_file_resolution(output_path: str = "1/result/fig1_
 
 
 
+
+
+class MutationOutcome(Enum):
+    """Result status of a binary mutation experiment in UEFI execution."""
+    SUCCESS = "SUCCESS"                               # Expected display, clean execution
+    TRUNCATED_VALID = "TRUNCATED_VALID"               # Properly shortened string with UTF-16 null termination
+    NULL_TERMINATOR_MISSING = "NULL_TERMINATOR_MISSING" # Remnant memory displayed due to missing null terminator
+    SECTION_OVERFLOW = "SECTION_OVERFLOW"             # Exceeded raw section bounds or damaged headers
+    EXECUTION_CRASH = "EXECUTION_CRASH"               # CPU exception / crash from broken loop or stack corruption
+
+@dataclass
+class BinaryPatch:
+    """Represents a single binary patch applied to an executable."""
+    offset: int
+    original_bytes: bytes
+    patched_bytes: bytes
+    description: str
+
+    @property
+    def size(self) -> int:
+        return len(self.patched_bytes)
+
+@dataclass
+class BinaryDiffEntry:
+    """Represents a byte-level difference between original and mutated binaries."""
+    offset: int
+    original_byte: int
+    patched_byte: int
+
+    def __str__(self) -> str:
+        return f"0x{self.offset:04X}: 0x{self.original_byte:02X} -> 0x{self.patched_byte:02X}"
+
+class BinaryMutator:
+    """
+    Simulates and manages byte-level mutations and patches on UEFI PE32+ executables (e.g. BOOTX64.EFI).
+    Provides analysis of string modifications, opcode changes, null termination, and section boundaries.
+    """
+    def __init__(self, data: bytes | bytearray):
+        self.original_data: bytes = bytes(data)
+        self.data: bytearray = bytearray(data)
+        self.patches: List[BinaryPatch] = []
+
+    @property
+    def current_bytes(self) -> bytes:
+        return bytes(self.data)
+
+    def find_bytes(self, pattern: bytes) -> List[int]:
+        """Locates all byte offsets matching the given pattern."""
+        offsets = []
+        pos = 0
+        while True:
+            idx = self.data.find(pattern, pos)
+            if idx == -1:
+                break
+            offsets.append(idx)
+            pos = idx + 1
+        return offsets
+
+    def find_utf16le(self, text: str) -> List[int]:
+        """Locates all byte offsets containing the UTF-16LE encoded string."""
+        pattern = text.encode("utf-16le")
+        return self.find_bytes(pattern)
+
+    @staticmethod
+    def encode_utf16le(text: str, null_terminate: bool = True) -> bytes:
+        """Encodes text into UTF-16LE, optionally adding a 2-byte null terminator (0x00, 0x00)."""
+        raw = text.encode("utf-16le")
+        if null_terminate:
+            raw += b"\x00\x00"
+        return raw
+
+    def decode_utf16le(self, offset: int, max_chars: int = 128) -> Tuple[str, bool]:
+        """
+        Decodes UTF-16LE string from offset until a null terminator (0x0000) or max_chars.
+        Returns (decoded_string, is_null_terminated).
+        """
+        chars = []
+        is_terminated = False
+        limit = min(offset + max_chars * 2, len(self.data) - 1)
+        for ptr in range(offset, limit, 2):
+            if ptr + 1 >= len(self.data):
+                break
+            code_unit = self.data[ptr] | (self.data[ptr + 1] << 8)
+            if code_unit == 0:
+                is_terminated = True
+                break
+            chars.append(chr(code_unit))
+        return "".join(chars), is_terminated
+
+    def apply_patch(self, offset: int, patch_bytes: bytes, description: str = "") -> BinaryPatch:
+        """Applies a patch at the specified byte offset."""
+        if offset + len(patch_bytes) > len(self.data):
+            # If extending beyond file length, extend bytearray
+            extension = (offset + len(patch_bytes)) - len(self.data)
+            self.data.extend(b"\x00" * extension)
+
+        orig = bytes(self.data[offset : offset + len(patch_bytes)])
+        self.data[offset : offset + len(patch_bytes)] = patch_bytes
+        patch = BinaryPatch(
+            offset=offset,
+            original_bytes=orig,
+            patched_bytes=patch_bytes,
+            description=description,
+        )
+        self.patches.append(patch)
+        return patch
+
+    def diff(self) -> List[BinaryDiffEntry]:
+        """Computes list of differences between the original binary and the currently mutated binary."""
+        diffs = []
+        max_len = max(len(self.original_data), len(self.data))
+        for i in range(max_len):
+            orig = self.original_data[i] if i < len(self.original_data) else 0x00
+            cur = self.data[i] if i < len(self.data) else 0x00
+            if orig != cur:
+                diffs.append(BinaryDiffEntry(offset=i, original_byte=orig, patched_byte=cur))
+        return diffs
+
+    def format_diff_table(self, max_entries: int = 25) -> str:
+        """Formats the diff as an ASCII comparison table."""
+        diffs = self.diff()
+        if not diffs:
+            return "No binary modifications (Binaries are identical)."
+        lines = [
+            "Offset (Hex) | Original Byte | Patched Byte | Description",
+            "-------------+---------------+--------------+----------------------"
+        ]
+        for d in diffs[:max_entries]:
+            orig_char = chr(d.original_byte) if 32 <= d.original_byte <= 126 else "."
+            patch_char = chr(d.patched_byte) if 32 <= d.patched_byte <= 126 else "."
+            lines.append(f"0x{d.offset:06X}   | 0x{d.original_byte:02X} ('{orig_char}')   | 0x{d.patched_byte:02X} ('{patch_char}')   | diff")
+        if len(diffs) > max_entries:
+            lines.append(f"... and {len(diffs) - max_entries} more byte differences.")
+        return "\n".join(lines)
+
+    def simulate_execution(self) -> Dict[str, Any]:
+        """
+        Simulates UEFI firmware execution of this binary, evaluating:
+        1. String modification at .data/.rdata (0x400)
+        2. Null termination integrity
+        3. Machine code infinite loop at .text (0x212: EB FE)
+        4. Section bounds and file size limits
+        """
+        result: Dict[str, Any] = {
+            "outcome": MutationOutcome.SUCCESS,
+            "screen_output": "",
+            "halted": True,
+            "cpu_state": "HALTED (Looping at 0x212)",
+            "message": "",
+        }
+
+        # Check section boundary (original size 1536 bytes / 0x600)
+        if len(self.data) > 1536:
+            result["outcome"] = MutationOutcome.SECTION_OVERFLOW
+            result["halted"] = False
+            result["cpu_state"] = "CRASH / UEFI_LOAD_ERROR"
+            result["message"] = (
+                f"Binary size {len(self.data)} bytes exceeds raw section/file capacity (1536 bytes). "
+                f"UEFI BDS loader rejects the malformed PE32+ image or corrupts adjacent memory."
+            )
+            return result
+
+        # Check .text loop integrity: hello.efi original has 'jmp $' (0xEB, 0xFE) at offset 0x212
+        text_loop_bytes = bytes(self.data[0x212:0x214]) if len(self.data) >= 0x214 else b""
+        if text_loop_bytes != b"\xeb\xfe":
+            # Infinite loop modified (e.g. replaced with NOP 0x90 0x90 or RET 0xC3)
+            result["outcome"] = MutationOutcome.EXECUTION_CRASH
+            result["halted"] = False
+            result["cpu_state"] = "CPU_FAULT (Stack imbalance / GP exception / Triple Fault)"
+            result["message"] = (
+                f"Infinite loop 'jmp $' (EB FE) at offset 0x212 was overwritten with {text_loop_bytes.hex()}. "
+                f"The CPU executed past the loop. Because EfiMain does not properly balance the stack "
+                f"(missing 'add rsp, 0x28' before 'ret'), returning crashes or falls into unmapped padding!"
+            )
+            decoded, terminated = self.decode_utf16le(0x400, max_chars=32)
+            result["screen_output"] = decoded
+            return result
+
+        # Analyze string at .data/.rdata offset 0x400
+        str_offset = 0x400
+        decoded, terminated = self.decode_utf16le(str_offset, max_chars=64)
+        result["screen_output"] = decoded
+
+        # Check if null terminator is present within the original string footprint (0x400..0x41C)
+        if not terminated:
+            result["outcome"] = MutationOutcome.NULL_TERMINATOR_MISSING
+            result["message"] = (
+                f"String at 0x{str_offset:X} lacks a 2-byte null terminator (0x0000). "
+                f"UEFI OutputString continues reading memory beyond the intended string until it encounters 0x0000, "
+                f"causing memory artifacts/garbage to be displayed on screen!"
+            )
+        else:
+            orig_decoded, _ = BinaryMutator(self.original_data).decode_utf16le(str_offset)
+            if decoded == orig_decoded:
+                result["outcome"] = MutationOutcome.SUCCESS
+                result["message"] = "Original string displayed cleanly."
+            elif len(decoded) < len(orig_decoded):
+                result["outcome"] = MutationOutcome.TRUNCATED_VALID
+                result["message"] = f"String shortened to '{decoded}' and properly terminated with 0x0000."
+            else:
+                result["outcome"] = MutationOutcome.SUCCESS
+                result["message"] = f"String successfully mutated to '{decoded}'."
+
+        return result
+
+
+def plot_hands_on_experiment_cycle(output_path: str = "1/result/fig1_11_hands_on_experiment_cycle.png") -> str:
+    """
+    Renders high-resolution architectural diagram:
+    (A) Low-Level Development OODA Experiment Loop (Observe -> Orient -> Decide -> Act)
+    (B) Top-Down Theory vs Bottom-Up Empirical Learning Comparison
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    setup_plot_style()
+
+    fig, (ax_loop, ax_comp) = plt.subplots(1, 2, figsize=(16, 8.5), gridspec_kw={"width_ratios": [1.15, 1.0]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # -------------------------------------------------------------
+    # Left Subplot: OODA Loop in Low-Level / OS Development
+    # -------------------------------------------------------------
+    ax_loop.set_title("(A) Low-Level Systems Learning: Empirical OODA Loop\n(Hands-On Hypothesis-Testing vs Black-Box Fear)",
+                     fontsize=11.5, fontweight="bold", pad=14, color="#1A237E")
+    ax_loop.set_xlim(0, 10)
+    ax_loop.set_ylim(0, 10)
+    ax_loop.axis("off")
+
+    # Loop center box
+    ax_loop.add_patch(FancyBboxPatch((3.4, 3.6), 3.2, 2.4, boxstyle="round,pad=0.15",
+                                     facecolor="#E8EAF6", edgecolor="#3949AB", lw=2.0))
+    ax_loop.text(5.0, 5.1, "Core Mindset:\n'Run It First, Observe,\nThen Deconstruct'",
+                 fontsize=9.2, fontweight="bold", color="#1A237E", ha="center", va="center")
+    ax_loop.text(5.0, 4.0, "(スモールステップ実験の原則)", fontsize=8.0, color="#5C6BC0", ha="center")
+
+    # 4 Nodes: Observe, Orient, Decide, Act
+    nodes = [
+        ("1. 観察 (Observe)", "Screen Output, Registers,\nHex Dump, QEMU Monitor", 5.0, 8.6, "#E3F2FD", "#1565C0"),
+        ("2. 方向付け (Orient)", "Form Hypothesis:\nUTF-16, PE Layout, Calling Conv.", 8.4, 4.8, "#E8F5E9", "#2E7D32"),
+        ("3. 意思決定 (Decide)", "Design Mutation Patch:\nOffset, Bytes, Null Terminator", 5.0, 1.0, "#FFF3E0", "#E65100"),
+        ("4. 行動 (Act / Patch)", "Binary Hex Edit, Compile,\nQEMU Virtual Boot Execution", 1.6, 4.8, "#F3E5F5", "#6A1B9A"),
+    ]
+
+    for title, desc, x, y, fc, ec in nodes:
+        ax_loop.add_patch(FancyBboxPatch((x - 1.45, y - 0.75), 2.9, 1.5, boxstyle="round,pad=0.1",
+                                         facecolor=fc, edgecolor=ec, lw=1.8))
+        ax_loop.text(x, y + 0.35, title, fontsize=9.2, fontweight="bold", color=ec, ha="center", va="center")
+        ax_loop.text(x, y - 0.25, desc, fontsize=7.6, color="#37474F", ha="center", va="center")
+
+    # Directed curved arrows forming circular loop
+    arrow_style = ArrowStyle("->", head_length=5, head_width=3)
+    ax_loop.annotate("", xy=(7.2, 5.5), xytext=(6.2, 8.0),
+                     arrowprops=dict(arrowstyle=arrow_style, color="#1E88E5", lw=2.2, connectionstyle="arc3,rad=-0.2"))
+    ax_loop.annotate("", xy=(6.2, 1.8), xytext=(7.4, 4.0),
+                     arrowprops=dict(arrowstyle=arrow_style, color="#43A047", lw=2.2, connectionstyle="arc3,rad=-0.2"))
+    ax_loop.annotate("", xy=(2.8, 4.0), xytext=(3.8, 1.8),
+                     arrowprops=dict(arrowstyle=arrow_style, color="#FB8C00", lw=2.2, connectionstyle="arc3,rad=-0.2"))
+    ax_loop.annotate("", xy=(3.8, 8.0), xytext=(2.6, 5.5),
+                     arrowprops=dict(arrowstyle=arrow_style, color="#8E24AA", lw=2.2, connectionstyle="arc3,rad=-0.2"))
+
+    # -------------------------------------------------------------
+    # Right Subplot: Learning Methodology Comparison
+    # -------------------------------------------------------------
+    ax_comp.set_title("(B) Learning Philosophy Comparison:\nTop-Down Theory vs Hands-On Empirical Loop",
+                     fontsize=11.5, fontweight="bold", pad=14, color="#1A237E")
+    ax_comp.axis("off")
+
+    ax_comp.add_patch(FancyBboxPatch((0.05, 0.54), 0.90, 0.40, boxstyle="round,pad=0.02",
+                                     facecolor="#FFEBEE", edgecolor="#C62828", lw=1.6))
+    ax_comp.text(0.08, 0.89, "[×] 理論完全読破型 (Top-Down Theory-First Approach)",
+                 fontsize=9.8, fontweight="bold", color="#B71C1C")
+    comp_theory = (
+        "• 特徴: Intel SDM や UEFI 仕様書（数千ページ）をすべて理解してから実装しようとする\n"
+        "• 課題: 抽象的な仕様と実機の挙動が結びつかず、途中で挫折しやすい（情報過多）\n"
+        "• フィードバック遅延: 初めてコードを動かすまでに膨大な時間がかかり、疑問が未解決のまま蓄積\n"
+        "• デバッグ耐性: 想定外のエラー（ハング・黒画面）が発生した際に原因の切り分けが極めて困難"
+    )
+    ax_comp.text(0.08, 0.85, comp_theory, fontsize=8.2, color="#37474F", va="top", linespacing=1.4)
+
+    ax_comp.add_patch(FancyBboxPatch((0.05, 0.06), 0.90, 0.44, boxstyle="round,pad=0.02",
+                                     facecolor="#E8F5E9", edgecolor="#2E7D32", lw=2.0))
+    ax_comp.text(0.08, 0.45, "[✓] 実験・観察駆動型 (Hands-On Empirical OODA Approach)",
+                 fontsize=9.8, fontweight="bold", color="#1B5E20")
+    comp_hands_on = (
+        "• 特徴: 最小のバイナリを手動で動かし、一部のバイトを書き換えて挙動の変化を観察する\n"
+        "• 強み: 文字列長やヌル終端、機械語ループを壊すことで『なぜ動いていたのか』を身体感覚で体得\n"
+        "• 高速フィードバック: 数秒でパッチ→QEMU起動→結果確認のサイクルを回し、仮説を検証\n"
+        "• デバッグ耐性: 意図的に壊して壊れ方を観察しているため、本番でのハングや例外にも冷静に対処可能"
+    )
+    ax_comp.text(0.08, 0.41, comp_hands_on, fontsize=8.2, color="#37474F", va="top", linespacing=1.4)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_binary_mutation_anatomy(output_path: str = "1/result/fig1_12_binary_mutation_anatomy.png") -> str:
+    """
+    Renders high-resolution architectural diagram:
+    (A) PE32+ Binary Layout & Mutation Injection Targets (DOS, PE, .text, .rdata)
+    (B) 4 Key Mutation Experiment Scenarios & Memory Corruption Manifestations
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    setup_plot_style()
+
+    fig, (ax_mem, ax_cases) = plt.subplots(1, 2, figsize=(16, 9.5), gridspec_kw={"width_ratios": [1, 1.4]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # -------------------------------------------------------------
+    # Left Subplot: PE32+ Binary Structure & Mutation Target Offsets
+    # -------------------------------------------------------------
+    ax_mem.set_title("(A) PE32+ (hello.efi) Binary Layout\n& Mutation Target Offsets",
+                     fontsize=11.5, fontweight="bold", pad=14, color="#1A237E")
+    ax_mem.set_xlim(0, 10)
+    ax_mem.set_ylim(0, 10)
+    ax_mem.axis("off")
+
+    sections = [
+        ("0x000 - 0x1FF (512B)", "DOS & PE32+ Headers", "Magic 'MZ', 'PE\\0\\0', Optional Header,\nSection Table (.text, .data)", "#ECEFF1", "#455A64"),
+        ("0x200 - 0x3FF (512B)", "Section .text (Code)", "x86-64 Machine Instructions\nEfiMain Entrypoint at 0x200\n★ Loop: 0x212 (EB FE) 'jmp $'", "#E1F5FE", "#0288D1"),
+        ("0x400 - 0x5FF (512B)", "Section .data / .rdata", "Read-only Literals & Strings\n★ String: 0x400 ('Hello, world!\\0')\nPadding: 0x41C..0x5FF (Zeroes)", "#E8F5E9", "#388E3C"),
+    ]
+
+    y_start = 8.8
+    for addr_range, title, desc, fc, ec in sections:
+        ax_mem.add_patch(FancyBboxPatch((0.8, y_start - 2.1), 8.4, 2.0, boxstyle="round,pad=0.02",
+                                        facecolor=fc, edgecolor=ec, lw=1.8))
+        ax_mem.text(1.1, y_start - 0.4, f"{title}  [{addr_range}]", fontsize=9.2, fontweight="bold", color=ec)
+        ax_mem.text(1.1, y_start - 1.1, desc, fontsize=7.8, color="#263238", va="top", linespacing=1.3)
+        y_start -= 2.6
+
+    ax_mem.annotate("Target 1: Infinite Loop (0x212)\nOpcode: EB FE (jmp $)",
+                    xy=(9.2, 5.0), xytext=(5.5, 2.7),
+                    arrowprops=dict(arrowstyle="->", color="#D32F2F", lw=1.8),
+                    fontsize=8.0, fontweight="bold", color="#B71C1C",
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFEBEE", edgecolor="#D32F2F"))
+
+    ax_mem.annotate("Target 2: UTF-16 String (0x400)\n'Hello, world!' (28 bytes)",
+                    xy=(9.2, 2.3), xytext=(5.5, 0.7),
+                    arrowprops=dict(arrowstyle="->", color="#1565C0", lw=1.8),
+                    fontsize=8.0, fontweight="bold", color="#0D47A1",
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="#E3F2FD", edgecolor="#1565C0"))
+
+    # -------------------------------------------------------------
+    # Right Subplot: 4 Key Mutation Experiment Scenarios
+    # -------------------------------------------------------------
+    ax_cases.set_title("(B) 4 Key Mutation Experiment Scenarios\n& Low-Level Physical Manifestations",
+                      fontsize=11.5, fontweight="bold", pad=14, color="#1A237E")
+    ax_cases.axis("off")
+
+    cases = [
+        ("Case 1: 同一長文字列置換 (Same-Length Mutation)",
+         "• 変更内容: 'Hello, world!' (13文字) -> 'Hello, Mikan!' (13文字) at 0x400\n"
+         "• メモリ状態: 28バイト領域に完全に適合。ヌル終端 (0x0000) も温存\n"
+         "• 結果: [SUCCESS] 画面に 'Hello, Mikan!' が正常表示。副作用なし",
+         "#E8F5E9", "#2E7D32", "#1B5E20"),
+
+        ("Case 2: ヌル文字欠落短縮 (Missing Null Terminator)",
+         "• 変更内容: 'Hi!' (3文字) を 0x400 に上書きするが、終端 0x0000 を書かない\n"
+         "• メモリ状態: 0x400..0x405 に 'Hi!' が入るが、0x406 以降に元の 'llo, world!' が残留\n"
+         "• 結果: [CORRUPTED] 画面に 'Hillo, world!' または後続ゴミデータが露出！",
+         "#FFF8E1", "#F57F17", "#E65100"),
+
+        ("Case 3: セクション超過オーバーフロー (Section Overflow)",
+         "• 変更内容: 300文字超（600B以上）の巨大文字列を無理やりバイナリへ注入\n"
+         "• メモリ状態: ファイルサイズが 1536B を突破、または PE ヘッダの SizeOfRawData と矛盾\n"
+         "• 結果: [OVERFLOW / REJECT] UEFI BDS ローダがロード拒否、または隣接メモリ破損",
+         "#FFEBEE", "#C62828", "#B71C1C"),
+
+        ("Case 4: 機械語命令パッチ (Machine Code Opcode Patch)",
+         "• 変更内容: 0x212 の 'jmp $' (EB FE) を 'nop nop' (90 90) に書き換え\n"
+         "• メモリ状態: CPU が無限ループを脱出。しかしスタック復帰処理（add rsp, 0x28）がない\n"
+         "• 結果: [CRASH / CPU EXCEPTION] 不正アドレスへ ret、未定義動作 / フリーズ発生",
+         "#EDE7F6", "#512DA8", "#311B92"),
+    ]
+
+    y_pos = 0.96
+    for title, desc, fc, ec, tc in cases:
+        h = 0.21
+        ax_cases.add_patch(FancyBboxPatch((0.04, y_pos - h), 0.92, h, boxstyle="round,pad=0.015",
+                                         facecolor=fc, edgecolor=ec, lw=1.6))
+        ax_cases.text(0.07, y_pos - 0.04, title, fontsize=8.8, fontweight="bold", color=tc)
+        ax_cases.text(0.07, y_pos - 0.08, desc, fontsize=7.6, color="#263238", va="top", linespacing=1.35)
+        y_pos -= (h + 0.035)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
