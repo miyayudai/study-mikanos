@@ -1820,6 +1820,287 @@ def plot_uefi_calling_convention(output_path: str | Path) -> Path:
     return output_path
 
 
+# ==============================================================================
+# Chapter 1.2: Linux Block Subsystem & USB Device Detection Simulation
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class LinuxPartition:
+    """Represents a disk partition detected by Linux kernel."""
+
+    name: str
+    major: int
+    minor: int
+    sector_count: int
+    size_bytes: int
+    mountpoint: str = ""
+
+    @property
+    def size_gib(self) -> float:
+        return self.size_bytes / (1024**3)
+
+
+@dataclass(frozen=True)
+class LinuxBlockDevice:
+    """Represents a Linux block device in /sys/block."""
+
+    name: str
+    major: int
+    minor: int
+    is_removable: bool
+    transport: str
+    sector_count: int
+    size_bytes: int
+    vendor: str = "Unknown"
+    model: str = "Unknown"
+    partitions: tuple[LinuxPartition, ...] = ()
+
+    @property
+    def size_gib(self) -> float:
+        return self.size_bytes / (1024**3)
+
+    @property
+    def is_usb_boot_candidate(self) -> bool:
+        """Removable USB drive is the target candidate for MikanOS boot media."""
+        return self.is_removable and self.transport == "USB"
+
+
+class LinuxBlockSubsystemSimulator:
+    """Simulates Linux kernel block layer, dev_t decoding, and USB hotplug events."""
+
+    @staticmethod
+    def encode_dev_t(major: int, minor: int) -> int:
+        """Encode major/minor into 32-bit Linux dev_t: (major << 20) | (minor & 0xFFFFF)."""
+        return ((major & 0xFFF) << 20) | (minor & 0xFFFFF)
+
+    @staticmethod
+    def decode_dev_t(dev: int) -> tuple[int, int]:
+        """Decode 32-bit Linux dev_t into (major, minor)."""
+        major = (dev >> 20) & 0xFFF
+        minor = dev & 0xFFFFF
+        return major, minor
+
+    @staticmethod
+    def get_standard_major_name(major: int) -> str:
+        """Return canonical Linux subsystem name for known major device numbers."""
+        mapping = {
+            1: "ram (RAM disk driver)",
+            2: "fd (Floppy disk driver)",
+            3: "hda/hdb (Legacy IDE primary)",
+            7: "loop (Loopback device driver)",
+            8: "sd (SCSI disk subsystem: SATA/SAS/USB)",
+            9: "md (Multiple Devices / RAID)",
+            179: "mmcblk (MMC/SD card driver)",
+            259: "nvme (NVM Express block driver)",
+        }
+        return mapping.get(major, f"custom / dynamic driver (major {major})")
+
+    @classmethod
+    def create_typical_workstation_state(cls) -> list[LinuxBlockDevice]:
+        """Create a typical developer workstation state before inserting USB drive."""
+        nvme = LinuxBlockDevice(
+            name="nvme0n1",
+            major=259,
+            minor=0,
+            is_removable=False,
+            transport="NVMe",
+            sector_count=1953525168,
+            size_bytes=1953525168 * 512,
+            vendor="Samsung",
+            model="SSD 980 PRO 1TB",
+            partitions=(
+                LinuxPartition("nvme0n1p1", 259, 1, 1048576, 1048576 * 512, "/boot/efi"),
+                LinuxPartition("nvme0n1p2", 259, 2, 33554432, 33554432 * 512, "[SWAP]"),
+                LinuxPartition("nvme0n1p3", 259, 3, 1918920704, 1918920704 * 512, "/"),
+            ),
+        )
+        return [nvme]
+
+    @classmethod
+    def simulate_usb_insertion(cls, devices_before: list[LinuxBlockDevice]) -> list[LinuxBlockDevice]:
+        """Simulate hotplugging an 8GB/16GB USB flash drive into the system."""
+        usb = LinuxBlockDevice(
+            name="sdb",
+            major=8,
+            minor=16,
+            is_removable=True,
+            transport="USB",
+            sector_count=30031872,
+            size_bytes=30031872 * 512,
+            vendor="SanDisk",
+            model="Ultra Fit USB 3.0",
+            partitions=(
+                LinuxPartition("sdb1", 8, 17, 30029824, 30029824 * 512, "/media/student/MIKAN_USB"),
+            ),
+        )
+        return devices_before + [usb]
+
+    @classmethod
+    def detect_inserted_devices(
+        cls, before: list[LinuxBlockDevice], after: list[LinuxBlockDevice]
+    ) -> list[LinuxBlockDevice]:
+        """Find newly appeared block devices by diffing names."""
+        before_names = {d.name for d in before}
+        return [d for d in after if d.name not in before_names]
+
+    @classmethod
+    def verify_target_safety(cls, target_name: str, devices: list[LinuxBlockDevice]) -> dict[str, str | bool]:
+        """Evaluate if writing to target_name is safe (Accidental Data Loss Prevention)."""
+        for d in devices:
+            if d.name == target_name:
+                is_safe = d.is_usb_boot_candidate
+                reason = "Safe Removable USB Flash Drive" if is_safe else "DANGER: Host Internal Disk or Non-USB Device"
+                return {
+                    "found": True,
+                    "target": target_name,
+                    "is_safe": is_safe,
+                    "removable": d.is_removable,
+                    "transport": d.transport,
+                    "size_gib": f"{d.size_gib:.2f} GiB",
+                    "reason": reason,
+                }
+        return {
+            "found": False,
+            "target": target_name,
+            "is_safe": False,
+            "reason": f"Device {target_name} not found in system",
+        }
+
+
+def plot_linux_block_layer_and_usb_detection(output_path: str | Path) -> Path:
+    """Generate high-resolution architecture diagram of Linux block layer & USB enumeration (fig1_3)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 9), gridspec_kw={"width_ratios": [1.1, 1.2]})
+
+    # Left: Linux Storage & Block I/O Layer Architecture
+    layers = [
+        ("User Space Applications & System Tools\n(cp, dd, lsblk, dmesg, fdisk)", "#E3F2FD", "#1565C0"),
+        ("Virtual File System (VFS)\n(/dev/sdb, /media/student/MIKAN_USB, open/read/write)", "#E8F5E9", "#2E7D32"),
+        ("Generic Block Layer & Page Cache\n(bio structures, I/O Request Queues, major:minor dispatch)", "#FFF3E0", "#E65100"),
+        ("SCSI Subsystem Core (scsi_mod & sd_mod)\n(SCSI disk driver, translates block I/O to SCSI commands)", "#F3E5F5", "#6A1B9A"),
+        ("USB Storage Transport (usb-storage / uas)\n(Bulk-Only Transport BOT, Command/Data/Status blocks)", "#FCE4EC", "#C2185B"),
+        ("USB Core & Host Controller Driver (xHCI / EHCI)\n(PCIe MMIO registers, USB packets, URB transfer)", "#ECEFF1", "#37474F"),
+        ("Physical Hardware (USB Flash Drive)\n(NAND Flash, Flash Controller, USB 3.0 PHY)", "#CFD8DC", "#263238"),
+    ]
+
+    y_pos = np.arange(len(layers))[::-1]
+    for y, (title, fcolor, ecolor) in zip(y_pos, layers):
+        ax1.broken_barh([(0.05, 0.9)], (y - 0.38, 0.76), facecolors=fcolor, edgecolor=ecolor, linewidth=2)
+        ax1.text(0.5, y, title, ha="center", va="center", fontsize=9.5, fontweight="bold", color="#1A237E")
+
+    # Connect arrows between layers
+    for i in range(len(layers) - 1):
+        ax1.annotate(
+            "",
+            xy=(0.5, y_pos[i + 1] + 0.38),
+            xytext=(0.5, y_pos[i] - 0.38),
+            arrowprops=dict(arrowstyle="->", color="#37474F", lw=1.5),
+        )
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(-0.8, len(layers) - 0.2)
+    ax1.axis("off")
+    ax1.set_title("Linux Storage Subsystem Architecture\n(Everything is a File -> Block Device I/O Stack)", fontsize=12, fontweight="bold", color="#0D47A1")
+
+    # Right: USB Insertion & Hotplug Enumeration Sequence
+    steps = [
+        ("Step 1: Physical Attachment & Electrical Signal", "xHCI Root Hub port detects voltage change on D+/D- lines.\nPort Status & Control register sets Current Connect Status (CCS = 1).", "#FFEBEE", "#C62828"),
+        ("Step 2: USB Bus Enumeration (usbcore)", "xHCI issues SET_ADDRESS, reads Device/Config Descriptors.\nIdentifies Class 0x08 (Mass Storage), Protocol 0x50 (Bulk-Only).", "#FFF8E1", "#F57F17"),
+        ("Step 3: Driver Binding (usb-storage & sd_mod)", "Kernel binds usb-storage driver, registers virtual SCSI Host.\nsd_mod issues SCSI INQUIRY (Vendor/Model) & READ CAPACITY.", "#E8F5E9", "#2E7D32"),
+        ("Step 4: sysfs Registration & major:minor Assignment", "Kernel assigns major=8 (SCSI disk), minor=16 (sdb).\nCreates sysfs entries at /sys/block/sdb with size, removable=1.", "#E1F5FE", "#0277BD"),
+        ("Step 5: uevent Broadcast & udev Device Node Creation", "Kernel fires kobject_uevent via Netlink.\nsystemd-udevd reads rules, creates /dev/sdb, /dev/sdb1, and /dev/disk/by-id/*.", "#EDE7F6", "#512DA8"),
+        ("Step 6: User Space Discovery & Safe Verification", "User runs lsblk or dmesg | tail.\nChecks NAME=sdb, RM=1, VENDOR/MODEL, prevents wiping host disk!", "#FBE9E7", "#D84315"),
+    ]
+
+    y_seq = np.arange(len(steps))[::-1]
+    for y, (title, desc, fcolor, ecolor) in zip(y_seq, steps):
+        ax2.broken_barh([(0.05, 0.9)], (y - 0.40, 0.80), facecolors=fcolor, edgecolor=ecolor, linewidth=1.8)
+        full_text = f"▶ {title}\n{desc}"
+        ax2.text(0.08, y, full_text, ha="left", va="center", fontsize=8.8, color="#212121", linespacing=1.3)
+
+    for i in range(len(steps) - 1):
+        ax2.annotate(
+            "",
+            xy=(0.5, y_seq[i + 1] + 0.40),
+            xytext=(0.5, y_seq[i] - 0.40),
+            arrowprops=dict(arrowstyle="->", color="#D32F2F", lw=1.8),
+        )
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(-0.8, len(steps) - 0.2)
+    ax2.axis("off")
+    ax2.set_title("USB Hotplug & Device Node Generation Sequence\n(Hardware Connect -> dmesg / sysfs -> /dev/sdX)", fontsize=12, fontweight="bold", color="#0D47A1")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_uefi_usb_fat_structure(output_path: str | Path) -> Path:
+    """Generate high-resolution layout diagram of USB drive partitioning & FAT32 UEFI structure (fig1_4)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8.5), gridspec_kw={"width_ratios": [1.0, 1.2]})
+
+    # Left: Physical Disk Layout (MBR / GPT & Partition 1)
+    disk_segments = [
+        ("LBA 0: Protective MBR / MBR\n(Legacy Partition Table + 0x55AA signature)", "#CFD8DC", "#37474F", 0.12),
+        ("LBA 1: GPT Header\n(Signature 'EFI PART', Disk GUID, Partition Table LBA)", "#ECEFF1", "#455A64", 0.10),
+        ("LBA 2-33: GPT Partition Entries\n(128 entries x 128 bytes, ESP GUID, Start/End LBA)", "#E0E0E0", "#616161", 0.14),
+        ("LBA 2048+: Partition 1 (EFI System Partition)\nFAT32 Volume for MikanOS Boot Media", "#C8E6C9", "#2E7D32", 0.50),
+        ("Disk Tail: Backup GPT Partition Entries & Header", "#EEEEEE", "#757575", 0.10),
+    ]
+
+    cur_y = 0.0
+    for title, fcolor, ecolor, height in disk_segments:
+        ax1.broken_barh([(0.1, 0.8)], (cur_y, height), facecolors=fcolor, edgecolor=ecolor, linewidth=1.8)
+        ax1.text(0.5, cur_y + height / 2.0, title, ha="center", va="center", fontsize=9.2, fontweight="bold", color="#263238")
+        cur_y += height + 0.02
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(-0.05, cur_y + 0.05)
+    ax1.axis("off")
+    ax1.set_title("Physical Storage Layout: USB Flash Drive\n(GPT / MBR Partitioning Scheme)", fontsize=12, fontweight="bold", color="#0D47A1")
+
+    # Right: FAT32 Internal File System Structure & Directory Path
+    fat_blocks = [
+        ("Reserved Region (LBA 0 of Partition)\n• VBR (Volume Boot Record) / BPB (BIOS Parameter Block)\n• Bytes per Sector: 512, Sectors per Cluster: 8 (4KB Clusters)\n• Reserved Sector Count: 32 (contains FSInfo Sector)", "#FFF9C4", "#FBC02D"),
+        ("FAT Region (File Allocation Table)\n• FAT #1: Cluster allocation table (32-bit entries, cluster chain tracking)\n• FAT #2: Exact mirror duplicate for data redundancy & integrity", "#FFE0B2", "#FB8C00"),
+        ("Data Region (Cluster #2 Root Directory)\n• Directory Entry: 32 bytes per file/dir (8.3 name, attributes, cluster)\n• Root contains entry: 'EFI' (Attribute: Directory, Points to Cluster #3)", "#E1BEE7", "#8E24AA"),
+        ("Directory Cluster: /EFI/\n• Directory Entry: 'BOOT' (Attribute: Directory, Points to Cluster #4)", "#D1C4E9", "#5E35B1"),
+        ("Directory Cluster: /EFI/BOOT/\n• Directory Entry: 'BOOTX64.EFI' (Points to Cluster #5, Size: 1536 Bytes)\n• Standard default fallback boot path per UEFI Specification 2.10!", "#BBDEFB", "#1976D2"),
+        ("File Data Clusters: BOOTX64.EFI Binary\n• Contains PE32+ MZ/PE header and x86-64 machine code\n• Executed directly by UEFI Firmware Boot Manager", "#C8E6C9", "#388E3C"),
+    ]
+
+    y_fat = np.arange(len(fat_blocks))[::-1]
+    for y, (desc, fcolor, ecolor) in zip(y_fat, fat_blocks):
+        ax2.broken_barh([(0.05, 0.9)], (y - 0.40, 0.80), facecolors=fcolor, edgecolor=ecolor, linewidth=1.8)
+        ax2.text(0.08, y, desc, ha="left", va="center", fontsize=8.8, color="#212121", linespacing=1.25)
+
+    for i in range(len(fat_blocks) - 1):
+        ax2.annotate(
+            "",
+            xy=(0.5, y_fat[i + 1] + 0.40),
+            xytext=(0.5, y_fat[i] - 0.40),
+            arrowprops=dict(arrowstyle="->", color="#1976D2", lw=1.6),
+        )
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(-0.8, len(fat_blocks) - 0.2)
+    ax2.axis("off")
+    ax2.set_title("FAT32 Volume Internal Architecture & Boot Path\n(/EFI/BOOT/BOOTX64.EFI Traversal per UEFI Spec)", fontsize=12, fontweight="bold", color="#0D47A1")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
 
 
 

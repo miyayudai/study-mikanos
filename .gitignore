@@ -37,6 +37,8 @@ bin/
 *.app
 *.a
 *.lib
+block_device_inspector
+1/*.cpp
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake

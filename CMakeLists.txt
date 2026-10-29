@@ -33,6 +33,9 @@ add_test(NAME test_ch00_os_chapter0_exercises COMMAND ch00_os_chapter0_exercises
 add_executable(ch01_pe32plus_parser src/ch01/pe32plus_parser.cpp)
 add_test(NAME test_ch01_pe32plus_parser COMMAND ch01_pe32plus_parser ../vendor/mikanos-build/day01/bin/hello.efi)
 
+add_executable(ch01_block_device_inspector src/ch01/block_device_inspector.cpp)
+add_test(NAME test_ch01_block_device_inspector COMMAND ch01_block_device_inspector --demo)
+
 
 
 

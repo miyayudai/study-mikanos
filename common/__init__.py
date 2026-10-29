@@ -45,6 +45,11 @@ from common.os_sim import (
     UefiCallingConventionSim,
     plot_pe32plus_structure,
     plot_uefi_calling_convention,
+    LinuxPartition,
+    LinuxBlockDevice,
+    LinuxBlockSubsystemSimulator,
+    plot_linux_block_layer_and_usb_detection,
+    plot_uefi_usb_fat_structure,
 )
 
 __all__ = [
@@ -92,4 +97,9 @@ __all__ = [
     "UefiCallingConventionSim",
     "plot_pe32plus_structure",
     "plot_uefi_calling_convention",
+    "LinuxPartition",
+    "LinuxBlockDevice",
+    "LinuxBlockSubsystemSimulator",
+    "plot_linux_block_layer_and_usb_detection",
+    "plot_uefi_usb_fat_structure",
 ]
