@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import struct
 from typing import Any, Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle, FancyBboxPatch
 import numpy as np
 
 
@@ -2439,6 +2440,578 @@ def plot_wsl_storage_and_usb_mount(
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 1.4: QEMU & OVMF UEFI Virtual PC Emulation & Virtual FAT Architecture
+# ==============================================================================
+
+class QemuFirmwareMode(Enum):
+    """Firmware loading mode for UEFI boot in QEMU."""
+    BIOS_DIRECT = "bios_direct"        # -bios OVMF.fd (Single file, simplest)
+    PFLASH_SPLIT = "pflash_split"      # -drive if=pflash (Split CODE.fd and VARS.fd)
+    PFLASH_UNIFIED = "pflash_unified"  # -drive if=pflash (Single unified file)
+
+
+class QemuDriveFormat(Enum):
+    """Drive format and mounting scheme in QEMU."""
+    VFAT_DIR = "vfat_dir"        # format=raw,file=fat:rw:<dir> (Virtual FAT)
+    RAW_DISK = "raw_disk"        # format=raw,file=<img_path> (Disk image)
+    QCOW2_DISK = "qcow2_disk"    # format=qcow2,file=<img_path> (Copy-on-write image)
+
+
+@dataclass
+class QemuVirtualHardwareConfig:
+    """Virtual hardware devices and topology configuration for QEMU."""
+    memory_mb: int = 1024
+    smp_cores: int = 1
+    cpu_model: str = "qemu64"
+    enable_kvm: bool = False
+    enable_xhci: bool = True           # NEC uPD720200 USB 3.0 / xHCI controller
+    enable_usb_mouse: bool = False
+    enable_usb_kbd: bool = False
+    monitor_mode: str = "stdio"        # Terminal QEMU monitor
+    display_mode: str = "default"      # GUI display backend ("none", "default")
+    net_mode: str = "none"             # Network configuration ("none", "user")
+    gdb_debug: bool = False            # Freeze CPU at reset and wait for GDB
+    gdb_port: int = 1234
+    extra_args: list[str] = field(default_factory=list)
+
+
+@dataclass
+class QemuEmulatorConfig:
+    """Comprehensive QEMU + OVMF execution configuration generator & validator."""
+    ovmf_code_path: str = "/usr/share/OVMF/OVMF_CODE.fd"
+    ovmf_vars_path: Optional[str] = "/usr/share/OVMF/OVMF_VARS.fd"
+    disk_target: str = "disk_img"
+    drive_format: QemuDriveFormat = QemuDriveFormat.VFAT_DIR
+    firmware_mode: QemuFirmwareMode = QemuFirmwareMode.PFLASH_SPLIT
+    hardware: QemuVirtualHardwareConfig = field(default_factory=QemuVirtualHardwareConfig)
+
+    def build_command(self) -> list[str]:
+        """Construct full qemu-system-x86_64 argument list."""
+        cmd = ["qemu-system-x86_64"]
+
+        # 1. CPU and RAM topology
+        cmd.extend(["-m", f"{self.hardware.memory_mb}M"])
+        if self.hardware.smp_cores > 1:
+            cmd.extend(["-smp", str(self.hardware.smp_cores)])
+        cmd.extend(["-cpu", self.hardware.cpu_model])
+
+        if self.hardware.enable_kvm:
+            cmd.append("-enable-kvm")
+
+        # 2. Firmware (OVMF)
+        if self.firmware_mode == QemuFirmwareMode.BIOS_DIRECT:
+            cmd.extend(["-bios", self.ovmf_code_path])
+        elif self.firmware_mode == QemuFirmwareMode.PFLASH_SPLIT:
+            cmd.extend(["-drive", f"if=pflash,format=raw,readonly=on,file={self.ovmf_code_path}"])
+            if self.ovmf_vars_path:
+                cmd.extend(["-drive", f"if=pflash,format=raw,file={self.ovmf_vars_path}"])
+        elif self.firmware_mode == QemuFirmwareMode.PFLASH_UNIFIED:
+            cmd.extend(["-drive", f"if=pflash,format=raw,file={self.ovmf_code_path}"])
+
+        # 3. Storage Drive (Virtual FAT or Disk Image)
+        if self.drive_format == QemuDriveFormat.VFAT_DIR:
+            cmd.extend(["-drive", f"format=raw,file=fat:rw:{self.disk_target}"])
+        elif self.drive_format == QemuDriveFormat.RAW_DISK:
+            cmd.extend(["-drive", f"format=raw,file={self.disk_target}"])
+        elif self.drive_format == QemuDriveFormat.QCOW2_DISK:
+            cmd.extend(["-drive", f"format=qcow2,file={self.disk_target}"])
+
+        # 4. USB / xHCI controllers and devices
+        if self.hardware.enable_xhci:
+            cmd.extend(["-device", "nec-usb-xhci,id=xhci"])
+            if self.hardware.enable_usb_mouse:
+                cmd.extend(["-device", "usb-mouse,bus=xhci.0"])
+            if self.hardware.enable_usb_kbd:
+                cmd.extend(["-device", "usb-kbd,bus=xhci.0"])
+
+        # 5. Monitor and Display
+        if self.hardware.monitor_mode:
+            cmd.extend(["-monitor", self.hardware.monitor_mode])
+        if self.hardware.display_mode != "default":
+            cmd.extend(["-display", self.hardware.display_mode])
+
+        # 6. Network
+        if self.hardware.net_mode == "none":
+            cmd.extend(["-net", "none"])
+        elif self.hardware.net_mode == "user":
+            cmd.extend(["-net", "nic", "-net", "user"])
+
+        # 7. GDB Debugging
+        if self.hardware.gdb_debug:
+            cmd.extend(["-gdb", f"tcp::{self.hardware.gdb_port}", "-S"])
+
+        # 8. Extra arguments
+        if self.hardware.extra_args:
+            cmd.extend(self.hardware.extra_args)
+
+        return cmd
+
+    def build_command_str(self) -> str:
+        """Return formatted single-line or multi-line shell command string."""
+        args = self.build_command()
+        return " ".join(args)
+
+    def validate(self) -> list[str]:
+        """Validate configuration settings and return list of warnings/errors."""
+        issues = []
+        if self.hardware.memory_mb < 128:
+            issues.append(f"Guest memory ({self.hardware.memory_mb}MB) is too low for UEFI OVMF (minimum 128MB recommended).")
+        if not self.ovmf_code_path:
+            issues.append("OVMF code path cannot be empty.")
+        if self.firmware_mode == QemuFirmwareMode.PFLASH_SPLIT and not self.ovmf_vars_path:
+            issues.append("PFLASH_SPLIT mode selected but ovmf_vars_path is not specified.")
+        if not self.disk_target:
+            issues.append("disk_target path cannot be empty.")
+        return issues
+
+    def explain_parameters(self) -> list[dict[str, str]]:
+        """Return human-readable explanation table for each QEMU argument."""
+        explanations = [
+            {"flag": f"-m {self.hardware.memory_mb}M", "category": "Memory", "explanation": "仮想ゲストRAMの容量。UEFIファームウェアおよびOSカーネル実行空間を確保"},
+            {"flag": f"-cpu {self.hardware.cpu_model}", "category": "CPU", "explanation": "エミュレートするCPUモデル（64ビットLong Modeサポート必須）"},
+        ]
+        if self.firmware_mode == QemuFirmwareMode.PFLASH_SPLIT:
+            explanations.append({"flag": f"-drive if=pflash,...,file={self.ovmf_code_path}", "category": "Firmware", "explanation": "OVMF UEFIコードROMを読み取り専用パラレルフラッシュメモリとしてマッピング"})
+            if self.ovmf_vars_path:
+                explanations.append({"flag": f"-drive if=pflash,...,file={self.ovmf_vars_path}", "category": "Firmware", "explanation": "UEFI NVRAM不揮発性変数領域（ブート順序や環境設定）を書き換え可能フラッシュとしてマッピング"})
+        elif self.firmware_mode == QemuFirmwareMode.BIOS_DIRECT:
+            explanations.append({"flag": f"-bios {self.ovmf_code_path}", "category": "Firmware", "explanation": "単一バイナリとしてOVMFファームウェアをBIOS ROM空間に直接読み込み"})
+
+        if self.drive_format == QemuDriveFormat.VFAT_DIR:
+            explanations.append({"flag": f"-drive format=raw,file=fat:rw:{self.disk_target}", "category": "Storage", "explanation": f"ホスト上のディレクトリ '{self.disk_target}' をQEMUがオンザフライでFAT32仮想ブロックデバイスとしてマウント"})
+        elif self.drive_format == QemuDriveFormat.RAW_DISK:
+            explanations.append({"flag": f"-drive format=raw,file={self.disk_target}", "category": "Storage", "explanation": f"生ディスクイメージ '{self.disk_target}' をストレージドライブとしてアタッチ"})
+
+        if self.hardware.enable_xhci:
+            explanations.append({"flag": "-device nec-usb-xhci,id=xhci", "category": "I/O Device", "explanation": "USB 3.0 ホストコントローラ (xHCI) をPCIバス上に増設（MikanOS 第6章以降でマウス・キーボードを制御）"})
+
+        if self.hardware.monitor_mode:
+            explanations.append({"flag": f"-monitor {self.hardware.monitor_mode}", "category": "Debugging", "explanation": "対話型QEMUモニタを標準入出力（stdio）にバインド（CPUレジスタや物理メモリを動的検査可能）"})
+
+        if self.hardware.net_mode == "none":
+            explanations.append({"flag": "-net none", "category": "Network", "explanation": "ネットワークデバイスを無効化（不要なPXEブート遅延や割り込みオーバーヘッドを抑止）"})
+
+        return explanations
+
+
+class VirtualFatSimulator:
+    """Simulates QEMU's internal on-the-fly Virtual VFAT filesystem generator."""
+
+    def __init__(self, host_dir: str = "disk_img"):
+        self.host_dir = host_dir
+        self.sector_size = 512
+        self.sectors_per_cluster = 8  # 4096 bytes per cluster
+        self.reserved_sectors = 32
+        self.num_fats = 2
+        self.fat32_root_cluster = 2
+
+    def simulate_vfat_layout(self, files: dict[str, int]) -> dict[str, Any]:
+        """Simulate FAT32 partition metadata and cluster allocations for provided file size map.
+
+        files: dict mapping relative path (e.g. 'EFI/BOOT/BOOTX64.EFI') to file size in bytes.
+        """
+        cluster_size = self.sector_size * self.sectors_per_cluster
+        cluster_allocations = {}
+        current_cluster = self.fat32_root_cluster + 1  # Root dir uses cluster 2
+
+        # 1. Root directory allocation
+        cluster_allocations["/"] = {
+            "start_cluster": self.fat32_root_cluster,
+            "clusters": [self.fat32_root_cluster],
+            "size_bytes": cluster_size,
+        }
+
+        # 2. Allocate clusters for subdirectories and files
+        total_data_bytes = 0
+        file_entries = []
+
+        for rel_path, file_size in files.items():
+            parts = rel_path.replace("\\", "/").strip("/").split("/")
+            num_clusters = max(1, (file_size + cluster_size - 1) // cluster_size)
+            clusters = list(range(current_cluster, current_cluster + num_clusters))
+            current_cluster += num_clusters
+            total_data_bytes += num_clusters * cluster_size
+
+            cluster_allocations[rel_path] = {
+                "start_cluster": clusters[0],
+                "clusters": clusters,
+                "size_bytes": file_size,
+                "allocated_bytes": num_clusters * cluster_size,
+            }
+
+            file_entries.append({
+                "path": rel_path,
+                "name": parts[-1],
+                "size": file_size,
+                "start_cluster": clusters[0],
+                "clusters_count": num_clusters,
+                "attributes": 0x20 if "." in parts[-1] else 0x10,  # 0x20: Archive, 0x10: Directory
+            })
+
+        # Calculate FAT sectors
+        total_clusters = current_cluster + 128  # Slack clusters
+        fat_size_sectors = max(32, (total_clusters * 4 + self.sector_size - 1) // self.sector_size)
+        total_sectors = self.reserved_sectors + (self.num_fats * fat_size_sectors) + (total_clusters * self.sectors_per_cluster)
+
+        return {
+            "sector_size": self.sector_size,
+            "sectors_per_cluster": self.sectors_per_cluster,
+            "cluster_size_bytes": cluster_size,
+            "reserved_sectors": self.reserved_sectors,
+            "num_fats": self.num_fats,
+            "fat_size_sectors": fat_size_sectors,
+            "total_sectors": total_sectors,
+            "total_capacity_mb": round((total_sectors * self.sector_size) / (1024 * 1024), 2),
+            "root_cluster": self.fat32_root_cluster,
+            "files": file_entries,
+            "cluster_allocations": cluster_allocations,
+            "vfat_limitations": [
+                "書き込み遅延: QEMUプロセスのメモリ上にキャッシュされるため、ホストとゲストで同時編集するとデータ不整合が発生する",
+                "動的反映の制限: QEMU起動後にホスト側で追加した新規ファイルは再起動するまでゲストUEFIから見えない場合がある",
+                "ファイル名の大文字小文字: FAT32 Short Name (8.3形式) と Long File Name (LFN) の変換が発生する",
+            ],
+        }
+
+
+class UefiBootPhase(Enum):
+    """Execution phases in the UEFI standard platform boot sequence."""
+    SEC = "Security (SEC)"                    # Reset vector, CPU initialization, Cache-As-RAM
+    PEI = "Pre-EFI Initialization (PEI)"      # Memory detection, chipset initialization
+    DXE = "Driver Execution Environment (DXE)"# Core services, protocol database, GOP, FAT driver
+    BDS = "Boot Device Selection (BDS)"       # Finding bootable devices, ESP detection
+    TSL = "Transient System Load (TSL)"       # Loading \\EFI\\BOOT\\BOOTX64.EFI into RAM
+    RT = "Runtime (RT)"                       # OS kernel execution after ExitBootServices
+
+
+@dataclass
+class UefiBootStep:
+    """A distinct verification step in the QEMU + OVMF boot lifecycle."""
+    step_number: int
+    phase: UefiBootPhase
+    title: str
+    description: str
+    hardware_state: dict[str, str]
+    is_mikanos_target: bool = False
+
+
+class QemuUefiBootSequenceSimulator:
+    """Simulates the step-by-step UEFI boot sequence under QEMU + OVMF."""
+
+    @staticmethod
+    def get_boot_sequence() -> list[UefiBootStep]:
+        """Return the complete sequence of boot stages up to MikanOS hello.efi launch."""
+        return [
+            UefiBootStep(
+                step_number=1,
+                phase=UefiBootPhase.SEC,
+                title="CPU Reset Vector Execution",
+                description="QEMU仮想CPUにリセット信号が投入され、x86-64プロセッサは0xFFFFFFF0番地（Reset Vector）からOVMF SECコードを実行開始。CAR（Cache-As-RAM）を設定。",
+                hardware_state={"RIP": "0x00000000FFFFFFF0", "CR0": "0x00000010 (Real Mode / No Paging)", "RAM": "未初期化", "Firmware": "OVMF_CODE.fd"},
+            ),
+            UefiBootStep(
+                step_number=2,
+                phase=UefiBootPhase.PEI,
+                title="Pre-EFI Initialization & Memory Discovery",
+                description="OVMF PEIモジュールがQEMU仮想マザーボードのQ35/i440FXチップセットおよび仮想RAM（-m 1024M）を検出し、4GiB空間の物理メモリ初期化とページングを有効化。",
+                hardware_state={"RIP": "0x00000000008xxxxx", "CR0": "0x8001003B (Protected Mode / Paging)", "RAM": "1024 MiB 有効化", "Firmware": "OVMF PEI"},
+            ),
+            UefiBootStep(
+                step_number=3,
+                phase=UefiBootPhase.DXE,
+                title="Driver Execution Environment & Protocol Dispatch",
+                description="OVMF DXEコアが起動。64ビットLong Modeへ移行し、GOP（Graphics Output Protocol）、PCIドライバ、xHCIドライバ、FATファイルシステムドライバをメモリ上に順次ロード。",
+                hardware_state={"RIP": "0x0000000007xxxxxx", "CR0": "0x80010033 (64-bit Long Mode)", "CR3": "PML4 Page Table", "Firmware": "OVMF DXE Protocols"},
+            ),
+            UefiBootStep(
+                step_number=4,
+                phase=UefiBootPhase.BDS,
+                title="Boot Device Selection & ESP Partition Scan",
+                description="OVMF BDSフェーズが起動デバイスを走査。QEMU仮想FATドライブ（fat:rw:disk_img）を検出し、EFI System Partition (ESP) としてファイルシステムをマウント。",
+                hardware_state={"Device": "QEMU VFAT Virtual Disk", "Protocol": "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL", "Status": "ESP Volume Mounted"},
+            ),
+            UefiBootStep(
+                step_number=5,
+                phase=UefiBootPhase.TSL,
+                title="Locating and Loading \\EFI\\BOOT\\BOOTX64.EFI",
+                description="BDSはUEFI規格仕様に従い、ボリューム内のデフォルトブートローダパス '\\EFI\\BOOT\\BOOTX64.EFI' を検索。見つかったPE32+バイナリをメインメモリの空きページに展開。",
+                hardware_state={"Path": "\\EFI\\BOOT\\BOOTX64.EFI", "Action": "PE32+ Header Parsing & Image Relocation", "Status": "Success"},
+                is_mikanos_target=True,
+            ),
+            UefiBootStep(
+                step_number=6,
+                phase=UefiBootPhase.RT,
+                title="Transferring Control to EfiMain (MikanOS Execution)",
+                description="UEFIブートマネージャが展開先エントリポイント（EfiMain）に関数ポインタジャンプ。RCXにImageHandle、RDXにEFI_SYSTEM_TABLEポインタを渡して実行開始！",
+                hardware_state={"RCX": "ImageHandle", "RDX": "EFI_SYSTEM_TABLE*", "RSP": "16-byte aligned Stack", "Output": "Hello, world!"},
+                is_mikanos_target=True,
+            ),
+        ]
+
+
+class QemuMonitorSimulator:
+    """Simulates QEMU monitor interactive commands and their outputs."""
+
+    @staticmethod
+    def execute_command(command: str) -> dict[str, Any]:
+        """Simulate output for common QEMU monitor inspection commands."""
+        cmd = command.strip().lower()
+        if cmd == "info registers":
+            return {
+                "command": command,
+                "status": "ok",
+                "output": (
+                    "RAX=0000000000000000 RBX=00000000067ea018 RCX=00000000067ea018 RDX=00000000067ed018\n"
+                    "RSI=0000000000000000 RDI=0000000000000000 RBP=0000000007fa7f50 RSP=0000000007fa7f10\n"
+                    "R8 =0000000000000000 R9 =0000000000000000 R10=0000000000000000 R11=0000000000000000\n"
+                    "R12=0000000000000000 R13=0000000000000000 R14=0000000000000000 R15=0000000000000000\n"
+                    "RIP=00000000067e4010 RFL=00000202 [-------] CPL=0 II=0 A20=1 SMM=0 HLT=0\n"
+                    "CR0=80010033 CR2=0000000000000000 CR3=0000000007e01000 CR4=00000668"
+                ),
+                "explanation": "64ビット汎用レジスタ、命令ポインタ(RIP)、およびページング制御レジスタ(CR0/CR3/CR4)の状態を表示",
+            }
+        elif cmd.startswith("xp"):
+            return {
+                "command": command,
+                "status": "ok",
+                "output": "00000000067e4000: 0x4d 0x5a 0x90 0x00 0x03 0x00 0x00 0x00  MZ......\n00000000067e4008: 0x04 0x00 0x00 0x00 0xff 0xff 0x00 0x00  ........",
+                "explanation": "物理メモリ番地（Physical Memory）の生バイト列を直接ダンプ（PE32+ MZマジックナンバー 0x5A4D の確認）",
+            }
+        elif cmd == "info pci":
+            return {
+                "command": command,
+                "status": "ok",
+                "output": (
+                    "  Bus  0, device   0, function 0:\n"
+                    "    Host bridge: PCI device 8086:1237\n"
+                    "  Bus  0, device   1, function 0:\n"
+                    "    ISA bridge: PCI device 8086:7000\n"
+                    "  Bus  0, device   2, function 0:\n"
+                    "    VGA controller: PCI device 1234:1111\n"
+                    "  Bus  0, device   3, function 0:\n"
+                    "    USB controller: PCI device 1033:0194 (NEC xHCI USB 3.0)"
+                ),
+                "explanation": "QEMU仮想マザーボード上のPCIデバイス一覧を表示（xHCIコントローラのBus/Device/Functionの確認）",
+            }
+        elif cmd == "info block":
+            return {
+                "command": command,
+                "status": "ok",
+                "output": "drive0 (#block165): fat:rw:disk_img (raw)\n  ro=0, drv=raw, backing_file=fat:rw:disk_img",
+                "explanation": "QEMUにアタッチされている仮想ストレージブロックデバイスの状態を表示",
+            }
+        elif cmd == "system_reset":
+            return {
+                "command": command,
+                "status": "ok",
+                "output": "Resetting guest CPU and motherboard registers...",
+                "explanation": "仮想マシン全体を即座にコールドリセットし、Reset Vectorから再ブート",
+            }
+        elif cmd == "quit" or cmd == "q":
+            return {
+                "command": command,
+                "status": "ok",
+                "output": "QEMU emulator process terminating.",
+                "explanation": "QEMUプロセスを終了しホストシェルに戻る",
+            }
+        else:
+            return {
+                "command": command,
+                "status": "unknown",
+                "output": f"unknown command: '{command}'",
+                "explanation": "未定義のモニタコマンド",
+            }
+
+
+def plot_qemu_ovmf_boot_architecture(output_path: str = "1/result/fig1_7_qemu_ovmf_boot_architecture.png") -> str:
+    """Generate high-resolution architecture diagram of QEMU virtual PC & OVMF UEFI emulation."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(15.5, 9.8), dpi=300)
+
+    # Background Canvas
+    ax.add_patch(Rectangle((0.02, 0.02), 0.96, 0.94, facecolor="#F8F9FA", edgecolor="#CFD8DC", lw=2, zorder=0))
+
+    # 1. Host OS Layer (Bottom Container)
+    ax.add_patch(Rectangle((0.05, 0.05), 0.90, 0.22, facecolor="#ECEFF1", edgecolor="#90A4AE", lw=1.8, linestyle="--", zorder=1))
+    ax.text(0.07, 0.24, "Host Operating System (Linux / WSL2 / macOS)", fontsize=11.5, fontweight="bold", color="#37474F")
+
+    # Host Components
+    # Host disk_img Directory
+    ax.add_patch(Rectangle((0.08, 0.08), 0.26, 0.14, facecolor="#FFF3E0", edgecolor="#FF9800", lw=1.5, zorder=2))
+    ax.text(0.21, 0.18, "Host Directory (disk_img/)", fontsize=10, fontweight="bold", color="#E65100", ha="center")
+    ax.text(0.21, 0.12, "disk_img/\n └── EFI/\n      └── BOOT/\n           └── BOOTX64.EFI", fontsize=8.2, family="monospace", color="#5D4037", ha="center")
+
+    # Host OVMF Firmware Files
+    ax.add_patch(Rectangle((0.38, 0.08), 0.26, 0.14, facecolor="#E1F5FE", edgecolor="#0288D1", lw=1.5, zorder=2))
+    ax.text(0.51, 0.18, "OVMF Firmware Binary Files", fontsize=10, fontweight="bold", color="#01579B", ha="center")
+    ax.text(0.51, 0.12, "OVMF_CODE.fd (Code ROM, read-only)\nOVMF_VARS.fd (NVRAM vars, rw)\n(EDK II / TianoCore build)", fontsize=8.2, family="monospace", color="#0D47A1", ha="center")
+
+    # Host Terminal & GUI Window
+    ax.add_patch(Rectangle((0.68, 0.08), 0.24, 0.14, facecolor="#EDE7F6", edgecolor="#673AB7", lw=1.5, zorder=2))
+    ax.text(0.80, 0.18, "Host Display & I/O", fontsize=10, fontweight="bold", color="#4A148C", ha="center")
+    ax.text(0.80, 0.12, "• QEMU GUI Window (GOP display)\n• Terminal stdio (QEMU Monitor)\n• GDB Server (:1234)", fontsize=8.2, color="#311B92", ha="center")
+
+    # 2. QEMU Emulator Process Container (Middle to Top)
+    ax.add_patch(Rectangle((0.05, 0.31), 0.90, 0.63, facecolor="#E8EAF6", edgecolor="#3F51B5", lw=2.2, zorder=1))
+    ax.text(0.07, 0.91, "QEMU Virtual PC Process (qemu-system-x86_64)", fontsize=13, fontweight="bold", color="#1A237E")
+
+    # Virtual Hardware Box 1: CPU & Memory
+    ax.add_patch(Rectangle((0.08, 0.60), 0.40, 0.28, facecolor="#FFFFFF", edgecolor="#3949AB", lw=1.6, zorder=2))
+    ax.text(0.10, 0.84, "Virtual CPU & Memory Subsystem", fontsize=11, fontweight="bold", color="#283593")
+    ax.text(0.10, 0.77, "• Architecture: x86-64 (qemu64 / host)\n• Modes: Real Mode → Protected Mode → 64-bit Long Mode\n• RAM: 1024 MiB Guest Physical Memory (-m 1024M)\n• MMU: 4-Level Paging (CR3), CR0.PG=1\n• Execution Engine: TCG (JIT) / KVM (Hardware Assisted)", fontsize=8.5, color="#1A237E")
+
+    # Virtual Hardware Box 2: OVMF UEFI Firmware ROM
+    ax.add_patch(Rectangle((0.52, 0.60), 0.40, 0.28, facecolor="#E0F2F1", edgecolor="#00897B", lw=1.6, zorder=2))
+    ax.text(0.54, 0.84, "OVMF UEFI BIOS Firmware Space", fontsize=11, fontweight="bold", color="#004D40")
+    ax.text(0.54, 0.76, "• Parallel Flash 0: OVMF_CODE.fd (Mapped to Top of 4GB Space)\n• Parallel Flash 1: OVMF_VARS.fd (Simulated NVRAM variables)\n• Reset Vector: 0xFFFFFFF0 (Jumps directly into SEC core)\n• Boot Manager (BDS): Scans attached block devices for ESP\n• EFI Protocols: GOP, SimpleFileSystem, BlockIo, xHCI", fontsize=8.5, color="#004D40")
+
+    # Virtual Hardware Box 3: Storage & Virtual FAT Driver
+    ax.add_patch(Rectangle((0.08, 0.35), 0.40, 0.22, facecolor="#FFF8E1", edgecolor="#FFA000", lw=1.6, zorder=2))
+    ax.text(0.10, 0.53, "Storage Controller: Virtual VFAT", fontsize=11, fontweight="bold", color="#FF6F00")
+    ax.text(0.10, 0.45, "• Mode: -drive format=raw,file=fat:rw:disk_img\n• On-the-fly FAT32 Partition & BPB Generation\n• Simulated LBA Sectors (512 bytes / sector)\n• Maps host disk_img/ to EFI System Partition (ESP)\n• Exposes standard IDE / AHCI block interface to OVMF", fontsize=8.5, color="#E65100")
+
+    # Virtual Hardware Box 4: I/O Devices & Monitor
+    ax.add_patch(Rectangle((0.52, 0.35), 0.40, 0.22, facecolor="#F3E5F5", edgecolor="#8E24AA", lw=1.6, zorder=2))
+    ax.text(0.54, 0.53, "Virtual Devices & Debug Monitors", fontsize=11, fontweight="bold", color="#4A148C")
+    ax.text(0.54, 0.45, "• xHCI Controller: NEC uPD720200 USB 3.0 (-device nec-usb-xhci)\n• GOP Display: Linear FrameBuffer (1024x768 32bpp BGR/RGB)\n• QEMU Monitor: -monitor stdio (info registers, xp, info pci)\n• Serial Port: UART 16550A (COM1 at I/O port 0x3F8)\n• Interrupts: Local APIC & IO-APIC Simulation", fontsize=8.5, color="#4A148C")
+
+    # Connecting Arrows
+    # Host Dir -> Virtual FAT
+    ax.annotate(
+        "On-the-fly FAT32 Synthesis\n(Directory-to-Blocks Mapping)",
+        xy=(0.28, 0.35), xytext=(0.21, 0.22),
+        arrowprops=dict(arrowstyle="->", color="#E65100", lw=2),
+        ha="center", va="center", fontsize=8.5, fontweight="bold", color="#BF360C"
+    )
+
+    # Host Firmware -> OVMF ROM
+    ax.annotate(
+        "Mapped as Parallel Flash (-drive if=pflash)",
+        xy=(0.72, 0.60), xytext=(0.51, 0.22),
+        arrowprops=dict(arrowstyle="->", color="#0288D1", lw=2),
+        ha="center", va="center", fontsize=8.5, fontweight="bold", color="#01579B"
+    )
+
+    # QEMU Monitor -> Host Terminal
+    ax.annotate(
+        "Bidirectional stdio Monitor Stream",
+        xy=(0.80, 0.22), xytext=(0.72, 0.35),
+        arrowprops=dict(arrowstyle="<->", color="#8E24AA", lw=2),
+        ha="center", va="center", fontsize=8.5, fontweight="bold", color="#4A148C"
+    )
+
+    # Virtual FAT -> OVMF BDS
+    ax.annotate(
+        "ESP Scan & \\EFI\\BOOT\\BOOTX64.EFI Load",
+        xy=(0.52, 0.70), xytext=(0.40, 0.53),
+        arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2.2),
+        ha="center", va="center", fontsize=9, fontweight="bold", color="#1B5E20"
+    )
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0.02, 0.96)
+    ax.axis("off")
+    ax.set_title("QEMU Virtual PC & OVMF UEFI Firmware Architecture\n(Hardware Emulation, Virtual VFAT Storage, and Debugging Infrastructure)", fontsize=13.5, fontweight="bold", color="#0D47A1", pad=15)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_virtual_fat_and_boot_flow(output_path: str = "1/result/fig1_8_virtual_fat_and_boot_flow.png") -> str:
+    """Generate high-resolution visual comparison of Virtual FAT synthesis and UEFI boot sequence."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_fat, ax_boot) = plt.subplots(1, 2, figsize=(16.0, 10.0), dpi=300)
+
+    # -------------------------------------------------------------
+    # Left Subplot: Virtual FAT32 On-the-fly Synthesis
+    # -------------------------------------------------------------
+    ax_fat.set_title("(A) QEMU Virtual FAT (VFAT) On-the-Fly Structure\n(fat:rw:disk_img Directory to FAT32 Sectors)", fontsize=12, fontweight="bold", color="#E65100", pad=12)
+    ax_fat.set_xlim(0, 1.0)
+    ax_fat.set_ylim(0, 1.0)
+    ax_fat.axis("off")
+
+    # Host Directory Box (Top Left)
+    ax_fat.add_patch(Rectangle((0.05, 0.72), 0.90, 0.24, facecolor="#FFF3E0", edgecolor="#FF9800", lw=1.8))
+    ax_fat.text(0.08, 0.91, "Host Filesystem Directory Hierarchy", fontsize=10.5, fontweight="bold", color="#E65100")
+    tree_text = (
+        "disk_img/\n"
+        " └── EFI/\n"
+        "      └── BOOT/\n"
+        "           └── BOOTX64.EFI   (PE32+ Executable, ~1.5 KiB)"
+    )
+    ax_fat.text(0.12, 0.78, tree_text, family="monospace", fontsize=9.2, color="#3E2723")
+
+    # Arrow Down
+    ax_fat.annotate(
+        "QEMU block/vvfat.c synthesizes FAT32 sectors in RAM",
+        xy=(0.50, 0.65), xytext=(0.50, 0.72),
+        arrowprops=dict(arrowstyle="->", color="#D84315", lw=2.2),
+        ha="center", va="center", fontsize=8.8, fontweight="bold", color="#BF360C"
+    )
+
+    # FAT32 Sector Layout (Bottom Left)
+    ax_fat.add_patch(Rectangle((0.05, 0.05), 0.90, 0.58, facecolor="#FBE9E7", edgecolor="#D84315", lw=1.8))
+    ax_fat.text(0.08, 0.59, "Synthesized Virtual FAT32 Block Device (LBA Sectors)", fontsize=10.5, fontweight="bold", color="#BF360C")
+
+    # Sector Slices
+    slices = [
+        ("Sector 0", "MBR / Partition Table (ESP Type 0xEF)", "#FFCCBC", 0.51),
+        ("Sectors 1–31", "FAT32 Reserved Sectors (BPB, FSInfo)", "#FFE0B2", 0.42),
+        ("Sectors 32–N", "FAT #1 (Cluster Allocation Table: 2→3→EOF)", "#FFF9C4", 0.33),
+        ("Sectors N–2N", "FAT #2 (Mirrored Backup FAT Table)", "#FFF9C4", 0.24),
+        ("Data Area", "Cluster 2: Root Dir ('EFI' dir entry 0x10)\nCluster 3: EFI Dir ('BOOT' dir entry 0x10)\nCluster 4: BOOT Dir ('BOOTX64.EFI' 0x20)\nClusters 5–6: Raw Binary Data of BOOTX64.EFI", "#C8E6C9", 0.10),
+    ]
+
+    for label, desc, color, y_pos in slices:
+        h = 0.07 if "Data Area" not in label else 0.12
+        ax_fat.add_patch(Rectangle((0.08, y_pos), 0.84, h, facecolor=color, edgecolor="#5D4037", lw=1.2))
+        ax_fat.text(0.10, y_pos + h - 0.025, label, fontsize=8.8, fontweight="bold", color="#212121")
+        ax_fat.text(0.35, y_pos + h/2, desc, fontsize=7.8, family="monospace", color="#37474F", va="center")
+
+    # -------------------------------------------------------------
+    # Right Subplot: Step-by-Step UEFI Boot Sequence Flow
+    # -------------------------------------------------------------
+    ax_boot.set_title("(B) OVMF UEFI Virtual Boot Sequence Flow\n(From Power-On Reset Vector to MikanOS EfiMain)", fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+    ax_boot.set_xlim(0, 1.0)
+    ax_boot.set_ylim(0, 1.0)
+    ax_boot.axis("off")
+
+    stages = [
+        ("1. Reset Vector (0xFFFFFFF0)", "CPU starts execution in Real Mode at top of 4GB.\nOVMF SEC core sets up Cache-As-RAM (CAR).", "#BBDEFB", 0.84),
+        ("2. PEI (Pre-EFI Initialization)", "Initializes guest RAM (1024M), detects chipset,\nand transitions CPU to 32-bit Protected Mode.", "#B3E5FC", 0.68),
+        ("3. DXE (Driver Execution Env)", "Switches to 64-bit Long Mode (PML4 paging).\nDispatches GOP, PCI, xHCI, and FAT filesystem drivers.", "#B2EBF2", 0.52),
+        ("4. BDS (Boot Device Selection)", "Scans virtual devices. Detects Virtual FAT device\nas valid EFI System Partition (ESP).", "#C8E6C9", 0.36),
+        ("5. Path Resolution & Relocation", "Finds '\\EFI\\BOOT\\BOOTX64.EFI'. Reads PE32+ header,\nallocates memory pages, and maps sections.", "#FFF59D", 0.20),
+        ("6. Jump to EfiMain (MikanOS)", "Calls EfiMain(ImageHandle, SystemTable).\nOutputs 'Hello, world!' to UEFI ConOut console!", "#FFCC80", 0.04),
+    ]
+
+    for title, desc, color, y_pos in stages:
+        h = 0.12
+        ax_boot.add_patch(Rectangle((0.05, y_pos), 0.90, h, facecolor=color, edgecolor="#1565C0", lw=1.4))
+        ax_boot.text(0.08, y_pos + 0.085, title, fontsize=9.2, fontweight="bold", color="#0D47A1")
+        ax_boot.text(0.08, y_pos + 0.035, desc, fontsize=8.0, color="#263238")
+
+        if y_pos > 0.05:
+            # Flow Arrow down
+            ax_boot.annotate(
+                "",
+                xy=(0.50, y_pos), xytext=(0.50, y_pos - 0.035),
+                arrowprops=dict(arrowstyle="<-", color="#1565C0", lw=1.8),
+            )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
 
 
 

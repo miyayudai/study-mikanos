@@ -56,6 +56,17 @@ from common.os_sim import (
     WSLStorageSimulator,
     plot_wsl1_vs_wsl2_architecture,
     plot_wsl_storage_and_usb_mount,
+    QemuFirmwareMode,
+    QemuDriveFormat,
+    QemuVirtualHardwareConfig,
+    QemuEmulatorConfig,
+    VirtualFatSimulator,
+    UefiBootPhase,
+    UefiBootStep,
+    QemuUefiBootSequenceSimulator,
+    QemuMonitorSimulator,
+    plot_qemu_ovmf_boot_architecture,
+    plot_virtual_fat_and_boot_flow,
 )
 
 __all__ = [
@@ -114,4 +125,15 @@ __all__ = [
     "WSLStorageSimulator",
     "plot_wsl1_vs_wsl2_architecture",
     "plot_wsl_storage_and_usb_mount",
+    "QemuFirmwareMode",
+    "QemuDriveFormat",
+    "QemuVirtualHardwareConfig",
+    "QemuEmulatorConfig",
+    "VirtualFatSimulator",
+    "UefiBootPhase",
+    "UefiBootStep",
+    "QemuUefiBootSequenceSimulator",
+    "QemuMonitorSimulator",
+    "plot_qemu_ovmf_boot_architecture",
+    "plot_virtual_fat_and_boot_flow",
 ]

@@ -39,6 +39,9 @@ add_test(NAME test_ch01_block_device_inspector COMMAND ch01_block_device_inspect
 add_executable(ch01_wsl_environment_inspector src/ch01/wsl_environment_inspector.cpp)
 add_test(NAME test_ch01_wsl_environment_inspector COMMAND ch01_wsl_environment_inspector --demo)
 
+add_executable(ch01_qemu_launch_builder src/ch01/qemu_launch_builder.cpp)
+add_test(NAME test_ch01_qemu_launch_builder COMMAND ch01_qemu_launch_builder)
+
 
 
 
