@@ -279,3 +279,257 @@ class MockKernelSyscallDispatcher:
         return "".join(self.stdout_buffer)
 
 
+# ==============================================================================
+# Chapter 0 Section 0.3: Build Pipeline, Freestanding Environment & UEFI Media
+# ==============================================================================
+
+class BuildStage(Enum):
+    """Phases in the bare-metal OS compilation and linking pipeline."""
+    PREPROCESS = "Preprocessing (cpp)"
+    COMPILE = "Compilation (clang++ / gcc)"
+    ASSEMBLE = "Assembly (as / nasm)"
+    LINK = "Linking (ld.lld)"
+
+
+@dataclass
+class CompilerFlag:
+    """Represents a compiler / linker flag used in bare-metal OS development."""
+    name: str
+    purpose: str
+    is_freestanding_required: bool
+    explanation: str
+
+
+FREESTANDING_FLAGS: list[CompilerFlag] = [
+    CompilerFlag(
+        name="-ffreestanding",
+        purpose="Require freestanding environment without host standard library runtime",
+        is_freestanding_required=True,
+        explanation=(
+            "Directs the compiler to assume that standard library headers and runtime startup "
+            "(such as the host main() wrapper and glibc crt0) do not exist."
+        ),
+    ),
+    CompilerFlag(
+        name="-nostdlib",
+        purpose="Do not use standard system startup files or libraries when linking",
+        is_freestanding_required=True,
+        explanation=(
+            "Prevents linking against the host C runtime (crt0.o, libc.so, libpthread.so), "
+            "which makes userland system calls to the host Linux kernel."
+        ),
+    ),
+    CompilerFlag(
+        name="-mno-red-zone",
+        purpose="Disable the 128-byte red zone below the stack pointer (%rsp)",
+        is_freestanding_required=True,
+        explanation=(
+            "The System V AMD64 ABI reserves 128 bytes below %rsp as a scratchpad known as the 'Red Zone'. "
+            "In bare-metal OS kernels, asynchronous hardware interrupts will clobber this space if it is not explicitly disabled."
+        ),
+    ),
+    CompilerFlag(
+        name="-fno-exceptions",
+        purpose="Disable C++ exception handling tables and runtime unwinder",
+        is_freestanding_required=True,
+        explanation=(
+            "C++ exception handling (try/catch/throw) requires libunwind and complex personality routines, "
+            "which are unavailable in freestanding kernel code."
+        ),
+    ),
+    CompilerFlag(
+        name="-fno-rtti",
+        purpose="Disable Run-Time Type Information (dynamic_cast and typeid)",
+        is_freestanding_required=True,
+        explanation=(
+            "Eliminates overhead and runtime dependency on type_info structures and vtable metadata "
+            "when bare-metal kernels do not provide host C++ ABI support."
+        ),
+    ),
+]
+
+
+@dataclass
+class BuildArtifact:
+    """Artifact produced by a stage in the build pipeline."""
+    stage: BuildStage
+    filename: str
+    file_format: str
+    description: str
+    size_bytes: int
+
+
+class BuildPipelineSimulator:
+    """Simulates the 4-phase transformation from C++/ASM source to bare-metal binary."""
+
+    def __init__(self, source_lines: int = 500, is_freestanding: bool = True, disable_red_zone: bool = True) -> None:
+        self.source_lines = source_lines
+        self.is_freestanding = is_freestanding
+        self.disable_red_zone = disable_red_zone
+
+    def validate_flags(self, flags: list[str]) -> tuple[bool, list[str]]:
+        """Validate if required freestanding flags are present."""
+        errors: list[str] = []
+        flag_set = set(flags)
+
+        for required in FREESTANDING_FLAGS:
+            if required.is_freestanding_required and required.name not in flag_set:
+                errors.append(f"Missing required freestanding flag '{required.name}': {required.purpose}")
+
+        return (len(errors) == 0, errors)
+
+    def run_pipeline(self, target_type: str = "uefi_bootloader") -> list[BuildArtifact]:
+        """Execute simulation of the build stages and return generated artifacts."""
+        artifacts: list[BuildArtifact] = []
+
+        # Stage 1: Preprocessing
+        preprocessed_lines = self.source_lines * 4 if self.is_freestanding else self.source_lines * 50
+        preprocessed_size = preprocessed_lines * 32
+        artifacts.append(
+            BuildArtifact(
+                stage=BuildStage.PREPROCESS,
+                filename="main.i",
+                file_format="Preprocessed C++ Text",
+                description="Macro expansion, comment stripping, and freestanding header inclusion (<stdint.h>, <stddef.h>).",
+                size_bytes=preprocessed_size,
+            )
+        )
+
+        # Stage 2: Compilation (AST -> LLVM IR -> x86-64 Assembly)
+        asm_lines = int(self.source_lines * 2.5)
+        asm_size = asm_lines * 28
+        artifacts.append(
+            BuildArtifact(
+                stage=BuildStage.COMPILE,
+                filename="main.s",
+                file_format="x86-64 Assembly (AT&T or Intel syntax)",
+                description=f"Clang++ compilation (-O2) with -mno-red-zone={'enabled' if self.disable_red_zone else 'disabled'}.",
+                size_bytes=asm_size,
+            )
+        )
+
+        # Stage 3: Assembly (Assembly -> Relocatable Machine Code Object)
+        obj_size = int(asm_size * 0.4) + 1024  # ELF/COFF headers + sections + symbol table
+        artifacts.append(
+            BuildArtifact(
+                stage=BuildStage.ASSEMBLE,
+                filename="main.o",
+                file_format="COFF / ELF64 Relocatable Object",
+                description="Machine code opcodes, .text, .data, .rodata, .bss, and unresolved relocation symbols.",
+                size_bytes=obj_size,
+            )
+        )
+
+        # Stage 4: Linking
+        if target_type == "uefi_bootloader":
+            out_name = "BOOTX64.EFI"
+            out_fmt = "PE32+ (UEFI x86-64 Executable)"
+            out_desc = "Linked PE32+ application adhering to UEFI specification, entry point EfiMain/UefiMain."
+            final_size = obj_size + 4096  # PE header + Data Directories
+        else:
+            out_name = "kernel.elf"
+            out_fmt = "ELF64 Executable"
+            out_desc = "Position-independent 64-bit kernel binary linked with custom linker script (KernelEntry)."
+            final_size = obj_size + 8192
+
+        artifacts.append(
+            BuildArtifact(
+                stage=BuildStage.LINK,
+                filename=out_name,
+                file_format=out_fmt,
+                description=out_desc,
+                size_bytes=final_size,
+            )
+        )
+
+        return artifacts
+
+
+@dataclass
+class BootMediaFile:
+    """Represents a file placed on a UEFI FAT filesystem boot partition."""
+    path: str
+    size_bytes: int
+    file_type: str
+
+
+class UEFIBootMediaValidator:
+    """Validates UEFI FAT-formatted boot media directory structure and mandatory binaries."""
+
+    REQUIRED_BOOTLOADER_PATH = "/EFI/BOOT/BOOTX64.EFI"
+    KERNEL_PATH = "/kernel.elf"
+
+    def __init__(self, filesystem_type: str = "FAT32") -> None:
+        self.filesystem_type = filesystem_type.upper()
+        self.files: dict[str, BootMediaFile] = {}
+
+    def add_file(self, path: str, size_bytes: int, file_type: str) -> None:
+        """Add a file to the simulated boot media layout."""
+        norm_path = path.replace("\\", "/").strip()
+        if not norm_path.startswith("/"):
+            norm_path = "/" + norm_path
+        self.files[norm_path.upper()] = BootMediaFile(path=norm_path, size_bytes=size_bytes, file_type=file_type)
+
+    def validate(self) -> tuple[bool, list[str]]:
+        """Validate if the boot media meets UEFI specifications."""
+        errors: list[str] = []
+
+        if self.filesystem_type not in ("FAT12", "FAT16", "FAT32"):
+            errors.append(f"Invalid filesystem '{self.filesystem_type}'; UEFI specification requires FAT12/FAT16/FAT32.")
+
+        if self.REQUIRED_BOOTLOADER_PATH.upper() not in self.files:
+            errors.append(f"Missing mandatory UEFI fallback bootloader at '{self.REQUIRED_BOOTLOADER_PATH}'.")
+        else:
+            bl = self.files[self.REQUIRED_BOOTLOADER_PATH.upper()]
+            if bl.size_bytes == 0:
+                errors.append(f"Bootloader '{self.REQUIRED_BOOTLOADER_PATH}' is empty (0 bytes).")
+            if "PE32+" not in bl.file_type and "EFI" not in bl.file_type:
+                errors.append(
+                    f"Bootloader format must be PE32+ (x86-64 UEFI executable), got '{bl.file_type}'."
+                )
+
+        return (len(errors) == 0, errors)
+
+    def get_file_list(self) -> list[BootMediaFile]:
+        """Return list of files installed on media."""
+        return list(self.files.values())
+
+
+@dataclass
+class QemuLaunchConfig:
+    """Configuration generator for booting MikanOS under QEMU and OVMF UEFI firmware."""
+
+    ovmf_path: str = "/usr/share/OVMF/OVMF_CODE.fd"
+    disk_image: str = "disk.img"
+    memory: str = "2G"
+    cpu: str = "qemu64"
+    enable_kvm: bool = False
+    gdb_debug: bool = False
+    gdb_port: int = 1234
+    monitor: str = "stdio"
+
+    def build_command(self) -> list[str]:
+        """Construct full qemu-system-x86_64 command invocation."""
+        cmd = ["qemu-system-x86_64", "-m", self.memory, "-cpu", self.cpu]
+        if self.enable_kvm:
+            cmd.append("-enable-kvm")
+        cmd.extend(["-drive", f"if=pflash,format=raw,readonly=on,file={self.ovmf_path}"])
+        cmd.extend(["-drive", f"if=ide,format=raw,file={self.disk_image}"])
+        if self.monitor:
+            cmd.extend(["-monitor", self.monitor])
+        if self.gdb_debug:
+            cmd.extend(["-gdb", f"tcp::{self.gdb_port}", "-S"])
+        return cmd
+
+    def explain_options(self) -> list[tuple[str, str]]:
+        """Explain the rationale behind each critical QEMU flag."""
+        return [
+            ("-m 2G", "Allocates 2 Gigabytes of virtual guest RAM to match modern PC specifications."),
+            ("-drive if=pflash,...", "Loads OVMF UEFI BIOS firmware into simulated parallel flash memory."),
+            ("-drive if=ide,...", "Attaches FAT32 disk.img containing EFI/BOOT/BOOTX64.EFI as primary drive."),
+            ("-monitor stdio", "Enables interactive QEMU monitor in terminal for CPU/MMU/register inspection."),
+            ("-gdb tcp::1234 -S", "Freezes CPU at reset vector and waits for GDB remote debugger connection."),
+        ]
+
+
+

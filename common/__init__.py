@@ -2,6 +2,12 @@
 
 from common.os_sim import (
     BitmapMemoryManager,
+    BootMediaFile,
+    BuildArtifact,
+    BuildPipelineSimulator,
+    BuildStage,
+    CompilerFlag,
+    FREESTANDING_FLAGS,
     FrameBufferSimulator,
     HISTORICAL_OS_METRICS,
     MIKANOS_GROWTH_METRICS,
@@ -10,12 +16,20 @@ from common.os_sim import (
     OSCodebaseMetric,
     PageTableAddress,
     PixelFormat,
+    QemuLaunchConfig,
     SyscallSpec,
+    UEFIBootMediaValidator,
     setup_plot_style,
 )
 
 __all__ = [
     "BitmapMemoryManager",
+    "BootMediaFile",
+    "BuildArtifact",
+    "BuildPipelineSimulator",
+    "BuildStage",
+    "CompilerFlag",
+    "FREESTANDING_FLAGS",
     "FrameBufferSimulator",
     "HISTORICAL_OS_METRICS",
     "MIKANOS_GROWTH_METRICS",
@@ -24,6 +38,8 @@ __all__ = [
     "OSCodebaseMetric",
     "PageTableAddress",
     "PixelFormat",
+    "QemuLaunchConfig",
     "SyscallSpec",
+    "UEFIBootMediaValidator",
     "setup_plot_style",
 ]
