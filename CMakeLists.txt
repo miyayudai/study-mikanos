@@ -15,3 +15,6 @@ enable_testing()
 add_executable(ch00_os_scale_analyzer src/ch00/os_scale_analyzer.cpp)
 add_test(NAME test_ch00_os_scale_analyzer COMMAND ch00_os_scale_analyzer)
 
+add_executable(ch00_os_posix_architecture src/ch00/os_posix_architecture.cpp)
+add_test(NAME test_ch00_os_posix_architecture COMMAND ch00_os_posix_architecture)
+

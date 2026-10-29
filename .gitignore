@@ -61,6 +61,7 @@ htmlcov/
 # Environments & Secrets
 .env
 .env.local
+make_nb.py
 
 # OS
 .DS_Store

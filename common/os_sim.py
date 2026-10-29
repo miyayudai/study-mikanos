@@ -207,3 +207,75 @@ MIKANOS_GROWTH_METRICS: tuple[tuple[str, int, int, str], ...] = (
     ("day30f", 92, 11_596, "Demand Paging, CoW, UTF-8/FreeType, Pipes & Apps"),
 )
 
+
+@dataclass(frozen=True)
+class SyscallSpec:
+    """Represents a system call specification in MikanOS and POSIX."""
+
+    number: int
+    name: str
+    abi_register: str
+    description: str
+    is_posix_standard: bool
+
+
+MIKANOS_SYSCALL_SPECS: tuple[SyscallSpec, ...] = (
+    SyscallSpec(1, "LogString", "RDI, RSI, RDX", "Print string to kernel debug log", False),
+    SyscallSpec(2, "PutString", "RDI, RSI, RDX", "Print string to terminal window", True),
+    SyscallSpec(3, "Exit", "RDI", "Terminate running application", True),
+    SyscallSpec(4, "OpenWindow", "RDI, RSI, RDX, R10, R8", "Create GUI window and allocate layer", False),
+    SyscallSpec(5, "WinWriteString", "RDI, RSI, RDX, R10, R8", "Draw text inside window", False),
+    SyscallSpec(6, "WinFillRectangle", "RDI, RSI, RDX, R10, R8, R9", "Fill rectangular area in window", False),
+    SyscallSpec(7, "GetCurrentTick", "-", "Get elapsed system timer ticks", False),
+    SyscallSpec(8, "WinRedraw", "RDI", "Redraw modified window buffer", False),
+    SyscallSpec(9, "WinDrawLine", "RDI, RSI, RDX, R10, R8, R9", "Draw line using Bresenham algorithm", False),
+    SyscallSpec(10, "CloseWindow", "RDI", "Close window and destroy layer", False),
+    SyscallSpec(11, "ReadEvent", "RDI, RSI", "Block until next event (key/mouse/timer)", False),
+)
+
+
+class MockKernelSyscallDispatcher:
+    """Simulates user-to-kernel mode switch and system call dispatching for Section 0.2."""
+
+    def __init__(self) -> None:
+        self.stdout_buffer: list[str] = []
+        self.stderr_buffer: list[str] = []
+        self.syscall_history: list[tuple[int, str, int]] = []  # (num, name, ret)
+
+    def dispatch(self, syscall_num: int, arg1: int, arg2: str | bytes | int, arg3: int = 0) -> int:
+        """Simulate kernel entry via SYSCALL instruction.
+
+        Args:
+            syscall_num: System call number passed in RAX.
+            arg1: First argument (e.g. file descriptor or window ID).
+            arg2: Second argument (e.g. buffer pointer / string content).
+            arg3: Third argument (e.g. byte count).
+
+        Returns:
+            Return code returned in RAX to user space.
+        """
+        # MikanOS PutString (2) / POSIX write (1 = stdout, 2 = stderr)
+        if syscall_num == 2:
+            content = str(arg2)
+            if arg1 == 1:
+                self.stdout_buffer.append(content)
+            elif arg1 == 2:
+                self.stderr_buffer.append(content)
+            else:
+                self.syscall_history.append((syscall_num, "PutString", -9))  # EBADF
+                return -9
+            ret = len(content.encode("utf-8"))
+            self.syscall_history.append((syscall_num, "PutString", ret))
+            return ret
+        elif syscall_num == 3:  # Exit
+            self.syscall_history.append((syscall_num, "Exit", arg1))
+            return 0
+        else:
+            self.syscall_history.append((syscall_num, "Unknown", -38))  # ENOSYS
+            return -38
+
+    def get_stdout(self) -> str:
+        """Return accumulated standard output."""
+        return "".join(self.stdout_buffer)
+
+

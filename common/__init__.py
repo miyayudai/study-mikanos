@@ -5,9 +5,12 @@ from common.os_sim import (
     FrameBufferSimulator,
     HISTORICAL_OS_METRICS,
     MIKANOS_GROWTH_METRICS,
+    MIKANOS_SYSCALL_SPECS,
+    MockKernelSyscallDispatcher,
     OSCodebaseMetric,
     PageTableAddress,
     PixelFormat,
+    SyscallSpec,
     setup_plot_style,
 )
 
@@ -16,8 +19,11 @@ __all__ = [
     "FrameBufferSimulator",
     "HISTORICAL_OS_METRICS",
     "MIKANOS_GROWTH_METRICS",
+    "MIKANOS_SYSCALL_SPECS",
+    "MockKernelSyscallDispatcher",
     "OSCodebaseMetric",
     "PageTableAddress",
     "PixelFormat",
+    "SyscallSpec",
     "setup_plot_style",
 ]
