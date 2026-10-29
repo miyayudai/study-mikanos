@@ -63,6 +63,8 @@ htmlcov/
 .env
 .env.local
 make_nb.py
+scratch/
+
 
 # OS
 .DS_Store

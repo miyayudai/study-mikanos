@@ -1,6 +1,8 @@
 """Common OS simulation and visualization utilities for study-mikanos."""
 
 from common.os_sim import (
+    ArchitectureModule,
+    ArchitecturePhase,
     BareMetalDebugSimulator,
     BitmapMemoryManager,
     BootMediaFile,
@@ -18,6 +20,7 @@ from common.os_sim import (
     MIKANOS_GROWTH_METRICS,
     MIKANOS_KEY_MILESTONES,
     MIKANOS_SYSCALL_SPECS,
+    MikanOSArchitectureRoadmap,
     MockKernelSyscallDispatcher,
     OSCodebaseMetric,
     PageTableAddress,
@@ -27,11 +30,15 @@ from common.os_sim import (
     SmallStepPhase,
     SmallStepProgressTracker,
     SyscallSpec,
+    TechStackComparison,
+    TechStackFeature,
     UEFIBootMediaValidator,
     setup_plot_style,
 )
 
 __all__ = [
+    "ArchitectureModule",
+    "ArchitecturePhase",
     "BareMetalDebugSimulator",
     "BitmapMemoryManager",
     "BootMediaFile",
@@ -49,6 +56,7 @@ __all__ = [
     "MIKANOS_GROWTH_METRICS",
     "MIKANOS_KEY_MILESTONES",
     "MIKANOS_SYSCALL_SPECS",
+    "MikanOSArchitectureRoadmap",
     "MockKernelSyscallDispatcher",
     "OSCodebaseMetric",
     "PageTableAddress",
@@ -58,6 +66,8 @@ __all__ = [
     "SmallStepPhase",
     "SmallStepProgressTracker",
     "SyscallSpec",
+    "TechStackComparison",
+    "TechStackFeature",
     "UEFIBootMediaValidator",
     "setup_plot_style",
 ]

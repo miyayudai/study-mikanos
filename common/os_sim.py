@@ -23,6 +23,8 @@ def setup_plot_style() -> None:
     plt.rcParams["axes.grid"] = True
     plt.rcParams["grid.alpha"] = 0.3
     plt.rcParams["font.size"] = 10
+    plt.rcParams["font.family"] = ["Noto Sans CJK JP", "Droid Sans Fallback", "DejaVu Sans", "sans-serif"]
+
 
 
 @dataclass(frozen=True)
@@ -734,6 +736,344 @@ class QemuVsHardwareComparator:
                 impact_on_os_dev="QEMUで動作を固めたあと、節目（章末）で実機ブートするのが最高の学習リズム。",
             ),
         ]
+
+
+@dataclass(frozen=True)
+class TechStackFeature:
+    """Evaluation metric for architectural technology selection."""
+
+    technology: str
+    category: str
+    dimension: str
+    score: int  # 1 to 5
+    advantages: str
+    disadvantages: str
+    mikanos_rationale: str
+
+
+@dataclass(frozen=True)
+class ArchitecturePhase:
+    """One of the 7 evolutionary architectural phases of MikanOS."""
+
+    phase_id: int
+    name: str
+    chapter_range: str
+    start_chapter: int
+    end_chapter: int
+    key_milestones: list[str]
+    core_data_structures: list[str]
+    hardware_targets: list[str]
+
+
+@dataclass(frozen=True)
+class ArchitectureModule:
+    """Core kernel module and its architectural layer/dependency."""
+
+    module_name: str
+    chapter: int
+    layer: str  # "HAL", "KernelCore", "Subsystem", "Userland"
+    dependencies: list[str]
+    description: str
+
+
+class MikanOSArchitectureRoadmap:
+    """Roadmap model covering all 30 chapters and 7 evolutionary phases."""
+
+    @staticmethod
+    def get_phases() -> list[ArchitecturePhase]:
+        """Return the 7 structural phases of MikanOS development."""
+        return [
+            ArchitecturePhase(
+                phase_id=1,
+                name="ブートとグラフィックス基盤",
+                chapter_range="第1章 〜 第5章",
+                start_chapter=1,
+                end_chapter=5,
+                key_milestones=[
+                    "UEFI EDK II ブートローダ (MikanLoaderPkg)",
+                    "GOP (Graphics Output Protocol) フレームバッファ取得",
+                    "PixelWriter による点・矩形描画ポリモーフィズム",
+                    "Hankaku ビットマップフォント展開と Console クラス",
+                    "Newlib 連携と printk 書式付き文字列出力",
+                ],
+                core_data_structures=["PixelWriter", "RGB/BGR PixelFormat", "Console", "FrameBufferConfig"],
+                hardware_targets=["UEFI BIOS", "Linear FrameBuffer (GOP)", "x86-64 CPU"],
+            ),
+            ArchitecturePhase(
+                phase_id=2,
+                name="入力デバイスと割り込み機構",
+                chapter_range="第6章 〜 第7章",
+                start_chapter=6,
+                end_chapter=7,
+                key_milestones=[
+                    "PCI コンフィギュレーション空間の体系的探索",
+                    "xHCI (USB 3.0) ホストコントローラの発見と初期化",
+                    "IDT (割り込み記述子表) 登録と割り込みハンドラ",
+                    "MSI (Message Signaled Interrupts) によるハードウェア通知",
+                    "ArrayQueue (リングバッファ/FIFO) によるイベント非同期配送",
+                ],
+                core_data_structures=["IDTEntry", "InterruptDescriptorTable", "ArrayQueue", "PCIConfigAddress"],
+                hardware_targets=["PCI Express Bus", "xHCI Controller", "USB Mouse", "CPU Interrupt Line"],
+            ),
+            ArchitecturePhase(
+                phase_id=3,
+                name="メモリ管理とGUIレイヤ重ね合わせ",
+                chapter_range="第8章 〜 第10章",
+                start_chapter=8,
+                end_chapter=10,
+                key_milestones=[
+                    "GDT (Global Descriptor Table) セグメント初期化",
+                    "BitmapMemoryManager による 4KiB 物理フレーム管理",
+                    "new / delete 演算子オーバーロードとカーネルヒープ",
+                    "Layer および LayerManager による前後関係（Z-order）管理",
+                    "ShadowBuffer (ダブルバッファ) によるチラつきのないウィンドウ描画",
+                ],
+                core_data_structures=["BitmapMemoryManager", "SegmentDescriptor", "Layer", "LayerManager", "Window"],
+                hardware_targets=["Physical RAM", "GDT Register (GDTR)", "CR0/CR3 Registers"],
+            ),
+            ArchitecturePhase(
+                phase_id=4,
+                name="時間計測・キーボードとマルチタスク",
+                chapter_range="第11章 〜 第14章",
+                start_chapter=11,
+                end_chapter=14,
+                key_milestones=[
+                    "Local APIC タイマ割り込みと ACPI PM タイマ較正",
+                    "TimerManager (優先度付きキュー) によるミリ秒タイマ",
+                    "USB HID キーボードドライバとモディファイアキー解析",
+                    "TaskContext と SwitchContext アセンブリによる協調的タスク切り替え",
+                    "マルチレベル優先度付きランキューと HLT アイドルタスク",
+                ],
+                core_data_structures=["TaskContext", "Task", "TaskManager", "Timer", "TimerManager"],
+                hardware_targets=["Local APIC Timer", "ACPI FADT/PM Timer", "USB Keyboard"],
+            ),
+            ArchitecturePhase(
+                phase_id=5,
+                name="ターミナル・コマンドとファイルシステム",
+                chapter_range="第15章 〜 第18章",
+                start_chapter=15,
+                end_chapter=18,
+                key_milestones=[
+                    "Terminal タスクの独立スレッド化とアクティブ入力制御",
+                    "キーイベントディスパッチと echo / clear / lspci コマンド",
+                    "FAT32 BPB (BIOS Parameter Block) とディレクトリエントリ解析",
+                    "クラスタチェーン追跡と FAT ファイル読み込み (ls コマンド)",
+                    "ELF アプリケーションバイナリのロードと実行",
+                ],
+                core_data_structures=["Terminal", "FAT32Header", "DirectoryEntry", "Elf64_Ehdr", "Elf64_Phdr"],
+                hardware_targets=["FAT32 Storage (USB/Virtual Disk)", "ELF Binary Image"],
+            ),
+            ArchitecturePhase(
+                phase_id=6,
+                name="4階層ページングとシステムコール保護",
+                chapter_range="第19章 〜 第23章",
+                start_chapter=19,
+                end_chapter=23,
+                key_milestones=[
+                    "48ビット正規アドレスと 4階層ページテーブル (PML4/PDP/PD/PT)",
+                    "カーネル空間とアプリケーション空間の仮想メモリ分離",
+                    "Ring 0 (Kernel) と Ring 3 (User) の特権レベル分離",
+                    "TSS (Task State Segment) と IST (Interrupt Stack Table)",
+                    "SYSCALL / SYSRET 命令による低オーバーヘッドシステムコール",
+                    "GUI アプリケーション API (ウィンドウ描画・イベント配送)",
+                ],
+                core_data_structures=["PML4Table", "PDPTable", "PageDirectory", "TSS64", "SyscallArgs"],
+                hardware_targets=["x86-64 MMU (CR3)", "IA32_EFER / STAR / LSTAR / SFMASK MSRs"],
+            ),
+            ArchitecturePhase(
+                phase_id=7,
+                name="実用OSへの洗練・IPCとアプリケーション",
+                chapter_range="第24章 〜 第30章",
+                start_chapter=24,
+                end_chapter=30,
+                key_milestones=[
+                    "複数ターミナルの同時起動と PML4 仮想空間の独立化",
+                    "ファイル書き込み (FAT クラスタ割り当て) と標準入力抽象化",
+                    "デマンドページング (Demand Paging) と Copy-on-Write (CoW)",
+                    "UTF-8 デコードと FreeType による日本語フォント描画",
+                    "パイプ (Pipe) と標準入出力リダイレクトによる IPC",
+                    "実用アプリ群 (テキストビューア tview, 画像ビューア gview, blocks)",
+                ],
+                core_data_structures=["FileDescriptor", "PipeDescriptor", "DemandPageManager", "FreeTypeFont"],
+                hardware_targets=["Page Fault (#PF Exception)", "Unicode Fonts", "Multiple App Spaces"],
+            ),
+        ]
+
+    @staticmethod
+    def get_core_modules() -> list[ArchitectureModule]:
+        """Return major architectural kernel modules and their layer hierarchy."""
+        return [
+            ArchitectureModule("PixelWriter", 4, "HAL", [], "GOPフレームバッファへのピクセル描画抽象化"),
+            ArchitectureModule("Console", 5, "KernelCore", ["PixelWriter"], "画面文字描画・スクロール・printk基盤"),
+            ArchitectureModule("PCIManager", 6, "HAL", [], "PCIバス探索・デバイス特定・BAR空間読み取り"),
+            ArchitectureModule("xHCIDriver", 6, "HAL", ["PCIManager"], "USB 3.0 コントローラ初期化とデバイス認識"),
+            ArchitectureModule("IDTManager", 7, "KernelCore", [], "割り込み記述子表登録・CPU例外ハンドラ設定"),
+            ArchitectureModule("ArrayQueue", 7, "KernelCore", [], "リングバッファ型スレッドセーフ非同期キュー"),
+            ArchitectureModule("BitmapMemoryManager", 8, "KernelCore", [], "4KiB物理ページフレーム追跡と割り当て"),
+            ArchitectureModule("LayerManager", 9, "Subsystem", ["PixelWriter"], "複数ウィンドウ・カーソルのZ-order重ね合わせ合成"),
+            ArchitectureModule("TimerManager", 11, "KernelCore", ["IDTManager"], "Local APICタイマ割り込みとコールバック管理"),
+            ArchitectureModule("TaskManager", 13, "KernelCore", ["TimerManager"], "コンテキストスイッチと優先度スケジューラ"),
+            ArchitectureModule("Terminal", 15, "Subsystem", ["Console", "TaskManager", "LayerManager"], "独立ターミナルウィンドウとコマンド実行"),
+            ArchitectureModule("FATFileSystem", 17, "Subsystem", [], "FAT32ファイルシステム解析・ファイル読み書き"),
+            ArchitectureModule("ELFLoader", 18, "Subsystem", ["FATFileSystem"], "ELF64バイナリ検証・セグメント配置と実行"),
+            ArchitectureModule("PagingManager", 19, "KernelCore", ["BitmapMemoryManager"], "4階層ページテーブル構成と仮想アドレス保護"),
+            ArchitectureModule("SyscallHandler", 20, "KernelCore", ["TaskManager", "PagingManager"], "SYSCALL/SYSRETによるRing 0/3特権遷移"),
+            ArchitectureModule("AppWindowManager", 21, "Subsystem", ["LayerManager", "SyscallHandler"], "ユーザーアプリ向けGUI API提供"),
+            ArchitectureModule("PipeManager", 29, "Subsystem", ["TaskManager"], "プロセス間通信(IPC)用パイプバッファ"),
+        ]
+
+    @staticmethod
+    def calculate_module_dependencies() -> dict[str, list[str]]:
+        """Map each module name to its dependent modules."""
+        modules = MikanOSArchitectureRoadmap.get_core_modules()
+        return {m.module_name: m.dependencies for m in modules}
+
+
+class TechStackComparison:
+    """Comprehensive comparison of firmware, CPU architecture, and language choices."""
+
+    @staticmethod
+    def get_firmware_comparison() -> list[TechStackFeature]:
+        """Comparison between UEFI BIOS and Legacy BIOS (MBR)."""
+        return [
+            TechStackFeature(
+                technology="UEFI (EDK II)",
+                category="Firmware",
+                dimension="起動時のCPUモード",
+                score=5,
+                advantages="電源投入直後から64ビットロングモードで動作。16ビットリアルモードの制約がない。",
+                disadvantages="仕様書が数千ページと巨大で、EDK II のビルドシステムが複雑。",
+                mikanos_rationale="現代のPCハードウェアに合致し、面倒なリアルモード→プロテクトモード遷移パズルを回避できる。",
+            ),
+            TechStackFeature(
+                technology="Legacy BIOS",
+                category="Firmware",
+                dimension="起動時のCPUモード",
+                score=2,
+                advantages="極めてシンプルで歴史的資料が多い。",
+                disadvantages="16ビットリアルモードから起動し、A20ゲート解除やGDT手動設定など歴史的負債の処理が必須。",
+                mikanos_rationale="本質的でない歴史的パズルに時間を浪費するため、現代OS入門としては非推奨。",
+            ),
+            TechStackFeature(
+                technology="UEFI (EDK II)",
+                category="Firmware",
+                dimension="グラフィックス・ファイルアクセス",
+                score=5,
+                advantages="GOPによる高解像度フレームバッファとFATファイルシステムドライバが標準装備。",
+                disadvantages="ファームウェア依存のAPIであり、ExitBootServices後は自前実装が必要。",
+                mikanos_rationale="ブートローダ段階でカーネルELFファイルをFATから直接読み込め、初期から美麗GUIを構築可能。",
+            ),
+            TechStackFeature(
+                technology="Legacy BIOS",
+                category="Firmware",
+                dimension="グラフィックス・ファイルアクセス",
+                score=2,
+                advantages="INT 10h / INT 13h などBIOS割り込みが利用可能。",
+                disadvantages="VGA 320x200 256色モードにとどまり、ディスクはCHSセクタ単位の手動読み込みが必須。",
+                mikanos_rationale="512バイトのMBR制限があり、複雑なカーネルを読み込むためのステージングが難解。",
+            ),
+        ]
+
+    @staticmethod
+    def get_architecture_comparison() -> list[TechStackFeature]:
+        """Comparison between x86-64, 32-bit x86, and ARM64."""
+        return [
+            TechStackFeature(
+                technology="x86-64 (AMD64)",
+                category="Architecture",
+                dimension="メモリ空間とページング",
+                score=5,
+                advantages="48ビット正規仮想アドレス、4階層ページング、フラットメモリモデル。",
+                disadvantages="ページテーブルが4階層あり、データ構造の初期化ステップが多い。",
+                mikanos_rationale="現代のPCで標準的に動作し、洗練された仮想メモリ保護を完全体験できる。",
+            ),
+            TechStackFeature(
+                technology="32-bit x86 (IA-32)",
+                category="Architecture",
+                dimension="メモリ空間とページング",
+                score=3,
+                advantages="2階層ページング（10-10-12分割）で直感的・シンプル。",
+                disadvantages="4GiBメモリの壁、PAEなどの拡張が煩雑、現代のハードウェアで直接動かしにくい。",
+                mikanos_rationale="過去の自作OS本では定番だったが、現代の実機で動かすには時代遅れ。",
+            ),
+            TechStackFeature(
+                technology="x86-64 (AMD64)",
+                category="Architecture",
+                dimension="システムコール高速化",
+                score=5,
+                advantages="SYSCALL / SYSRET 専用命令によりIDT割り込みゲート不要でRing 0/3遷移が可能。",
+                disadvantages="MSR (Model Specific Register) の厳密な設定が必要。",
+                mikanos_rationale="最新のCPU設計に基づき、低オーバーヘッドな現代的システムコールを学べる。",
+            ),
+        ]
+
+    @staticmethod
+    def get_language_comparison() -> list[TechStackFeature]:
+        """Comparison between C++ (C++17/20), Pure C, and Rust."""
+        return [
+            TechStackFeature(
+                technology="C++ (C++17/20)",
+                category="Language",
+                dimension="抽象化能力とハードウェア制御",
+                score=5,
+                advantages="クラス、多態性(vtable)、テンプレートによるゼロコスト抽象化とポインタ直接制御を両立。",
+                disadvantages="例外やRTTI、重厚なlibstdc++に依存できないため、フリースタンディング制約が必要。",
+                mikanos_rationale="低レイヤのハードウェアレジスタ制御と、GUIやタスク管理のオブジェクト指向設計が完璧に調和する。",
+            ),
+            TechStackFeature(
+                technology="C言語 (C99/C11)",
+                category="Language",
+                dimension="抽象化能力とハードウェア制御",
+                score=3,
+                advantages="言語仕様が極小で、出力される機械語が最も予測しやすい。",
+                disadvantages="オブジェクト指向や多態性を手動の関数ポインタ構造体で模倣する必要があり、コードが肥大化・脆弱化。",
+                mikanos_rationale="ウィンドウやレイヤ管理が巨大化するにつれて手動vtableコードが破綻しやすい。",
+            ),
+            TechStackFeature(
+                technology="Rust",
+                category="Language",
+                dimension="抽象化能力とハードウェア制御",
+                score=4,
+                advantages="所有権システムによるメモリ安全性、強力な型推論とマクロ。",
+                disadvantages="ベアメタルのMMIOや割り込み・ページングなど `unsafe` が頻発し、学習曲線が急峻。",
+                mikanos_rationale="OS入門としての教育的見通しにおいては、C++の方がハードウェアの真の姿を直接直感しやすい。",
+            ),
+        ]
+
+    @staticmethod
+    def get_radar_metrics() -> dict[str, dict[str, int]]:
+        """Return multidimensional scores (1-5 scale) for radar chart visualization."""
+        return {
+            "UEFI (EDK II)": {
+                "64bit親和性": 5,
+                "GUIフレームバッファ": 5,
+                "ファイルアクセス容易度": 5,
+                "仕様のシンプルさ": 2,
+                "実機互換性": 5,
+            },
+            "Legacy BIOS": {
+                "64bit親和性": 1,
+                "GUIフレームバッファ": 2,
+                "ファイルアクセス容易度": 2,
+                "仕様のシンプルさ": 4,
+                "実機互換性": 2,
+            },
+            "C++ (C++17/20)": {
+                "ハードウェア直結度": 5,
+                "オブジェクト指向抽象度": 5,
+                "機械語透過性": 4,
+                "GUIモデリング容易度": 5,
+                "学習導入の平易さ": 4,
+            },
+            "Pure C (C99)": {
+                "ハードウェア直結度": 5,
+                "オブジェクト指向抽象度": 2,
+                "機械語透過性": 5,
+                "GUIモデリング容易度": 2,
+                "学習導入の平易さ": 4,
+            },
+        }
+
 
 
 
