@@ -39,6 +39,12 @@ from common.os_sim import (
     plot_chapter0_exercises_summary,
     plot_chapter0_mastery_radar,
     setup_plot_style,
+    PE32PlusSection,
+    PE32PlusHeader,
+    PE32PlusParser,
+    UefiCallingConventionSim,
+    plot_pe32plus_structure,
+    plot_uefi_calling_convention,
 )
 
 __all__ = [
@@ -80,4 +86,10 @@ __all__ = [
     "plot_chapter0_exercises_summary",
     "plot_chapter0_mastery_radar",
     "setup_plot_style",
+    "PE32PlusSection",
+    "PE32PlusHeader",
+    "PE32PlusParser",
+    "UefiCallingConventionSim",
+    "plot_pe32plus_structure",
+    "plot_uefi_calling_convention",
 ]

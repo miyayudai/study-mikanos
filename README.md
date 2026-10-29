@@ -88,7 +88,7 @@ cmake --build build
 | Chapter | タイトル | 節数 | 対応タグ範囲 | 主なトピック | 演習問題 | 状態 |
 |:---:|---|:---:|:---:|---|:---:|:---:|
 | **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | [`0_Exercises.ipynb`](0/0_Exercises.ipynb) | `[x]` 完了 (6/6) |
-| **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | `1_Exercises.ipynb` | `[ ]` 未着手 (0/10) |
+| **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | `1_Exercises.ipynb` | `[-]` 進行中 (1/10) |
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[ ]` 未着手 (0/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
@@ -134,6 +134,13 @@ cmake --build build
 | [`0.4_How_to_Enjoy_OS_Development.ipynb`](0/0.4_How_to_Enjoy_OS_Development.ipynb) | 0.4 OS自作の楽しみ方（スモールステップ開発・QEMU vs 実機ハイブリッド戦略・printfのない世界の5大デバッグ思考法） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/0/0.4_How_to_Enjoy_OS_Development.ipynb) |
 | [`0.5_Big_Picture_of_MikanOS.ipynb`](0/0.5_Big_Picture_of_MikanOS.ipynb) | 0.5 OS自作の全体像（全30章・7大フェーズロードマップ・UEFI/x86-64/C++20技術的必然性と4層システムアーキテクチャ） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/0/0.5_Big_Picture_of_MikanOS.ipynb) |
 | [`0_Exercises.ipynb`](0/0_Exercises.ipynb) | 第0章 演習問題（OSの役割・Ring 0/3特権分離・Freestanding検証・二分探索デバッガ・C++20ディスパッチャ・総合テスト10問） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/0/0_Exercises.ipynb) |
+
+### 第1章 PCの仕組みとハローワールド (`1/`)
+
+| ノートブック | 内容 | Colab で開く |
+|---|---|:---:|
+| [`1.1_Hello_World_Binary.ipynb`](1/1.1_Hello_World_Binary.ipynb) | 1.1 ハローワールド（PE32+ヘッダ構造・x86-64機械語解読・Microsoft x64呼び出し規約とスタック整列・バイナリ合成） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.1_Hello_World_Binary.ipynb) |
+
 
 ---
 

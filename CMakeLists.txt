@@ -30,6 +30,10 @@ add_test(NAME test_ch00_os_architecture_roadmap COMMAND ch00_os_architecture_roa
 add_executable(ch00_os_chapter0_exercises src/ch00/os_chapter0_exercises.cpp)
 add_test(NAME test_ch00_os_chapter0_exercises COMMAND ch00_os_chapter0_exercises)
 
+add_executable(ch01_pe32plus_parser src/ch01/pe32plus_parser.cpp)
+add_test(NAME test_ch01_pe32plus_parser COMMAND ch01_pe32plus_parser ../vendor/mikanos-build/day01/bin/hello.efi)
+
+
 
 
 

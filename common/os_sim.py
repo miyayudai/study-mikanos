@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+import struct
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -1450,6 +1451,368 @@ def plot_chapter0_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     plt.title("Chapter 0 Comprehension & Skills Mastery Radar\n（第0章 概念理解度・実践スキル評価）",
               size=13, fontweight="bold", color="#0D47A1", y=1.1)
     plt.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), frameon=True)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+# ==============================================================================
+# Chapter 1.1: PE32+ (UEFI Executable) Binary Parser & Hardware Simulation
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class PE32PlusSection:
+    """Represents a COFF Section in a PE32+ binary."""
+
+    name: str
+    virtual_size: int
+    virtual_address: int
+    raw_data_size: int
+    raw_data_offset: int
+    characteristics: int
+
+    @property
+    def is_executable(self) -> bool:
+        return bool(self.characteristics & 0x20000000)
+
+    @property
+    def is_readable(self) -> bool:
+        return bool(self.characteristics & 0x40000000)
+
+    @property
+    def is_writable(self) -> bool:
+        return bool(self.characteristics & 0x80000000)
+
+
+@dataclass(frozen=True)
+class PE32PlusHeader:
+    """Parsed headers of a 64-bit PE32+ executable (UEFI application)."""
+
+    dos_magic: int
+    pe_header_offset: int
+    machine: int
+    num_sections: int
+    time_date_stamp: int
+    size_of_optional_header: int
+    characteristics: int
+    magic: int
+    entry_point_rva: int
+    image_base: int
+    section_alignment: int
+    file_alignment: int
+    subsystem: int
+    size_of_image: int
+    size_of_headers: int
+    sections: list[PE32PlusSection]
+
+    @property
+    def is_pe32plus(self) -> bool:
+        """Magic 0x020B indicates PE32+ (64-bit), whereas 0x010B indicates PE32 (32-bit)."""
+        return self.magic == 0x020B
+
+    @property
+    def is_x86_64(self) -> bool:
+        """Machine 0x8664 corresponds to IMAGE_FILE_MACHINE_AMD64."""
+        return self.machine == 0x8664
+
+    @property
+    def is_efi_application(self) -> bool:
+        """Subsystem 0x000A corresponds to IMAGE_SUBSYSTEM_EFI_APPLICATION."""
+        return self.subsystem == 0x000A
+
+
+class PE32PlusParser:
+    """Parser and validator for UEFI PE32+ executables (e.g., BOOTX64.EFI)."""
+
+    @classmethod
+    def parse_bytes(cls, data: bytes) -> PE32PlusHeader:
+        if len(data) < 0x200:
+            raise ValueError(f"Binary too small for PE32+ headers: {len(data)} bytes (minimum 512 bytes required)")
+
+        # 1. DOS Header
+        dos_magic = struct.unpack_from("<H", data, 0x00)[0]
+        if dos_magic != 0x5A4D:  # 'MZ'
+            raise ValueError(f"Invalid DOS Magic: {hex(dos_magic)} (expected 0x5a4d 'MZ')")
+
+        pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
+        if pe_offset + 0x18 > len(data):
+            raise ValueError(f"PE header offset 0x{pe_offset:x} points outside data range")
+
+        # 2. PE Signature
+        pe_sig = struct.unpack_from("<I", data, pe_offset)[0]
+        if pe_sig != 0x00004550:  # 'PE\\0\\0'
+            raise ValueError(f"Invalid PE Signature: {hex(pe_sig)} (expected 0x4550 'PE\\0\\0')")
+
+        # 3. COFF File Header (20 bytes)
+        coff_offset = pe_offset + 4
+        machine, num_sections, time_date_stamp, _, _, size_of_opt_hdr, characteristics = struct.unpack_from(
+            "<HHIIIHH", data, coff_offset
+        )
+
+        # 4. Optional Header (PE32+ 64-bit)
+        opt_offset = coff_offset + 20
+        magic = struct.unpack_from("<H", data, opt_offset)[0]
+        if magic != 0x020B:
+            raise ValueError(f"Invalid Optional Header Magic: {hex(magic)} (expected 0x20b for PE32+)")
+
+        entry_point_rva = struct.unpack_from("<I", data, opt_offset + 16)[0]
+        image_base = struct.unpack_from("<Q", data, opt_offset + 24)[0]
+        section_alignment = struct.unpack_from("<I", data, opt_offset + 32)[0]
+        file_alignment = struct.unpack_from("<I", data, opt_offset + 36)[0]
+        size_of_image = struct.unpack_from("<I", data, opt_offset + 56)[0]
+        size_of_headers = struct.unpack_from("<I", data, opt_offset + 60)[0]
+        subsystem = struct.unpack_from("<H", data, opt_offset + 68)[0]
+
+        # 5. Section Table (40 bytes per section)
+        sec_table_offset = opt_offset + size_of_opt_hdr
+        sections: list[PE32PlusSection] = []
+        for i in range(num_sections):
+            cur = sec_table_offset + i * 40
+            sec_name_raw = data[cur : cur + 8].split(b"\x00")[0]
+            sec_name = sec_name_raw.decode("ascii", errors="replace")
+            vsize, vaddr, raw_size, raw_ptr, _, _, _, _, chars = struct.unpack_from(
+                "<IIIIIIHHI", data, cur + 8
+            )
+            sections.append(
+                PE32PlusSection(
+                    name=sec_name,
+                    virtual_size=vsize,
+                    virtual_address=vaddr,
+                    raw_data_size=raw_size,
+                    raw_data_offset=raw_ptr,
+                    characteristics=chars,
+                )
+            )
+
+        return PE32PlusHeader(
+            dos_magic=dos_magic,
+            pe_header_offset=pe_offset,
+            machine=machine,
+            num_sections=num_sections,
+            time_date_stamp=time_date_stamp,
+            size_of_optional_header=size_of_opt_hdr,
+            characteristics=characteristics,
+            magic=magic,
+            entry_point_rva=entry_point_rva,
+            image_base=image_base,
+            section_alignment=section_alignment,
+            file_alignment=file_alignment,
+            subsystem=subsystem,
+            size_of_image=size_of_image,
+            size_of_headers=size_of_headers,
+            sections=sections,
+        )
+
+    @classmethod
+    def parse_file(cls, path: str | Path) -> PE32PlusHeader:
+        with open(path, "rb") as f:
+            data = f.read()
+        return cls.parse_bytes(data)
+
+    @classmethod
+    def disassemble_hello_instructions(cls, data: bytes, code_offset: int = 0x200) -> list[dict]:
+        """Disassemble the minimal x86-64 machine code instructions in hello.efi."""
+        instructions = [
+            {
+                "offset": code_offset + 0,
+                "bytes": "48 83 ec 28",
+                "mnemonic": "sub rsp, 0x28",
+                "explanation": "シャドウスペース(32B)+8B整列パディング確保 (16Bスタック整列維持)",
+            },
+            {
+                "offset": code_offset + 4,
+                "bytes": "48 8b 4a 40",
+                "mnemonic": "mov rcx, [rdx + 0x40]",
+                "explanation": "SystemTable(rdx)のオフセット64(0x40)からConOutポインタをrcxに取得",
+            },
+            {
+                "offset": code_offset + 8,
+                "bytes": "48 8d 15 f1 0f 00 00",
+                "mnemonic": "lea rdx, [rip + 0x0ff1]",
+                "explanation": "RIP相対で.rdataのUTF-16文字列「Hello, world!」アドレスを第2引数rdxに設定",
+            },
+            {
+                "offset": code_offset + 15,
+                "bytes": "ff 51 08",
+                "mnemonic": "call [rcx + 8]",
+                "explanation": "ConOutプロトコル構造体のオフセット8(OutputString関数ポインタ)を間接呼び出し",
+            },
+            {
+                "offset": code_offset + 18,
+                "bytes": "eb fe",
+                "mnemonic": "jmp -2 (.fin)",
+                "explanation": "自命令への相対ジャンプによるCPU無限ループ（ハングアップ待機）",
+            },
+        ]
+        return instructions
+
+    @classmethod
+    def decode_utf16_string(cls, data: bytes, offset: int = 0x400) -> str:
+        """Decode null-terminated UTF-16LE string from binary at specified offset."""
+        end = offset
+        while end + 1 < len(data):
+            if data[end] == 0 and data[end + 1] == 0:
+                break
+            end += 2
+        return data[offset:end].decode("utf-16-le")
+
+
+class UefiCallingConventionSim:
+    """Simulation of Microsoft x64 Calling Convention under UEFI execution."""
+
+    def __init__(self, initial_rsp: int = 0x00007FFF_FFFF0008):
+        # Entry convention: RSP % 16 == 8 upon function entry (due to 8-byte ret address pushed)
+        self.rsp = initial_rsp
+        self.registers: dict[str, int] = {
+            "RCX": 0x00000000_A0000000,  # ImageHandle
+            "RDX": 0x00000000_B0000000,  # SystemTable
+            "R8": 0x0,
+            "R9": 0x0,
+            "RIP": 0x00000001_40001000,  # Entry point RVA 0x1000
+        }
+        self.stack: dict[int, int] = {}
+        self.log: list[str] = []
+
+    def execute_sub_rsp(self, amount: int = 0x28) -> None:
+        self.rsp -= amount
+        is_aligned = (self.rsp % 16) == 0
+        self.log.append(f"sub rsp, {hex(amount)} -> RSP={hex(self.rsp)} (16B Aligned: {is_aligned})")
+
+    def execute_mov_rcx_from_system_table(self, con_out_ptr: int = 0x00000000_C0000000) -> None:
+        # SystemTable + 0x40 -> ConOut
+        self.registers["RCX"] = con_out_ptr
+        self.log.append(f"mov rcx, [rdx + 0x40] -> RCX={hex(con_out_ptr)} (ConOut Protocol)")
+
+    def execute_lea_rdx_string(self, string_ptr: int = 0x00000001_40002000) -> None:
+        self.registers["RDX"] = string_ptr
+        self.log.append(f"lea rdx, [rip + offset] -> RDX={hex(string_ptr)} (UTF-16 String)")
+
+    def execute_call_output_string(self) -> None:
+        # Pushes 8-byte return address, stack becomes RSP - 8
+        self.log.append(
+            f"call [rcx + 8] -> Invoking OutputString(This={hex(self.registers['RCX'])}, String={hex(self.registers['RDX'])})"
+        )
+
+
+def plot_pe32plus_structure(pe: PE32PlusHeader, output_path: str | Path) -> Path:
+    """Generate high-resolution architecture diagram of PE32+ binary layout (fig1_1)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8), gridspec_kw={"width_ratios": [1.1, 1.3]})
+
+    # Left: Binary File vs Memory Map
+    y_coords = [0, 1, 2, 3, 4, 5]
+    heights = [0.8, 0.8, 0.8, 0.8, 0.8, 0.8]
+    labels = [
+        "DOS Header (0x0000 - 0x003F)\nMagic: 'MZ' (0x5A4D), e_lfanew = 0x80",
+        "DOS Stub / Padding (0x0040 - 0x007F)\nUnused zero padding",
+        "PE Header & COFF File Header (0x0080 - 0x0097)\nSig: 'PE\\0\\0', Machine: 0x8664, Sec: 2",
+        "Optional Header PE32+ (0x0098 - 0x0187)\nMagic: 0x20B, Entry: 0x1000, Subsys: 0x0A (EFI)",
+        "Section Table: .text & .rdata (0x0188 - 0x01D7)\n2x 40-byte Section Headers",
+        "Payload Sections (.text: 0x200, .rdata: 0x400)\nMachine code (20B) + UTF-16 String (28B)",
+    ]
+    colors = ["#FFE082", "#ECEFF1", "#81D4FA", "#80CBC4", "#C5CAE9", "#FFCC80"]
+
+    for y, h, lbl, c in zip(y_coords, heights, labels, colors):
+        ax1.broken_barh([(0.1, 0.8)], (y, h), facecolors=c, edgecolor="#37474F", linewidth=1.5)
+        ax1.text(0.5, y + h / 2, lbl, ha="center", va="center", fontsize=9.5, fontweight="bold", color="#263238")
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(-0.5, 6.2)
+    ax1.axis("off")
+    ax1.set_title("PE32+ Binary Layout on Disk\n(1536 Bytes = 0x600 Bytes)", fontsize=12, fontweight="bold", color="#0D47A1")
+
+    # Right: Header Field Key Metrics
+    ax2.axis("off")
+    info_text = (
+        "═══════════════════════════════════════════════════════════════════\n"
+        "  PE32+ Header Field Verification & UEFI Standard Conformity\n"
+        "═══════════════════════════════════════════════════════════════════\n\n"
+        f"  • DOS Signature (e_magic)      : 0x{pe.dos_magic:04X} ('MZ')\n"
+        f"  • PE Header Offset (e_lfanew)  : 0x{pe.pe_header_offset:04X} (Decimal 128)\n"
+        f"  • Machine Architecture         : 0x{pe.machine:04X} (IMAGE_FILE_MACHINE_AMD64)\n"
+        f"  • Number of Sections           : {pe.num_sections} (.text, .rdata)\n"
+        f"  • Size of Optional Header      : 0x{pe.size_of_optional_header:04X} ({pe.size_of_optional_header} bytes)\n"
+        f"  • Optional Header Magic        : 0x{pe.magic:04X} (PE32+ 64-bit Executable)\n"
+        f"  • Address of Entry Point       : 0x{pe.entry_point_rva:08X} (RVA = +4096 bytes)\n"
+        f"  • Preferred Image Base         : 0x{pe.image_base:016X}\n"
+        f"  • Section Alignment (Memory)   : 0x{pe.section_alignment:08X} (4 KB Page Boundary)\n"
+        f"  • File Alignment (Disk)        : 0x{pe.file_alignment:08X} (512 B Sector Boundary)\n"
+        f"  • Subsystem                    : 0x{pe.subsystem:04X} (0x000A = EFI Application)\n"
+        f"  • Size of Image in Memory      : 0x{pe.size_of_image:08X} (12 KB)\n"
+        f"  • Size of Headers              : 0x{pe.size_of_headers:08X} (512 bytes)\n\n"
+        "───────────────────────────────────────────────────────────────────\n"
+        "  Section Headers Summary:\n"
+        f"    1. [{pe.sections[0].name:8s}] VAddr: 0x{pe.sections[0].virtual_address:04X}  VSize: 0x{pe.sections[0].virtual_size:02X}  Offset: 0x{pe.sections[0].raw_data_offset:04X}  (CODE, EXEC, READ)\n"
+        f"    2. [{pe.sections[1].name:8s}] VAddr: 0x{pe.sections[1].virtual_address:04X}  VSize: 0x{pe.sections[1].virtual_size:02X}  Offset: 0x{pe.sections[1].raw_data_offset:04X}  (DATA, READ)\n"
+        "═══════════════════════════════════════════════════════════════════"
+    )
+    ax2.text(
+        0.02,
+        0.5,
+        info_text,
+        family="monospace",
+        fontsize=9.2,
+        va="center",
+        bbox=dict(boxstyle="round,pad=0.8", facecolor="#F8F9FA", edgecolor="#90A4AE", linewidth=1.5),
+    )
+    ax2.set_title("PE32+ COFF & Optional Header Detailed Inspection", fontsize=12, fontweight="bold", color="#0D47A1")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_uefi_calling_convention(output_path: str | Path) -> Path:
+    """Generate high-resolution diagram of Microsoft x64 calling convention & stack frame (fig1_2)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8), gridspec_kw={"width_ratios": [1.2, 1.0]})
+
+    # Left: Register state transitions
+    steps = [
+        "1. Entry by UEFI Firmware\n(RCX=ImageHandle, RDX=SystemTable, RSP%16==8)",
+        "2. sub rsp, 0x28\n(Alloc 32B Shadow Space + 8B Padding -> RSP%16==0)",
+        "3. mov rcx, [rdx + 0x40]\n(Load SystemTable->ConOut pointer into RCX)",
+        "4. lea rdx, [rip + 0xff1]\n(Load UTF-16 'Hello, world!' address into RDX)",
+        "5. call [rcx + 8]\n(Indirect call OutputString(This=RCX, String=RDX))",
+        "6. jmp -2 (.fin)\n(Infinite busy loop EB FE halting execution)",
+    ]
+    y_pos = np.arange(len(steps))[::-1]
+
+    for y, text in zip(y_pos, steps):
+        ax1.broken_barh([(0.05, 0.9)], (y - 0.35, 0.7), facecolors="#E1F5FE", edgecolor="#0288D1", linewidth=1.5)
+        ax1.text(0.5, y, text, ha="center", va="center", fontsize=9.5, fontweight="bold", color="#01579B")
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(-0.8, len(steps) - 0.2)
+    ax1.axis("off")
+    ax1.set_title("x86-64 Execution Flow & Instruction Semantics", fontsize=12, fontweight="bold", color="#0D47A1")
+
+    # Right: Stack Frame Visualization
+    stack_blocks = [
+        ("Previous Stack / Caller Return Addr\n(Pushed by UEFI Firmware Call)", "#CFD8DC"),
+        ("Shadow Space Slot 4 (0x18[RSP])\nReserved for 4th arg (R9 home)", "#FFF9C4"),
+        ("Shadow Space Slot 3 (0x10[RSP])\nReserved for 3rd arg (R8 home)", "#FFF9C4"),
+        ("Shadow Space Slot 2 (0x08[RSP])\nReserved for 2nd arg (RDX home)", "#FFF9C4"),
+        ("Shadow Space Slot 1 (0x00[RSP])\nReserved for 1st arg (RCX home)", "#FFF9C4"),
+        ("16-byte Alignment Padding (8 Bytes)\n(RSP alignment guarantee)", "#FFCCBC"),
+    ]
+    y_s = np.arange(len(stack_blocks))[::-1]
+    for y, (name, color) in zip(y_s, stack_blocks):
+        ax2.broken_barh([(0.1, 0.8)], (y - 0.4, 0.8), facecolors=color, edgecolor="#455A64", linewidth=1.5)
+        ax2.text(0.5, y, name, ha="center", va="center", fontsize=9, fontweight="bold", color="#263238")
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(-0.8, len(stack_blocks) - 0.2)
+    ax2.axis("off")
+    ax2.set_title("Microsoft x64 Stack Frame (sub rsp, 0x28)\nShadow Space & 16-Byte Alignment", fontsize=12, fontweight="bold", color="#0D47A1")
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
