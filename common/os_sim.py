@@ -532,4 +532,208 @@ class QemuLaunchConfig:
         ]
 
 
+class DebugStrategy(Enum):
+    """Bare-metal debugging techniques used before printf is available."""
+
+    FRAMEBUFFER_COLOR = "framebuffer_color"  # Filling screen/VRAM with a solid color to verify execution
+    HALT_LOOP = "halt_loop"                  # Inserting while(1) or hlt / cli; hlt to freeze CPU at checkpoint
+    SERIAL_PORT = "serial_port"              # Writing ASCII characters directly to UART 0x3F8 (COM1)
+    QEMU_MONITOR = "qemu_monitor"            # Dumping registers and physical memory via QEMU monitor / GDB
+    BINARY_SEARCH = "binary_search"          # Pinpointing freeze/crash lines using binary search instrumentation
+
+
+class DevelopmentMethod(Enum):
+    """Software development philosophies in operating system construction."""
+
+    BIG_BANG = "big_bang"      # Writing thousands of lines before first boot (prone to untraceable bugs)
+    SMALL_STEP = "small_step"  # Incremental addition of small verifiable features (MikanOS principle)
+
+
+@dataclass(frozen=True)
+class SmallStepPhase:
+    """A single verifiable milestone in the incremental OS development journey."""
+
+    day: str
+    chapter: int
+    title: str
+    added_lines: int
+    primary_feature: str
+    verification_method: str
+
+
+MIKANOS_KEY_MILESTONES: list[SmallStepPhase] = [
+    SmallStepPhase("day01a", 1, "最小UEFIバイナリ", 4, "UEFI BIOSからの直接ロード・即座に正常終了", "QEMU画面が一瞬開いて終了コード0で戻る"),
+    SmallStepPhase("day02a", 2, "EDK II Hello World", 18, "SystemTable->ConOut を用いた文字列出力", "UEFI画面に Hello, world! が描画される"),
+    SmallStepPhase("day02b", 2, "メモリマップ取得", 54, "GetMemoryMap による物理メモリ構成の把握とファイル出力", "memmap ファイルにメモリディスクリプタCSVが保存される"),
+    SmallStepPhase("day03a", 3, "最小C++カーネル呼び出し", 32, "ブートローダからELFカーネルへの関数ポインタジャンプ", "カーネル側無限ループでCPUが意図通り停止する"),
+    SmallStepPhase("day03c", 3, "ピクセル描画", 48, "GOP フレームバッファの物理アドレスへ直書き", "画面全体が鮮やかな白色/黄色に塗りつぶされる"),
+    SmallStepPhase("day04b", 4, "長方形・幾何学模様", 85, "座標計算とピクセル描画ループの抽象化", "画面中央にカラフルな長方形が整然と描画される"),
+    SmallStepPhase("day05e", 5, "コンソールクラス", 130, "フォント描画・改行処理・画面スクロールの実装", "カーネルログがターミナル風に下方向へスクロールする"),
+    SmallStepPhase("day06c", 6, "マウスカーソル描画", 240, "PCI探索・xHCIホストコントローラからのHIDマウスパケット取得", "マウスを動かすと矢印カーソルが滑らかに追従する"),
+    SmallStepPhase("day07b", 7, "IDT割り込みとリングバッファ", 190, "ポーリング廃止、MSI割り込み＋ArrayQueueによる高速処理", "マウスが遅延ゼロで瞬時に反応しCPU負荷が激減する"),
+    SmallStepPhase("day08c", 8, "ビットマップ物理メモリ管理", 160, "4KiBフレーム単位の First-Fit アロケータ", "カーネルデータ構造と動的ヒープ領域が安全に確保される"),
+    SmallStepPhase("day09e", 9, "ウィンドウ重ね合わせ処理", 220, "LayerManager による透過色付き複数ウィンドウ合成", "マウスをウィンドウの上に乗せても背景が壊れず重なる"),
+    SmallStepPhase("day13d", 13, "マルチタスクとスケジューラ", 280, "コンテキストスイッチと時分割マルチタスク", "複数のカウンタタスクが並行して数字をカウントアップする"),
+    SmallStepPhase("day17b", 17, "FAT32ファイルシステム", 310, "BPB・ディレクトリエントリ解析と ls コマンド", "ターミナルで ls と打つとディスク内のファイル一覧が出る"),
+    SmallStepPhase("day18b", 18, "ELFアプリケーション実行", 260, "ディスク上の別体実行ファイルを読み込んで実行", "ユーザーランドの hello アプリがターミナル上で動く"),
+    SmallStepPhase("day20e", 20, "システムコール (Ring 0/3)", 340, "SYSCALL/SYSRET命令と特権保護・CPU例外ハンドラ", "ユーザー権限のアプリが安全にOS機能を呼び出して文字表示する"),
+]
+
+
+class SmallStepProgressTracker:
+    """Analyzer comparing incremental small-step OS construction against big-bang development."""
+
+    def __init__(self, milestones: list[SmallStepPhase] | None = None) -> None:
+        self.milestones = milestones if milestones is not None else list(MIKANOS_KEY_MILESTONES)
+
+    def total_milestones(self) -> int:
+        """Return total number of tracked milestones."""
+        return len(self.milestones)
+
+    def total_cumulative_lines(self) -> int:
+        """Return cumulative added lines across all milestones."""
+        return sum(m.added_lines for m in self.milestones)
+
+    def calculate_debugging_cost(self, total_lines: int, method: DevelopmentMethod) -> dict[str, float]:
+        """Estimate bug-hunting cost (expected steps to locate a bug).
+
+        In Big-Bang development, finding a bug among N lines with no runtime feedback
+        requires inspecting the entire codebase or linearly debugging: O(N) worst-case.
+        In Small-Step development with K checkpoints (each adding n = N/K lines),
+        the search space is immediately constrained to the latest delta n: O(n) = O(N/K).
+        """
+        if method == DevelopmentMethod.BIG_BANG:
+            return {
+                "worst_case_search_lines": float(total_lines),
+                "expected_inspection_steps": total_lines / 2.0,
+                "feedback_delay_days": 30.0,
+            }
+        else:
+            k = max(1, len(self.milestones))
+            avg_delta = total_lines / k
+            return {
+                "worst_case_search_lines": float(avg_delta),
+                "expected_inspection_steps": avg_delta / 2.0,
+                "feedback_delay_days": 0.1,
+            }
+
+
+@dataclass
+class DebugInspectionStep:
+    """Record of a single probe during binary search debugging."""
+
+    step_number: int
+    low_line: int
+    high_line: int
+    probe_line: int
+    outcome: str  # "PASS" (reached probe line successfully) or "CRASH" (hung before reaching)
+
+
+class BareMetalDebugSimulator:
+    """Simulates bare-metal debugging strategies when printf/standard output are unavailable."""
+
+    def __init__(self, total_lines: int = 100, bug_line: int = 42) -> None:
+        if not (1 <= bug_line <= total_lines):
+            raise ValueError(f"bug_line must be between 1 and {total_lines}, got {bug_line}")
+        self.total_lines = total_lines
+        self.bug_line = bug_line
+        self.vram_color: tuple[int, int, int] = (0, 0, 0)
+        self.vram_history: list[tuple[int, tuple[int, int, int]]] = []
+        self.serial_buffer: list[str] = []
+
+    def set_vram_color(self, checkpoint_line: int, rgb: tuple[int, int, int]) -> bool:
+        """Simulate setting framebuffer color at a code checkpoint.
+
+        Returns True if the checkpoint was reached before the bug line, False if crashed before.
+        """
+        if checkpoint_line < self.bug_line:
+            self.vram_color = rgb
+            self.vram_history.append((checkpoint_line, rgb))
+            return True
+        else:
+            return False
+
+    def write_serial(self, checkpoint_line: int, char: str) -> bool:
+        """Simulate outputting a character to UART serial port 0x3F8."""
+        if checkpoint_line < self.bug_line:
+            self.serial_buffer.append(char)
+            return True
+        return False
+
+    def locate_bug_by_binary_search(self) -> list[DebugInspectionStep]:
+        """Simulate pinpointing the bug line using binary search halting instrumentation.
+
+        Places a freeze / marker (e.g. while(1) or color change) at mid = (low + high) // 2.
+        If reached, bug is after mid (low = mid + 1). If crashed, bug is at or before mid (high = mid).
+        """
+        low = 1
+        high = self.total_lines
+        steps: list[DebugInspectionStep] = []
+        step_idx = 1
+
+        while low < high:
+            mid = (low + high) // 2
+            if mid < self.bug_line:
+                outcome = "PASS"
+                steps.append(DebugInspectionStep(step_idx, low, high, mid, outcome))
+                low = mid + 1
+            else:
+                outcome = "CRASH"
+                steps.append(DebugInspectionStep(step_idx, low, high, mid, outcome))
+                high = mid
+            step_idx += 1
+
+        return steps
+
+
+@dataclass(frozen=True)
+class HardwareEnvironmentFeature:
+    """Comparison metric between QEMU emulator and real bare-metal hardware."""
+
+    category: str
+    qemu_ovmf: str
+    real_hardware: str
+    impact_on_os_dev: str
+
+
+class QemuVsHardwareComparator:
+    """Structured evaluation of emulator-based vs bare-metal OS development."""
+
+    @staticmethod
+    def get_comparison_table() -> list[HardwareEnvironmentFeature]:
+        """Return detailed comparison matrix between QEMU and real hardware."""
+        return [
+            HardwareEnvironmentFeature(
+                category="起動・イテレーション時間",
+                qemu_ovmf="約 1〜2 秒（即座に再起動可能）",
+                real_hardware="約 30〜60 秒（PC再起動・USB認識待ち）",
+                impact_on_os_dev="QEMUは1時間に数十回の試行錯誤が可能。実機直結は試行回数が激減する。",
+            ),
+            HardwareEnvironmentFeature(
+                category="デバッグ容易性",
+                qemu_ovmf="QEMUモニタ、GDB接続、レジスタ・メモリ完全可視化",
+                real_hardware="画面が真っ黒になると原因究明が極めて困難",
+                impact_on_os_dev="開発初期（カーネル呼び出し・ページング・割り込み）はQEMUが絶対的に有利。",
+            ),
+            HardwareEnvironmentFeature(
+                category="安全性",
+                qemu_ovmf="どれだけ不正ポインタを破壊してもホストOSは無傷",
+                real_hardware="ストレージの誤書き込みやマザーボードの再起動ループリスク",
+                impact_on_os_dev="初心者が安全に実験・学習するための防護壁となる。",
+            ),
+            HardwareEnvironmentFeature(
+                category="ハードウェア互換性の検証",
+                qemu_ovmf="仕様に忠実な仮想デバイス（理想的・標準的挙動）",
+                real_hardware="メーカー固有のUEFI実装差、xHCIコントローラの癖",
+                impact_on_os_dev="QEMUで動くOSを実機に持っていくことで、真のハードウェア制御の奥深さを学べる。",
+            ),
+            HardwareEnvironmentFeature(
+                category="達成感・学習体験",
+                qemu_ovmf="「画面上で動いた」という達成感",
+                real_hardware="「手元の物理マシンを自分が支配した」という圧倒的感動",
+                impact_on_os_dev="QEMUで動作を固めたあと、節目（章末）で実機ブートするのが最高の学習リズム。",
+            ),
+        ]
+
+
 

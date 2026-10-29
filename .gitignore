@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+generate_nb_*.py
 develop-eggs/
 dist/
 downloads/

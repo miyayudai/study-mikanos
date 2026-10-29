@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-21%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-1.3%25%20(3%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-29%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-1.8%25%20(4%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -87,7 +87,7 @@ cmake --build build
 
 | Chapter | タイトル | 節数 | 対応タグ範囲 | 主なトピック | 演習問題 | 状態 |
 |:---:|---|:---:|:---:|---|:---:|:---:|
-| **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | `0_Exercises.ipynb` | `[-]` 進行中 (3/6) |
+| **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | `0_Exercises.ipynb` | `[-]` 進行中 (4/6) |
 | **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | `1_Exercises.ipynb` | `[ ]` 未着手 (0/10) |
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[ ]` 未着手 (0/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -131,6 +131,7 @@ cmake --build build
 | [`0.1_How_to_Build_an_OS.ipynb`](0/0.1_How_to_Build_an_OS.ipynb) | 0.1 OSの作り方（コード規模の定量比較・既存改造 vs フルスクラッチ・段階的成長曲線） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/0/0.1_How_to_Build_an_OS.ipynb) |
 | [`0.2_What_is_an_OS_and_POSIX.ipynb`](0/0.2_What_is_an_OS_and_POSIX.ipynb) | 0.2 そもそもOSって何？（ハードウェア抽象化・リソース管理・Ring 0/3 特権境界・POSIX規格とNewlib） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/0/0.2_What_is_an_OS_and_POSIX.ipynb) |
 | [`0.3_Steps_to_Build_an_OS.ipynb`](0/0.3_Steps_to_Build_an_OS.ipynb) | 0.3 OS自作の手順（ビルドパイプライン・フリースタンディング環境 `-mno-red-zone`・UEFIブートメディアとQEMUモニタデバッグ） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/0/0.3_Steps_to_Build_an_OS.ipynb) |
+| [`0.4_How_to_Enjoy_OS_Development.ipynb`](0/0.4_How_to_Enjoy_OS_Development.ipynb) | 0.4 OS自作の楽しみ方（スモールステップ開発・QEMU vs 実機ハイブリッド戦略・printfのない世界の5大デバッグ思考法） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/0/0.4_How_to_Enjoy_OS_Development.ipynb) |
 
 ---
 
