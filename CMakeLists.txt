@@ -42,6 +42,10 @@ add_test(NAME test_ch01_wsl_environment_inspector COMMAND ch01_wsl_environment_i
 add_executable(ch01_qemu_launch_builder src/ch01/qemu_launch_builder.cpp)
 add_test(NAME test_ch01_qemu_launch_builder COMMAND ch01_qemu_launch_builder)
 
+add_executable(ch01_boot_sequence_tracer src/ch01/boot_sequence_tracer.cpp)
+add_test(NAME test_ch01_boot_sequence_tracer COMMAND ch01_boot_sequence_tracer --test)
+
+
 
 
 

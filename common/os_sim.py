@@ -3013,6 +3013,490 @@ def plot_virtual_fat_and_boot_flow(output_path: str = "1/result/fig1_8_virtual_f
     return output_path
 
 
+# =============================================================================
+# Chapter 1.5: Behind the Scenes Boot Sequence, Reset Vector, and UEFI Phases
+# =============================================================================
+
+class CpuOperatingMode(Enum):
+    """x86 CPU Operating Modes during System Startup."""
+    REAL_MODE_16 = "16-bit Real Mode (with 4GiB CS Base)"
+    PROTECTED_MODE_32 = "32-bit Protected Mode (Flat Segmentation)"
+    COMPATIBILITY_MODE_64 = "IA-32e Compatibility Mode (32-bit App in Long Mode)"
+    LONG_MODE_64 = "64-bit Long Mode (4-Level Paging, PML4)"
+
+
+class TargetArchitecture(Enum):
+    """CPU Target Architectures and UEFI Fallback Executable Specs."""
+    X86_64 = ("x86-64 (AMD64 / Intel 64)", "BOOTX64.EFI")
+    AARCH64 = ("AArch64 (ARM 64-bit)", "BOOTAA64.EFI")
+    IA32 = ("IA-32 (x86 32-bit)", "BOOTIA32.EFI")
+    ARM32 = ("ARM 32-bit (Thumb-2)", "BOOTARM.EFI")
+    RISCV64 = ("RISC-V 64-bit", "BOOTRISCV64.EFI")
+
+    def __init__(self, description: str, fallback_filename: str):
+        self.description = description
+        self.fallback_filename = fallback_filename
+
+    @property
+    def fallback_path(self) -> str:
+        return f"\\EFI\\BOOT\\{self.fallback_filename}"
+
+
+@dataclass
+class CpuResetVector:
+    """Hardware Reset State immediately following CPU Power-On (Intel SDM Vol 3A)."""
+    rip: int = 0xFFF0
+    cs_selector: int = 0xF000
+    cs_base: int = 0xFFFF_0000
+    cr0: int = 0x6000_0010
+    cr4: int = 0x0000_0000
+    eflags: int = 0x0000_0002
+    edx_bist: int = 0x0000_0000
+
+    @property
+    def physical_address(self) -> int:
+        """Physical reset vector address: CS_base + RIP = 0xFFFFFFF0 (4GiB - 16 bytes)."""
+        return self.cs_base + self.rip
+
+    @property
+    def distance_from_4gib(self) -> int:
+        """Bytes below top of 32-bit physical address space."""
+        return 0x1_0000_0000 - self.physical_address
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "physical_reset_vector": f"0x{self.physical_address:08X}",
+            "distance_from_4gib_bytes": self.distance_from_4gib,
+            "cs_ip": f"0x{self.cs_selector:04X}:0x{self.rip:04X}",
+            "cs_base": f"0x{self.cs_base:08X}",
+            "cr0": f"0x{self.cr0:08X}",
+            "pe_bit": self.cr0 & 1,
+            "cd_bit": (self.cr0 >> 30) & 1,
+            "eflags": f"0x{self.eflags:08X}",
+            "bist_passed": self.edx_bist == 0,
+        }
+
+
+class UefiPlatformPhase(Enum):
+    """UEFI Platform Initialization (PI) Specification Phases."""
+    SEC = "SEC (Security Phase)"
+    PEI = "PEI (Pre-EFI Initialization Phase)"
+    DXE = "DXE (Driver Execution Environment Phase)"
+    BDS = "BDS (Boot Device Selection Phase)"
+    TSL = "TSL (Transient System Load Phase)"
+    RT = "RT (Run Time Phase)"
+    AL = "AL (After Life Phase)"
+
+
+@dataclass
+class UefiPhaseDetail:
+    """Detailed architectural information for a UEFI boot phase."""
+    phase: UefiPlatformPhase
+    cpu_mode: CpuOperatingMode
+    memory_type: str
+    primary_role: str
+    key_events: List[str]
+
+
+def get_uefi_platform_phases() -> List[UefiPhaseDetail]:
+    """Returns the architectural details of the 5 primary UEFI boot phases."""
+    return [
+        UefiPhaseDetail(
+            phase=UefiPlatformPhase.SEC,
+            cpu_mode=CpuOperatingMode.PROTECTED_MODE_32,
+            memory_type="Cache-as-RAM (CAR / L1/L2 temporary cache)",
+            primary_role="Root of Trust, CAR setup, transition away from 16-bit Reset Vector",
+            key_events=[
+                "Fetch first instruction at Reset Vector 0xFFFFFFF0 (4GiB - 16B)",
+                "Switch CPU to 32-bit Protected Mode",
+                "Configure MTRRs to enable Cache-as-RAM (CAR) before DRAM exists",
+                "Hand off control and PPI pointer to PEI Foundation",
+            ],
+        ),
+        UefiPhaseDetail(
+            phase=UefiPlatformPhase.PEI,
+            cpu_mode=CpuOperatingMode.PROTECTED_MODE_32,
+            memory_type="CAR -> Physical DRAM (Memory Controller initialized)",
+            primary_role="CPU/Chipset initialization and main DRAM discovery",
+            key_events=[
+                "Dispatch PEI Modules (PEIMs)",
+                "Initialize Memory Controller (DDR timings, SPD, electrical calibration)",
+                "Evacuate CAR stack/heap to discovered physical DRAM",
+                "Build HOB (Hand-Off Block) list describing system memory and hardware state",
+                "Pass HOB list to DXE Foundation",
+            ],
+        ),
+        UefiPhaseDetail(
+            phase=UefiPlatformPhase.DXE,
+            cpu_mode=CpuOperatingMode.LONG_MODE_64,
+            memory_type="Physical DRAM (4-Level Identity Paging enabled, CR3 loaded)",
+            primary_role="Switch to 64-bit Long Mode, load device drivers, produce Protocols",
+            key_events=[
+                "Construct 4-level page tables (PML4 -> PDP -> PD -> PT)",
+                "Enable IA32_EFER.LME, CR4.PAE, and CR0.PG to enter 64-bit Long Mode",
+                "Initialize UEFI Boot Services and Runtime Services",
+                "Dispatch device drivers: PCI Root, xHCI/USB, GOP (Graphics), FAT/Disk",
+                "Construct Protocol Database and Device Path tree",
+            ],
+        ),
+        UefiPhaseDetail(
+            phase=UefiPlatformPhase.BDS,
+            cpu_mode=CpuOperatingMode.LONG_MODE_64,
+            memory_type="Physical DRAM (UEFI Boot Services available)",
+            primary_role="Enforce boot policy, resolve boot target from NVRAM or Removable Media",
+            key_events=[
+                "Connect console devices (ConIn, ConOut, ConErr)",
+                "Parse NVRAM variables: BootOrder, Boot0000, Boot0001, etc.",
+                "Execute Boot Order search; if none match, trigger Removable Media Fallback",
+                "Scan FAT volumes for \\EFI\\BOOT\\BOOT{ARCH}.EFI (e.g. BOOTX64.EFI)",
+                "Load binary into memory via gBS->LoadImage()",
+                "Transfer control via gBS->StartImage()",
+            ],
+        ),
+        UefiPhaseDetail(
+            phase=UefiPlatformPhase.TSL,
+            cpu_mode=CpuOperatingMode.LONG_MODE_64,
+            memory_type="Physical DRAM (EFI System Table & BootServices active)",
+            primary_role="Execute OS Loader / UEFI Application (MikanOS BOOTX64.EFI)",
+            key_events=[
+                "Pass control to EfiMain(ImageHandle, SystemTable)",
+                "ABI register setup: RCX=ImageHandle, RDX=SystemTable (Microsoft x64 ABI)",
+                "Application draws to screen via ConOut->OutputString() or GOP frame buffer",
+                "Application prepares kernel and invokes ExitBootServices()",
+            ],
+        ),
+    ]
+
+
+@dataclass
+class StorageVolume:
+    """Mock storage partition representation for boot discovery."""
+    label: str
+    partition_type: str  # "GPT ESP", "MBR FAT", "Raw"
+    fs_type: str         # "FAT32", "FAT16", "FAT12", "NTFS", "EXT4"
+    is_removable: bool   # USB drive or virtual FAT
+    files: Dict[str, int] = field(default_factory=dict)  # Normalized uppercase path -> size
+
+    def has_file(self, normalized_path: str) -> bool:
+        norm = normalized_path.replace("\\", "/").strip("/").upper()
+        return norm in self.files
+
+
+@dataclass
+class NvramBootEntry:
+    """UEFI NVRAM Boot#### Variable Entry."""
+    boot_id: int  # e.g. 0x0001 for Boot0001
+    description: str
+    target_volume_label: str
+    target_file_path: str  # e.g. "\\EFI\\fedora\\grubx64.efi"
+    is_enabled: bool = True
+
+
+@dataclass
+class BootResolutionReport:
+    """Report generated by UEFI Boot Manager resolving boot targets."""
+    success: bool
+    selected_volume: Optional[str]
+    resolved_file_path: Optional[str]
+    resolution_method: str
+    log_trace: List[str]
+
+
+class UefiBootManagerSimulator:
+    """Simulates UEFI BDS (Boot Device Selection) decision tree and fallback resolution."""
+
+    def __init__(self, architecture: TargetArchitecture = TargetArchitecture.X86_64):
+        self.arch = architecture
+        self.volumes: List[StorageVolume] = []
+        self.nvram_entries: List[NvramBootEntry] = []
+
+    def add_volume(self, volume: StorageVolume) -> None:
+        self.volumes.append(volume)
+
+    def add_nvram_entry(self, entry: NvramBootEntry) -> None:
+        self.nvram_entries.append(entry)
+
+    def resolve(self) -> BootResolutionReport:
+        logs: List[str] = [
+            f"[BDS Phase] Initiating boot resolution for architecture: {self.arch.description}",
+            f"[BDS Phase] Standard fallback path: {self.arch.fallback_path}",
+        ]
+
+        # 1. NVRAM BootOrder evaluation
+        logs.append(f"Step 1: Inspecting NVRAM BootOrder ({len(self.nvram_entries)} configured entries)")
+        for entry in self.nvram_entries:
+            if not entry.is_enabled:
+                logs.append(f"  Skipping disabled entry Boot{entry.boot_id:04X} ({entry.description})")
+                continue
+
+            logs.append(f"  Evaluating Boot{entry.boot_id:04X}: {entry.description} -> [{entry.target_volume_label}] {entry.target_file_path}")
+            vol = next((v for v in self.volumes if v.label == entry.target_volume_label), None)
+            if vol:
+                if self._is_uefi_compliant_fs(vol.fs_type) and vol.has_file(entry.target_file_path):
+                    logs.append(f"  --> MATCH FOUND on volume [{vol.label}]: {entry.target_file_path}")
+                    return BootResolutionReport(
+                        success=True,
+                        selected_volume=vol.label,
+                        resolved_file_path=entry.target_file_path,
+                        resolution_method=f"NVRAM BootOrder (Boot{entry.boot_id:04X}: {entry.description})",
+                        log_trace=logs,
+                    )
+                else:
+                    logs.append(f"  Target file not found or incompatible FS on [{vol.label}]")
+            else:
+                logs.append(f"  Target volume [{entry.target_volume_label}] is offline or detached")
+
+        # 2. Removable Media Fallback (UEFI Spec Section 3.5.1.1)
+        logs.append("Step 2: No bootable NVRAM target succeeded. Initiating Removable Media Fallback...")
+        fallback_path = self.arch.fallback_path
+
+        for vol in self.volumes:
+            logs.append(f"  Probing volume [{vol.label}] (Type: {vol.partition_type}, FS: {vol.fs_type}, Removable: {vol.is_removable})")
+            if not self._is_uefi_compliant_fs(vol.fs_type):
+                logs.append(f"    Ignored: File system {vol.fs_type} is not UEFI-compliant (FAT12/16/32 required)")
+                continue
+
+            if vol.has_file(fallback_path):
+                logs.append(f"    --> SUCCESS: Located canonical fallback binary '{fallback_path}' on [{vol.label}]")
+                return BootResolutionReport(
+                    success=True,
+                    selected_volume=vol.label,
+                    resolved_file_path=fallback_path,
+                    resolution_method=f"Removable Media Fallback ({fallback_path})",
+                    log_trace=logs,
+                )
+            else:
+                logs.append(f"    Fallback binary '{fallback_path}' not present on [{vol.label}]")
+
+        logs.append("[BDS Error] No valid boot device or fallback binary could be resolved.")
+        return BootResolutionReport(
+            success=False,
+            selected_volume=None,
+            resolved_file_path=None,
+            resolution_method="None (Failed)",
+            log_trace=logs,
+        )
+
+    @staticmethod
+    def _is_uefi_compliant_fs(fs_type: str) -> bool:
+        return fs_type.upper() in {"FAT32", "FAT16", "FAT12"}
+
+
+# =============================================================================
+# Visualizations for Chapter 1.5
+# =============================================================================
+
+def plot_cpu_reset_to_uefi_phases(output_path: str = "1/result/fig1_9_cpu_reset_to_uefi_phases.png") -> str:
+    """
+    Renders high-resolution architectural diagram:
+    (A) x86-64 CPU Reset State & Reset Vector at 0xFFFFFFF0 (4GiB - 16B)
+    (B) UEFI PI 5-Phase Transition Flow (SEC -> PEI -> DXE -> BDS -> TSL)
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    setup_plot_style()
+
+    fig, (ax_reset, ax_phases) = plt.subplots(1, 2, figsize=(16, 9), gridspec_kw={"width_ratios": [1, 1.35]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # -------------------------------------------------------------
+    # Left Subplot: CPU Power-On Reset & Memory Map (Top of 4GiB)
+    # -------------------------------------------------------------
+    ax_reset.set_title("(A) x86-64 CPU Power-On Reset Vector\n(4GiB Address Space & SPI Flash ROM Mapping)", fontsize=12, fontweight="bold", color="#B71C1C", pad=12)
+    ax_reset.set_xlim(0, 1.0)
+    ax_reset.set_ylim(0, 1.0)
+    ax_reset.axis("off")
+
+    # 4GiB Physical Address Column
+    ax_reset.add_patch(Rectangle((0.10, 0.08), 0.35, 0.82, facecolor="#ECEFF1", edgecolor="#37474F", lw=1.8))
+    ax_reset.text(0.275, 0.87, "32-bit Physical Address Space\n(0x00000000 - 0xFFFFFFFF: 4 GiB)", fontsize=8.5, fontweight="bold", ha="center", color="#263238")
+
+    # Flash ROM Area (Top 16MB)
+    ax_reset.add_patch(Rectangle((0.10, 0.72), 0.35, 0.14, facecolor="#FFCDD2", edgecolor="#C62828", lw=1.5))
+    ax_reset.text(0.275, 0.79, "SPI Flash ROM (OVMF BIOS)\n(e.g., 0xFF000000 - 0xFFFFFFFF)", fontsize=7.8, fontweight="bold", ha="center", color="#B71C1C")
+
+    # The 16-byte Reset Vector Block
+    ax_reset.add_patch(Rectangle((0.10, 0.82), 0.35, 0.035, facecolor="#D50000", edgecolor="#000000", lw=2.0))
+    ax_reset.text(0.275, 0.835, "★ Reset Vector (16B)\n0xFFFFFFF0", fontsize=7.5, fontweight="bold", ha="center", color="#FFFFFF")
+
+    # Normal RAM
+    ax_reset.add_patch(Rectangle((0.10, 0.12), 0.35, 0.58, facecolor="#C8E6C9", edgecolor="#2E7D32", lw=1.2))
+    ax_reset.text(0.275, 0.40, "System DRAM (Main Memory)\n(Uninitialized at Power-On)", fontsize=8.0, fontweight="bold", ha="center", color="#1B5E20")
+
+    # Address labels
+    ax_reset.text(0.08, 0.86, "0xFFFFFFFF (4GiB)", fontsize=7.5, family="monospace", ha="right", va="center")
+    ax_reset.text(0.08, 0.825, "0xFFFFFFF0", fontsize=7.5, family="monospace", ha="right", va="center", color="#D50000", fontweight="bold")
+    ax_reset.text(0.08, 0.72, "0xFF000000", fontsize=7.5, family="monospace", ha="right", va="center")
+    ax_reset.text(0.08, 0.12, "0x00000000 (0B)", fontsize=7.5, family="monospace", ha="right", va="center")
+
+    # Register State Box on the Right of Left Subplot
+    reg_y = 0.52
+    ax_reset.add_patch(FancyBboxPatch((0.50, reg_y), 0.46, 0.38, boxstyle="round,pad=0.02", facecolor="#FFF9C4", edgecolor="#F57F17", lw=1.6))
+    ax_reset.text(0.52, reg_y + 0.35, "CPU Initial Register State (Reset):", fontsize=8.8, fontweight="bold", color="#E65100")
+    regs = [
+        ("RIP (Instruction Pointer)", "0x0000FFF0 (16-bit)"),
+        ("CS Selector / Base", "0xF000 / 0xFFFF0000"),
+        ("Effective Reset Address", "0xFFFFFFF0 (Base + RIP)"),
+        ("CR0 Control Register", "0x60000010 (PE=0 RealMode)"),
+        ("EFLAGS", "0x00000002 (Reserved bit 1)"),
+        ("EDX (BIST Result)", "0x00000000 (0 = Success)"),
+    ]
+    for idx, (lbl, val) in enumerate(regs):
+        y_line = reg_y + 0.30 - (idx * 0.052)
+        ax_reset.text(0.52, y_line, f"• {lbl}:", fontsize=7.5, fontweight="bold", color="#37474F")
+        ax_reset.text(0.94, y_line, val, fontsize=7.5, family="monospace", ha="right", color="#B71C1C" if "Effective" in lbl else "#0D47A1")
+
+    # Callout Arrow pointing to Reset Vector
+    ax_reset.annotate(
+        "First instruction executed by CPU\n(JMP to 32-bit SEC entry point)",
+        xy=(0.45, 0.835), xytext=(0.52, 0.44),
+        arrowprops=dict(arrowstyle="->", color="#D50000", lw=1.8),
+        fontsize=7.8, fontweight="bold", color="#B71C1C",
+    )
+
+    # Key Architectural Takeaway
+    ax_reset.add_patch(FancyBboxPatch((0.10, 0.02), 0.86, 0.08, boxstyle="square,pad=0.01", facecolor="#E1F5FE", edgecolor="#0288D1", lw=1.2))
+    ax_reset.text(0.53, 0.06, "[POINT] なぜメモリの最上端 (4GiB - 16B) なのか？\nx86 CPUは互換性のため 16-bit リアルモードで起動するが、CSベースに 0xFFFF0000 が隠し設定され、\nFlash ROM の最上部に配置されたリセットコードに確実にジャンプできるように設計されている。", fontsize=7.4, ha="center", va="center", color="#01579B")
+
+
+    # -------------------------------------------------------------
+    # Right Subplot: UEFI Platform Initialization (PI) 5-Phase Flow
+    # -------------------------------------------------------------
+    ax_phases.set_title("(B) UEFI Platform Initialization (PI) 5-Phase Architecture\n(From Hardware Root of Trust to MikanOS EfiMain)", fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+    ax_phases.set_xlim(0, 1.0)
+    ax_phases.set_ylim(0, 1.0)
+    ax_phases.axis("off")
+
+    phases_data = [
+        ("1. SEC (Security Phase)", "32-bit Protected Mode", "Cache-as-RAM (CAR)", "#FFCDD2", "#B71C1C", 0.82,
+         "• First instruction at 0xFFFFFFF0\n• Hardware root of trust & CAR init (No DRAM yet)\n• Passes temporary stack pointer & PPIs to PEI"),
+        ("2. PEI (Pre-EFI Initialization)", "32-bit Protected Mode", "CAR -> Physical DRAM", "#FFE0B2", "#E65100", 0.63,
+         "• Dispatches PEI Modules (PEIMs)\n• Initializes Memory Controller & DRAM hardware\n• Builds HOB (Hand-Off Block) list describing system memory"),
+        ("3. DXE (Driver Execution Environment)", "64-bit Long Mode (PML4)", "Main DRAM (Identity Paging)", "#C8E6C9", "#1B5E20", 0.44,
+         "• Switches CPU to 64-bit Long Mode (CR3 / Paging)\n• Loads core protocols: GOP (Graphics), PCI, USB xHCI, FAT\n• Constructs UEFI Protocol Database"),
+        ("4. BDS (Boot Device Selection)", "64-bit Long Mode", "Main DRAM (Boot Services)", "#BBDEFB", "#0D47A1", 0.25,
+         "• Reads NVRAM BootOrder variables\n• Scans FAT partitions for \\EFI\\BOOT\\BOOTX64.EFI fallback\n• Loads PE32+ image into memory via LoadImage()"),
+        ("5. TSL (Transient System Load)", "64-bit Long Mode", "Main DRAM (Application Space)", "#E1BEE7", "#4A148C", 0.06,
+         "• Calls EfiMain(ImageHandle, SystemTable) via Microsoft x64 ABI\n• MikanOS outputs 'Hello, world!' via ConOut->OutputString\n• Prepares for ExitBootServices() transfer of control"),
+    ]
+
+    for title, cpu_mode, mem_type, bg_color, border_color, y_pos, desc in phases_data:
+        h = 0.155
+        ax_phases.add_patch(FancyBboxPatch((0.04, y_pos), 0.92, h, boxstyle="round,pad=0.015", facecolor=bg_color, edgecolor=border_color, lw=1.6))
+        ax_phases.text(0.07, y_pos + h - 0.03, title, fontsize=9.2, fontweight="bold", color=border_color)
+        ax_phases.text(0.93, y_pos + h - 0.03, f"[{cpu_mode} | {mem_type}]", fontsize=7.4, family="monospace", ha="right", color="#37474F")
+        ax_phases.text(0.07, y_pos + 0.02, desc, fontsize=7.6, color="#212121", va="bottom")
+
+        if y_pos > 0.08:
+            ax_phases.annotate(
+                "",
+                xy=(0.50, y_pos), xytext=(0.50, y_pos - 0.025),
+                arrowprops=dict(arrowstyle="<-", color=border_color, lw=2.0),
+            )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_uefi_boot_device_and_file_resolution(output_path: str = "1/result/fig1_10_uefi_boot_device_and_file_resolution.png") -> str:
+    """
+    Renders high-resolution diagram:
+    (A) UEFI Boot Manager Decision Tree (NVRAM BootOrder vs Removable Media Fallback)
+    (B) Standard Architecture Fallback Naming & Folder Structure per UEFI Spec 3.5
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    setup_plot_style()
+
+    fig, (ax_tree, ax_arch) = plt.subplots(1, 2, figsize=(16, 9), gridspec_kw={"width_ratios": [1.2, 1]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # -------------------------------------------------------------
+    # Left Subplot: BDS Decision Tree Flowchart
+    # -------------------------------------------------------------
+    ax_tree.set_title("(A) UEFI BDS Boot Target Resolution Decision Tree\n(How UEFI Discovers \\EFI\\BOOT\\BOOTX64.EFI)", fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+    ax_tree.set_xlim(0, 1.0)
+    ax_tree.set_ylim(0, 1.0)
+    ax_tree.axis("off")
+
+    nodes = [
+        ("1. BDS Phase Starts", "Read NVRAM BootOrder variable (e.g. Boot0001, Boot0002)", "#E3F2FD", "#1565C0", 0.88, 0.10),
+        ("2. Iterate BootOrder Entries", "Check each configured OS device path & executable", "#BBDEFB", "#0D47A1", 0.73, 0.10),
+        ("Condition: Bootable NVRAM target found?", "YES: LoadImage & StartImage() -> Boot installed OS\nNO: Move to Removable Media Fallback", "#FFF9C4", "#F57F17", 0.56, 0.12),
+        ("3. Removable Media Scan", "Enumerate block devices: USB sticks, CD/DVD, Virtual FAT", "#C8E6C9", "#2E7D32", 0.39, 0.10),
+        ("4. Partition & FAT32 Verification", "Verify GPT ESP (EFI System Partition) or MBR with FAT12/16/32", "#E8F5E9", "#1B5E20", 0.24, 0.10),
+        ("5. Standard Path Fallback", "Locate '\\EFI\\BOOT\\BOOTX64.EFI' -> Load into memory & call EfiMain", "#FFE0B2", "#E65100", 0.08, 0.11),
+    ]
+
+    for title, desc, bg, border, y_pos, h in nodes:
+        ax_tree.add_patch(FancyBboxPatch((0.08, y_pos), 0.84, h, boxstyle="round,pad=0.015", facecolor=bg, edgecolor=border, lw=1.6))
+        ax_tree.text(0.11, y_pos + h - 0.028, title, fontsize=9.2, fontweight="bold", color=border)
+        ax_tree.text(0.11, y_pos + 0.02, desc, fontsize=7.8, color="#212121", va="bottom")
+
+        if y_pos > 0.10:
+            ax_tree.annotate(
+                "",
+                xy=(0.50, y_pos), xytext=(0.50, y_pos - 0.04),
+                arrowprops=dict(arrowstyle="<-", color=border, lw=2.0),
+            )
+
+    # -------------------------------------------------------------
+    # Right Subplot: Architecture-Specific Fallback Matrix & FAT Folder Tree
+    # -------------------------------------------------------------
+    ax_arch.set_title("(B) UEFI Specification Section 3.5 Fallback Spec\n(Architecture Naming Matrix & FAT Directory Tree)", fontsize=12, fontweight="bold", color="#B71C1C", pad=12)
+    ax_arch.set_xlim(0, 1.0)
+    ax_arch.set_ylim(0, 1.0)
+    ax_arch.axis("off")
+
+    # Table of Architectures and Fallback Names
+    ax_arch.add_patch(Rectangle((0.04, 0.54), 0.92, 0.42, facecolor="#F5F5F5", edgecolor="#616161", lw=1.4))
+    ax_arch.text(0.06, 0.92, "UEFI Default Fallback Executable Names (UEFI Spec 3.5.1):", fontsize=8.8, fontweight="bold", color="#212121")
+
+    headers = ("Target CPU Architecture", "Default Fallback Filename", "Status")
+    ax_arch.text(0.06, 0.86, headers[0], fontsize=8.0, fontweight="bold", color="#424242")
+    ax_arch.text(0.55, 0.86, headers[1], fontsize=8.0, fontweight="bold", color="#424242")
+    ax_arch.text(0.85, 0.86, headers[2], fontsize=8.0, fontweight="bold", color="#424242")
+    ax_arch.axhline(0.845, xmin=0.06, xmax=0.94, color="#9E9E9E", lw=1.0)
+
+    rows = [
+        ("x86-64 / AMD64 (Intel 64)", "\\EFI\\BOOT\\BOOTX64.EFI", "MikanOS Target", "#D50000", True),
+        ("AArch64 (ARM 64-bit)", "\\EFI\\BOOT\\BOOTAA64.EFI", "Raspberry Pi / Mac", "#0D47A1", False),
+        ("IA-32 (x86 32-bit Legacy)", "\\EFI\\BOOT\\BOOTIA32.EFI", "Early Intel Tablets", "#455A64", False),
+        ("ARM 32-bit (Thumb-2)", "\\EFI\\BOOT\\BOOTARM.EFI", "Embedded ARM", "#455A64", False),
+        ("RISC-V 64-bit", "\\EFI\\BOOT\\BOOTRISCV64.EFI", "Next-Gen Open ISA", "#2E7D32", False),
+    ]
+
+    for idx, (arch_str, path_str, note, col, highlight) in enumerate(rows):
+        y_r = 0.79 - (idx * 0.055)
+        if highlight:
+            ax_arch.add_patch(Rectangle((0.05, y_r - 0.015), 0.90, 0.048, facecolor="#FFEBEE", edgecolor="#EF5350", lw=1.0))
+        ax_arch.text(0.06, y_r, arch_str, fontsize=7.8, fontweight="bold" if highlight else "normal", color=col)
+        ax_arch.text(0.55, y_r, path_str, fontsize=7.6, family="monospace", fontweight="bold" if highlight else "normal", color=col)
+        ax_arch.text(0.85, y_r, note, fontsize=7.4, color=col)
+
+    # FAT Folder Tree Diagram
+    ax_arch.add_patch(FancyBboxPatch((0.04, 0.04), 0.92, 0.46, boxstyle="round,pad=0.015", facecolor="#E8EAF6", edgecolor="#3949AB", lw=1.6))
+    ax_arch.text(0.07, 0.46, "FAT32 USB / ESP Directory Hierarchy:", fontsize=9.0, fontweight="bold", color="#1A237E")
+
+    tree_text = (
+        "/ (FAT32 Volume Root)\n"
+        " └── EFI/                             (Directory entry: ATTR_DIRECTORY 0x10)\n"
+        "      └── BOOT/                       (Standard UEFI bootloader container)\n"
+        "           ├── BOOTX64.EFI            ★ [MikanOS Boot Application] (PE32+ Executable)\n"
+        "           │    ├── PE32+ Header       (Machine: 0x8664 AMD64, Subsystem: 0x0A UEFI App)\n"
+        "           │    ├── Section .text      (x86-64 machine instructions: EfiMain)\n"
+        "           │    └── Section .data      (UTF-16 'Hello, world!' string & literals)\n"
+        "           └── (BOOTAA64.EFI)         (Optional for multi-arch bootable media)"
+    )
+    ax_arch.text(0.07, 0.42, tree_text, fontsize=7.6, family="monospace", color="#263238", va="top")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+
 
 
 

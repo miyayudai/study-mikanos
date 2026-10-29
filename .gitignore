@@ -67,6 +67,8 @@ htmlcov/
 .env.local
 make_nb.py
 scratch/
+/result/
+
 
 
 # OS
