@@ -1075,5 +1075,388 @@ class TechStackComparison:
         }
 
 
+# ==============================================================================
+# Chapter 0 Exercises: Data Structures and Verification Helpers
+# ==============================================================================
+
+@dataclass(frozen=True)
+class QuizQuestion:
+    """A multiple-choice quiz question for Chapter 0 self-assessment."""
+
+    question_id: int
+    section: str
+    topic: str
+    question: str
+    options: list[str]
+    correct_index: int
+    explanation: str
+
+
+class Chapter0Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 0.1 to 0.5."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="0.1",
+                topic="OS開発規模と成長曲線",
+                question="名著『ゼロからのOS自作入門』で開発するMikanOSの最終段階（day30f）における総コード行数（LoC）の規模感として最も適切なものはどれか？",
+                options=[
+                    "約 1,000 行（最小限のシェルのみ）",
+                    "約 15,000〜18,000 行（GUI、USB、マルチタスク、アプリ実行を備えた完全自作OS）",
+                    "約 100,000 行（Linux 0.99 同等の規模）",
+                    "約 1,000,000 行以上（モダン汎用OSと同等）",
+                ],
+                correct_index=1,
+                explanation="MikanOSは付録まで含めて約1.5万〜1.8万行の規模であり、個人が一冊を通じて全行を把握しながら読破・改造できる絶妙なサイズに設計されています（Linux 0.01は約1万行、最新Linuxは3000万行以上）。",
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="0.2",
+                topic="特権レベルとハードウェア保護",
+                question="x86-64 アーキテクチャにおいて、OSカーネルが Ring 0 で動作し、ユーザーアプリケーションが Ring 3 で動作する主目的は何か？",
+                options=[
+                    "Ring 0 では浮動小数点数演算が高速化されるため",
+                    "アプリケーションの不具合や悪意あるメモリアクセスからカーネルと他プロセスをハードウェア機構で保護するため",
+                    "Ring 3 ではコンパイラの最適化が無効化されるため",
+                    "64ビットLong ModeではすべてのプログラムをRing 0で動かすことが禁止されているため",
+                ],
+                correct_index=1,
+                explanation="CPUの特権リング（Privilege Ring）機構は、ハードウェアレベルでI/Oポート、ページテーブル、制御レジスタ（CR0/CR3等）への直接アクセスをRing 0（スーパバイザモード）に制限し、ユーザーアプリ（Ring 3）の暴走からシステム全体を保護します。",
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="0.2",
+                topic="System V AMD64 ABI とシステムコール",
+                question="x86-64 System V AMD64 ABI において、`syscall` 命令発行時にカーネルに渡すシステムコール番号および第1〜第3引数を格納するレジスタの正しい組み合わせはどれか？",
+                options=[
+                    "システムコール番号: eax / 第1引数: ebx / 第2引数: ecx / 第3引数: edx",
+                    "システムコール番号: rax / 第1引数: rdi / 第2引数: rsi / 第3引数: rdx",
+                    "システムコール番号: rdx / 第1引数: rax / 第2引数: rbx / 第3引数: rcx",
+                    "システムコール番号: r8  / 第1引数: r9  / 第2引数: r10 / 第3引数: r11",
+                ],
+                correct_index=1,
+                explanation="System V AMD64 ABI では、システムコール番号を `rax` に格納し、引数は順に `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` を用いて渡します（通常のC関数呼び出しでの第4引数 `rcx` がシステムコールでは `r10` に置き換わる点にも注意）。",
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="0.3",
+                topic="ビルドパイプライン",
+                question="C++ソースコード（`.cpp`）から実行可能バイナリ（`.elf` や `.efi`）が生成される4つのステージの正しい順序はどれか？",
+                options=[
+                    "コンパイル → アセンブル → プリプロセス → リンク",
+                    "プリプロセス → コンパイル → アセンブル → リンク",
+                    "リンク → プリプロセス → コンパイル → アセンブル",
+                    "プリプロセス → リンク → コンパイル → アセンブル",
+                ],
+                correct_index=1,
+                explanation="ビルドパイプラインは「①プリプロセス（マクロ展開・#include展開）→ ②コンパイル（C++構文解析・最適化・アセンブリコード生成）→ ③アセンブル（機械語バイナリ・再配置可能オブジェクト生成）→ ④リンク（シンボル解決・セクション結合）」の順序で進行します。",
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="0.3",
+                topic="Freestanding 環境",
+                question="OSカーネルをコンパイルする際、`-ffreestanding` や `-nostdlib` を指定する理由として最も正しいものはどれか？",
+                options=[
+                    "実行可能ファイルのサイズを最小化してコンパイル時間を短縮するため",
+                    "ホストOSのC/C++標準ライブラリ（printfやmallocなどOSが提供するAPI）への依存を断ち、ベアメタル上で動作可能にするため",
+                    "すべての関数呼び出しをインライン展開させるため",
+                    "C++の仮想関数（vtable）の生成を抑止するため",
+                ],
+                correct_index=1,
+                explanation="OSカーネル自身がシステムコールやメモリ管理を提供する基盤であるため、ホストOS（LinuxやWindows）を前提とした標準C/C++ライブラリ（Hosted環境）は使えません。`-ffreestanding` と `-nostdlib` によって裸のハードウェアで動作するバイナリを生成します。",
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="0.3",
+                topic="UEFIブートメディア構造",
+                question="UEFIファームウェアが起動時にFAT32フォーマットのUSBメモリから自動検出して実行する、x86-64向けの標準ブートローダファイルの配置パスはどれか？",
+                options=[
+                    "`/boot/vmlinuz`",
+                    "`/EFI/BOOT/BOOTX64.EFI`",
+                    "`/System/Library/CoreServices/boot.efi`",
+                    "`/EFI/MICROSOFT/BOOT/BCD`",
+                ],
+                correct_index=1,
+                explanation="UEFI仕様書において、デフォルトの自動起動ファイルはFATファイルシステムの `\\EFI\\BOOT\\BOOTX64.EFI`（x86-64の場合）と定められています。MikanOSのブートローダもこのファイル名で配置されます。",
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="0.4",
+                topic="ベアメタルデバッグ手法",
+                question="画面描画クラスやシリアル出力がまだ未完成の極初期カーネルにおいて、コード内の特定地点までCPUが到達したかを視覚的に確認する古典的かつ確実な手法はどれか？",
+                options=[
+                    "カーネル内から GDB のブレークポイントを動的に注入する",
+                    "VRAM（フレームバッファ）の先頭バイトに直接特定の色データを書き込み、画面全体または特定ピクセルを着色する",
+                    "CPUのクロック周波数を計測してループ回数を推定する",
+                    "例外ハンドラを登録してゼロ除算例外を故意に発生させる",
+                ],
+                correct_index=1,
+                explanation="VRAMの物理アドレス（フレームバッファ）はブートローダから渡されており、ポインタキャストして `*(vram_ptr) = 0xFF;` などと書くだけで画面に色が付きます。文字列表示が不可能な極初期の生存確認として最強の武器となります。",
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="0.4",
+                topic="二分探索デバッグ戦略",
+                question="1,000 行の初期化コードのどこかでカーネルがトリプルフォールト（CPUハング）を起こしている。VRAM着色マーカーを用いた二分探索デバッグを行う場合、原因箇所を特定するために必要な最大プローブ回数は理論的におよそ何回か？",
+                options=[
+                    "約 1,000 回（線形探索）",
+                    "約 500 回",
+                    "約 10 回（ceil(log2(1000)) = 10）",
+                    "約 100 回",
+                ],
+                correct_index=2,
+                explanation="二分探索（Binary Search）では、毎回候補区間を半分に絞り込めるため、計算量は O(log2 N) です。1,000行であれば log2(1000) ≈ 9.97 より、わずか10回のプローブで原因行を特定できます。",
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="0.5",
+                topic="UEFI vs レガシーBIOS",
+                question="MikanOSがレガシーBIOSではなくUEFI（EDK II）を採用した最大の技術的メリットとして、誤っているものはどれか？",
+                options=[
+                    "起動時点でCPUが64ビットLong Mode（または32ビット保護モード）で動作しており、16ビットリアルモードの制約がない",
+                    "GOP（Graphics Output Protocol）により、起動直後から高解像度・フルカラーのフレームバッファ情報が取得できる",
+                    "EDK IIを採用することで、Linuxカーネルの全ドライバがそのまま再コンパイルなしで動作する",
+                    "FATファイルシステムドライバがファームウェアに内蔵されており、カーネルファイルのロードが容易である",
+                ],
+                correct_index=2,
+                explanation="Linuxカーネルドライバがそのまま動くわけではありません。UEFIの利点は「64ビットモードで起動」「GOPによる高解像度フレームバッファ」「FATファイルアクセス」「メモリマップ取得」をブートローダに提供してくれる点にあります。",
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="0.5",
+                topic="C++20採用の必然性",
+                question="MikanOSがカーネル開発言語としてC言語ではなくC++（C++17/20）を採用した最大のアーキテクチャ上の理由はどれか？",
+                options=[
+                    "C++のガベージコレクションによってメモリリークが完全に防止できるため",
+                    "ウィンドウ・レイヤ・タイマ・タスクなどのGUI/OS構成要素をクラス・カプセル化・インターフェース多態性で明快にモデル化できるため",
+                    "C++の例外処理（try-catch）がベアメタルのハードウェア割り込み処理に必須であるため",
+                    "C++コードはC言語コードよりも常に機械語命令数が少なくなるため",
+                ],
+                correct_index=1,
+                explanation="MikanOSはGUIを備えたOSであり、PixelWriter多態性、LayerManager、TimerManager、Taskスケジューラなど、オブジェクト指向の恩恵を最大限に活用しています。なおベアメタルC++では例外（try-catch）やRTTIは無効化（-fno-exceptions -fno-rtti）して運用します。",
+            ),
+        ]
+
+    def evaluate(self, answers: dict[int, int]) -> dict[str, any]:
+        """Evaluate user answers and return comprehensive scores, explanations, and mastery breakdown."""
+        details = []
+        correct_count = 0
+        section_scores: dict[str, dict[str, int]] = {
+            "0.1": {"correct": 0, "total": 0},
+            "0.2": {"correct": 0, "total": 0},
+            "0.3": {"correct": 0, "total": 0},
+            "0.4": {"correct": 0, "total": 0},
+            "0.5": {"correct": 0, "total": 0},
+        }
+
+        for q in self.questions:
+            user_ans = answers.get(q.question_id, -1)
+            is_correct = (user_ans == q.correct_index)
+            if is_correct:
+                correct_count += 1
+                section_scores[q.section]["correct"] += 1
+            section_scores[q.section]["total"] += 1
+
+            details.append({
+                "question_id": q.question_id,
+                "section": q.section,
+                "topic": q.topic,
+                "question": q.question,
+                "user_answer": user_ans,
+                "correct_answer": q.correct_index,
+                "is_correct": is_correct,
+                "explanation": q.explanation,
+            })
+
+        total = len(self.questions)
+        percentage = (correct_count / total) * 100.0 if total > 0 else 0.0
+
+        mastery_rates: dict[str, float] = {}
+        for sec, stat in section_scores.items():
+            rate = (stat["correct"] / stat["total"]) * 100.0 if stat["total"] > 0 else 0.0
+            mastery_rates[sec] = rate
+
+        return {
+            "total_questions": total,
+            "correct_count": correct_count,
+            "percentage": percentage,
+            "details": details,
+            "mastery_rates": mastery_rates,
+            "passed": percentage >= 80.0,
+        }
+
+
+class TheoryExerciseValidator:
+    """Validator for fill-in-the-blank theory exercises."""
+
+    @staticmethod
+    def validate_os_roles(user_roles: list[str]) -> tuple[bool, str]:
+        """Validate the two primary roles of an Operating System."""
+        cleaned = [r.strip().lower() for r in user_roles]
+        has_resource = any("リソース" in r or "資源" in r or "resource" in r for r in cleaned)
+        has_abstract = any("抽象" in r or "abstract" in r or "仮想" in r for r in cleaned)
+        if has_resource and has_abstract:
+            return True, "正解！OSの2大役割は「ハードウェアの抽象化（仮想化）」と「リソース管理（調停）」です。"
+        missing = []
+        if not has_resource:
+            missing.append("リソース管理（CPU・メモリ・I/O調停）")
+        if not has_abstract:
+            missing.append("ハードウェアの抽象化（デバイス非依存API提供）")
+        return False, f"不正解です。不足している観点: {', '.join(missing)}"
+
+    @staticmethod
+    def validate_syscall_registers(reg_map: dict[str, str]) -> tuple[bool, str]:
+        """Validate x86-64 System V AMD64 ABI syscall register conventions."""
+        expected = {
+            "syscall_number": "rax",
+            "arg1": "rdi",
+            "arg2": "rsi",
+            "arg3": "rdx",
+            "arg4": "r10",
+        }
+        errors = []
+        for k, exp in expected.items():
+            user_val = reg_map.get(k, "").strip().lower()
+            if user_val != exp:
+                errors.append(f"{k}: 期待値 '{exp}', 入力値 '{user_val}'")
+        if not errors:
+            return True, "正解！System V AMD64 ABI のシステムコールレジスタ規約（rax, rdi, rsi, rdx, r10）に完全準拠しています。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_freestanding_flags(flags: list[str]) -> tuple[bool, str]:
+        """Validate essential compiler flags for freestanding OS kernel builds."""
+        flag_set = {f.strip() for f in flags}
+        required = {"-ffreestanding", "-nostdlib"}
+        missing = required - flag_set
+        if not missing:
+            return True, "正解！-ffreestanding と -nostdlib により、ホストOS依存を遮断したベアメタルバイナリが生成されます。"
+        return False, f"不正解です。OSカーネルビルドに必須のフラグが不足しています: {missing}"
+
+
+def plot_chapter0_exercises_summary(output_path: Path | str) -> Path:
+    """Generate high-DPI summary diagram showing Chapter 0 exercise structure and learning taxonomy."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.set_facecolor("#FAFAFA")
+
+    # Categories and exercises
+    exercises = [
+        {"id": "Ex 1", "sec": "0.1 / 0.2", "title": "理論・穴埋め検証", "desc": "OSの二大役割、特権Ring分離、System V ABIレジスタ規約", "color": "#1E88E5", "y": 0.82},
+        {"id": "Ex 2", "sec": "0.3", "title": "ビルド & UEFI配置", "desc": "Freestandingフラグ判定、FAT32 EFIブートパス検証ロジック", "color": "#43A047", "y": 0.64},
+        {"id": "Ex 3", "sec": "0.4", "title": "二分探索デバッグ", "desc": "ベアメタル初期化クラッシュ行をO(log N)で特定するアルゴリズム", "color": "#FB8C00", "y": 0.46},
+        {"id": "Ex 4", "sec": "0.5", "title": "C++20 カーネル検証", "desc": "システムコールディスパッチャ & アーキテクチャ依存検証コード", "color": "#8E24AA", "y": 0.28},
+        {"id": "Ex 5", "sec": "0.1-0.5", "title": "第0章 総合テスト", "desc": "全節網羅の10問自己採点クイズ & レーダーチャート可視化", "color": "#D81B60", "y": 0.10},
+    ]
+
+    import matplotlib.patches as patches
+
+    for ex in exercises:
+        y = ex["y"]
+        # Outer box
+        rect = patches.FancyBboxPatch(
+            (0.05, y - 0.06), 0.90, 0.12,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor="white", edgecolor=ex["color"], linewidth=2, zorder=2
+        )
+        ax.add_patch(rect)
+
+        # Badge
+        badge = patches.FancyBboxPatch(
+            (0.07, y - 0.04), 0.12, 0.08,
+            boxstyle="round,pad=0.01,rounding_size=0.01",
+            facecolor=ex["color"], edgecolor="none", zorder=3
+        )
+        ax.add_patch(badge)
+        ax.text(0.13, y, ex["id"], color="white", fontsize=11, fontweight="bold", ha="center", va="center", zorder=4)
+
+        # Text
+        ax.text(0.22, y + 0.02, f"[{ex['sec']}] {ex['title']}", color="#212121", fontsize=12, fontweight="bold", va="center")
+        ax.text(0.22, y - 0.025, ex["desc"], color="#555555", fontsize=9.5, va="center")
+
+        # Status check circle
+        circle = plt.Circle((0.91, y), 0.025, facecolor="#E8F5E9", edgecolor="#4CAF50", linewidth=1.5, zorder=3)
+        ax.add_patch(circle)
+        ax.text(0.91, y, "✓", color="#2E7D32", fontsize=11, fontweight="bold", ha="center", va="center", zorder=4)
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0.0, 0.95)
+    ax.axis("off")
+    ax.set_title("MikanOS Study — Chapter 0 Exercises Curriculum & Assessment Map",
+                 fontsize=14, fontweight="bold", pad=20, color="#1A237E")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_chapter0_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float] | None = None) -> Path:
+    """Generate high-DPI 5-axis radar chart showing Chapter 0 concept mastery."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    categories = [
+        "0.1 OS規模・開発思想\n(Code Scale & Growth)",
+        "0.2 POSIX・特権モード\n(POSIX & Ring Separation)",
+        "0.3 ビルド & UEFI\n(Build Pipeline & UEFI)",
+        "0.4 デバッグ戦略\n(Bare-metal Debugging)",
+        "0.5 アーキテクチャ\n(Architecture Roadmap)",
+    ]
+    num_vars = len(categories)
+
+    if mastery_rates is None:
+        mastery_rates = {"0.1": 100.0, "0.2": 100.0, "0.3": 100.0, "0.4": 100.0, "0.5": 100.0}
+
+    values = [
+        mastery_rates.get("0.1", 100.0),
+        mastery_rates.get("0.2", 100.0),
+        mastery_rates.get("0.3", 100.0),
+        mastery_rates.get("0.4", 100.0),
+        mastery_rates.get("0.5", 100.0),
+    ]
+    values += values[:1]
+
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+    ax.set_facecolor("#FAFAFC")
+
+    # Draw grid
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+    ax.set_rlabel_position(0)
+    plt.yticks([20, 40, 60, 80, 100], ["20%", "40%", "60%", "80%", "100%"], color="#757575", size=9)
+    plt.ylim(0, 110)
+
+    # Category labels
+    plt.xticks(angles[:-1], categories, color="#1A237E", size=10, fontweight="bold")
+
+    # Plot user scores
+    ax.plot(angles, values, color="#1E88E5", linewidth=2.5, linestyle="solid", label="習得度スコア (Mastery Rate)")
+    ax.fill(angles, values, color="#42A5F5", alpha=0.35)
+
+    # Reference benchmark (80% pass line)
+    benchmark = [80] * (num_vars + 1)
+    ax.plot(angles, benchmark, color="#E53935", linewidth=1.5, linestyle="--", label="合格基準 (80% Benchmark)")
+
+    plt.title("Chapter 0 Comprehension & Skills Mastery Radar\n（第0章 概念理解度・実践スキル評価）",
+              size=13, fontweight="bold", color="#0D47A1", y=1.1)
+    plt.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), frameon=True)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+
 
 

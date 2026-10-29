@@ -27,5 +27,9 @@ add_test(NAME test_ch00_os_debug_strategies COMMAND ch00_os_debug_strategies)
 add_executable(ch00_os_architecture_roadmap src/ch00/os_architecture_roadmap.cpp)
 add_test(NAME test_ch00_os_architecture_roadmap COMMAND ch00_os_architecture_roadmap)
 
+add_executable(ch00_os_chapter0_exercises src/ch00/os_chapter0_exercises.cpp)
+add_test(NAME test_ch00_os_chapter0_exercises COMMAND ch00_os_chapter0_exercises)
+
+
 
 
