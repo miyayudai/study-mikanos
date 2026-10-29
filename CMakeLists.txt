@@ -48,6 +48,10 @@ add_test(NAME test_ch01_boot_sequence_tracer COMMAND ch01_boot_sequence_tracer -
 add_executable(ch01_binary_mutation_tester src/ch01/binary_mutation_tester.cpp)
 add_test(NAME test_ch01_binary_mutation_tester COMMAND ch01_binary_mutation_tester)
 
+add_executable(ch01_bios_uefi_comparator src/ch01/bios_uefi_comparator.cpp)
+add_test(NAME test_ch01_bios_uefi_comparator COMMAND ch01_bios_uefi_comparator)
+
+
 
 
 

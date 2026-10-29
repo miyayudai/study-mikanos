@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-88%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-5.3%25%20(12%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-95%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-5.7%25%20(13%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -88,7 +88,7 @@ cmake --build build
 | Chapter | タイトル | 節数 | 対応タグ範囲 | 主なトピック | 演習問題 | 状態 |
 |:---:|---|:---:|:---:|---|:---:|:---:|
 | **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | [`0_Exercises.ipynb`](0/0_Exercises.ipynb) | `[x]` 完了 (6/6) |
-| **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | `1_Exercises.ipynb` | `[-]` 進行中 (6/10) |
+| **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | `1_Exercises.ipynb` | `[-]` 進行中 (7/10) |
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[ ]` 未着手 (0/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
@@ -145,6 +145,7 @@ cmake --build build
 | [`1.4_Running_on_QEMU_OVMF.ipynb`](1/1.4_Running_on_QEMU_OVMF.ipynb) | 1.4 エミュレータでのやり方（QEMU仮想PCアーキテクチャ・OVMF Flash分離・仮想FAT32オンザフライ合成とUEFIブートフロー） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.4_Running_on_QEMU_OVMF.ipynb) |
 | [`1.5_What_Actually_Happened.ipynb`](1/1.5_What_Actually_Happened.ipynb) | 1.5 結局、何をやったのか？（CPUリセットベクタ0xFFFFFFF0数理・UEFI PI 5大フェーズ・標準フォールバック探索決定木・PE32+再配置と画面描画トレース） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.5_What_Actually_Happened.ipynb) |
 | [`1.6_Hands_On_Mindset.ipynb`](1/1.6_Hands_On_Mindset.ipynb) | 1.6 とにかく手を動かそう（実験・観察OODAループ・UTF-16LE文字列改変・ヌル終端欠落とゴミ露出・セクション超過・機械語無限ループ解除） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.6_Hands_On_Mindset.ipynb) |
+| [`1.7_Booting_with_UEFI_BIOS.ipynb`](1/1.7_Booting_with_UEFI_BIOS.ipynb) | 1.7 UEFI BIOSによる起動（レガシーBIOS vs UEFI・16bitリアルモードとA20ゲート・MBR 2TiB限界 vs GPT 9.4ZB・Boot/Runtimeサービス分離） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.7_Booting_with_UEFI_BIOS.ipynb) |
 
 
 

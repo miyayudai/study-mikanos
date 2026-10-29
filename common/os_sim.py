@@ -3891,3 +3891,365 @@ def plot_binary_mutation_anatomy(output_path: str = "1/result/fig1_12_binary_mut
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 1 Section 1.7: Booting with UEFI BIOS (Legacy BIOS vs UEFI, MBR vs GPT)
+# ==============================================================================
+
+class FirmwareType(Enum):
+    """Firmware system architecture type."""
+    LEGACY_BIOS = "Legacy BIOS"
+    UEFI = "UEFI"
+
+
+class CpuMode(Enum):
+    """x86 CPU operating modes during boot."""
+    REAL_MODE_16 = "16-bit Real Mode"
+    PROTECTED_MODE_32 = "32-bit Protected Mode"
+    LONG_MODE_64 = "64-bit Long Mode (IA-32e)"
+
+
+class PartitionScheme(Enum):
+    """Disk partition table scheme."""
+    MBR = "MBR (Master Boot Record)"
+    GPT = "GPT (GUID Partition Table)"
+
+
+@dataclass
+class BootComparisonFeature:
+    """Comparison metric between Legacy BIOS and UEFI."""
+    feature_name: str
+    legacy_bios_value: str
+    uefi_value: str
+    impact_explanation: str
+
+
+@dataclass
+class RealModeAddress:
+    """Real mode segment:offset calculation and A20 gate simulation."""
+    segment: int
+    offset: int
+    a20_enabled: bool = True
+
+    @property
+    def linear_address_raw(self) -> int:
+        """Calculate raw 21-bit linear address: (segment * 16) + offset."""
+        return (self.segment << 4) + self.offset
+
+    @property
+    def effective_address(self) -> int:
+        """Effective address taking A20 gate into account.
+
+        When A20 is disabled, bit 20 (1 << 20 = 0x100000) is masked out,
+        causing 1MB wraparound (0x100000 -> 0x000000).
+        """
+        raw = self.linear_address_raw
+        if self.a20_enabled:
+            return raw
+        return raw & ~(1 << 20)
+
+    @property
+    def is_wrapped(self) -> bool:
+        """True if address exceeds 1MB and wraps due to disabled A20."""
+        return (not self.a20_enabled) and (self.linear_address_raw >= 0x100000)
+
+
+@dataclass
+class MbrPartitionEntry:
+    """16-byte MBR partition table entry."""
+    boot_indicator: int          # 0x80: active/bootable, 0x00: inactive
+    starting_chs: bytes          # 3 bytes Cylinder-Head-Sector
+    partition_type: int          # e.g., 0x07 (NTFS/exFAT), 0x0B (FAT32), 0xEF (ESP)
+    ending_chs: bytes            # 3 bytes CHS
+    starting_lba: int            # 32-bit starting LBA
+    size_in_lba: int             # 32-bit sector count
+
+    @property
+    def is_bootable(self) -> bool:
+        return self.boot_indicator == 0x80
+
+    def size_bytes(self, sector_size: int = 512) -> int:
+        return self.size_in_lba * sector_size
+
+    def size_gib(self, sector_size: int = 512) -> float:
+        return self.size_bytes(sector_size) / (1024 ** 3)
+
+    @staticmethod
+    def max_addressable_capacity_tib(sector_size: int = 512) -> float:
+        """MBR uses 32-bit LBA: 2^32 * 512B = 2.199 TB = 2.0 TiB."""
+        max_sectors = (1 << 32)
+        return (max_sectors * sector_size) / (1024 ** 4)
+
+
+@dataclass
+class GptHeader:
+    """92-byte EFI Partition Table Header (LBA 1)."""
+    signature: bytes = b"EFI PART"      # 8 bytes: 'EFI PART'
+    revision: int = 0x00010000           # 4 bytes: 1.0 (0x00010000)
+    header_size: int = 92                # 4 bytes: usually 92
+    header_crc32: int = 0                # 4 bytes: CRC32 of header with this field zeroed
+    current_lba: int = 1                 # 8 bytes: LBA 1 for primary
+    backup_lba: int = 0                  # 8 bytes: last LBA of disk for backup
+    first_usable_lba: int = 34           # 8 bytes: usually 34 (after protective MBR + header + 32 entry sectors)
+    last_usable_lba: int = 0             # 8 bytes: backup LBA - 33
+    disk_guid: str = ""                  # 16 bytes: unique disk GUID
+    partition_entry_lba: int = 2         # 8 bytes: LBA 2
+    num_partition_entries: int = 128     # 4 bytes: usually 128
+    size_partition_entry: int = 128      # 4 bytes: usually 128 bytes
+    partition_array_crc32: int = 0       # 4 bytes: CRC32 of entry array
+
+    @staticmethod
+    def max_addressable_capacity_zb(sector_size: int = 512) -> float:
+        """GPT uses 64-bit LBA: 2^64 * 512B = 9.44 ZB (Zettabytes)."""
+        max_sectors = (1 << 64)
+        return (max_sectors * sector_size) / (10 ** 21)
+
+
+@dataclass
+class GptPartitionEntry:
+    """128-byte GPT partition entry."""
+    type_guid: str                       # 16-byte partition type GUID
+    unique_guid: str                     # 16-byte partition unique GUID
+    starting_lba: int                    # 8 bytes: uint64
+    ending_lba: int                      # 8 bytes: uint64
+    attributes: int                      # 8 bytes: bit flags
+    name: str                            # 72 bytes: UTF-16LE partition name (36 chars)
+
+    ESP_TYPE_GUID: str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+    LINUX_DATA_GUID: str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+    MS_BASIC_DATA_GUID: str = "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7"
+
+    @property
+    def is_esp(self) -> bool:
+        """True if partition is EFI System Partition."""
+        return self.type_guid.upper() == self.ESP_TYPE_GUID.upper()
+
+    @property
+    def sector_count(self) -> int:
+        return (self.ending_lba - self.starting_lba) + 1
+
+    def size_bytes(self, sector_size: int = 512) -> int:
+        return self.sector_count * sector_size
+
+    def size_mib(self, sector_size: int = 512) -> float:
+        return self.size_bytes(sector_size) / (1024 ** 2)
+
+
+class LegacyBiosVsUefiComparator:
+    """Quantitative and qualitative architectural comparator."""
+
+    @staticmethod
+    def get_comparison_features() -> List[BootComparisonFeature]:
+        return [
+            BootComparisonFeature(
+                feature_name="CPU起動時動作モード",
+                legacy_bios_value="16-bit リアルモード (Real Mode)",
+                uefi_value="64-bit ロングモード (Long Mode / IA-32e)",
+                impact_explanation="BIOSは8086互換リアルモードで起動するため、OS側でA20ゲート解除、GDT初期化、保護モード、ページング、ロングモードへの過酷な多段モード昇格が必要。UEFIは起動直後から64bit全命令が使用可能。"
+            ),
+            BootComparisonFeature(
+                feature_name="アクセス可能メモリ空間",
+                legacy_bios_value="1 MB (実質 640 KB: コンベンショナルメモリ)",
+                uefi_value="全物理メモリ空間 (64-bit フラット / 恒等マッピング)",
+                impact_explanation="BIOSは1MB空間内のセグメント境界やVRAM予約領域を避ける細工が必須。UEFIはGB/TB単位の物理メモリに直接アクセス可能。"
+            ),
+            BootComparisonFeature(
+                feature_name="ブートローダサイズ制限",
+                legacy_bios_value="わずか 512 バイト (MBR ブートセクタ)",
+                uefi_value="実質無制限 (ファイルシステム上の実行可能バイナリ)",
+                impact_explanation="MBRは446バイトのコード内にファイルシステムドライバすら入らず、Stage 1 -> Stage 2の多段ローダが必須。UEFIはMB単位のC++バイナリを一発ロード可能。"
+            ),
+            BootComparisonFeature(
+                feature_name="ストレージ管理 & 容量限界",
+                legacy_bios_value="MBR (32-bit LBA: 最大 2.0 TiB, 最大4パーティション)",
+                uefi_value="GPT (64-bit LBA: 最大 9.4 ZB, 標準128パーティション)",
+                impact_explanation="現代の4TB以上のHDD/NVMe SSDはMBRではアドレッシング不可能。GPTはバックアップヘッダとCRC32チェックサムで高い堅牢性を誇る。"
+            ),
+            BootComparisonFeature(
+                feature_name="ファイルシステムの直接認識",
+                legacy_bios_value="非対応 (生セクタ LBA / CHS 読み込みのみ)",
+                uefi_value="FAT12/16/32 ネイティブ認識 (/EFI/BOOT/BOOTX64.EFI)",
+                impact_explanation="BIOSは特定セクタに直接機械語を書き込む必要があったが、UEFIは一般的なFAT32ストレージにファイルをコピーするだけで起動可能。"
+            ),
+            BootComparisonFeature(
+                feature_name="ファームウェアサービス",
+                legacy_bios_value="INT 10h / INT 13h 等の生16bit BIOS割り込み",
+                uefi_value="Boot Services (メモリ・GOP等) + Runtime Services (NVRAM・時刻)",
+                impact_explanation="C言語の関数ポインタ呼び出しで高機能API（解像度変更、メモリマップ取得、ファイルI/O）を型安全に利用可能。"
+            ),
+        ]
+
+
+def plot_legacy_bios_vs_uefi_boot_flow(output_path: str = "1/result/fig1_13_legacy_bios_vs_uefi_boot_flow.png") -> str:
+    """Generate high-resolution architecture diagram comparing Legacy BIOS vs UEFI boot flow."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 9.5), dpi=300)
+    gs = fig.add_gridspec(1, 2, width_ratios=[1, 1], wspace=0.18, left=0.05, right=0.95, top=0.90, bottom=0.04)
+
+    ax_left = fig.add_subplot(gs[0, 0])
+    ax_right = fig.add_subplot(gs[0, 1])
+
+    ax_left.set_title("レガシー BIOS ブートシーケンス (Legacy BIOS Boot Flow)\n【16ビットリアルモードからの過酷な多段モード昇格】",
+                     fontsize=11.5, fontweight="bold", pad=12, color="#B71C1C")
+    ax_right.set_title("現代 UEFI ブートシーケンス (UEFI Boot Flow)\n【64ビットロングモード直接起動・FAT32ファイル実行】",
+                      fontsize=11.5, fontweight="bold", pad=12, color="#0D47A1")
+
+    for ax in [ax_left, ax_right]:
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+
+    # Left: Legacy BIOS Flow
+    bios_steps = [
+        ("1. 電源投入 & CPU リセット (Power-on Reset)",
+         "• CPU は 16-bit リアルモード (Real Mode) で起動\n• CS:IP = 0xFFFF:0x0000 (0xFFFF0) のリセットベクタへジャンプ\n• アドレッシング可能空間: わずか 1MB (20-bit)",
+         "#FFEBEE", "#C62828", "#B71C1C"),
+
+        ("2. MBR ブートセクタ読み込み (512 Bytes Limit)",
+         "• ストレージ LBA 0 (512B) を物理アドレス 0x7C00 にロード\n• コード領域は実質 446 バイトのみ！ (末尾はPTと0xAA55)\n• ファイルシステムを理解できず、セクタ番号直打ちで次段をロード",
+         "#FFCDD2", "#D32F2F", "#B71C1C"),
+
+        ("3. Stage 1 / Stage 2 多段ブートローダ",
+         "• 446Bの制約を突破するため、次段ローダをディスク生セクタからロード\n• BIOS INT 13h 割り込みを用いた低速CHS/LBAセクタ読み込み",
+         "#EF9A9A", "#E53935", "#B71C1C"),
+
+        ("4. A20 ゲート解除 & 32-bit 保護モード移行",
+         "• 80286互換ラップアラウンド防止回路 (A20 Gate) を開放\n• GDT (Global Descriptor Table) をメモリに自前構築\n• CR0.PE = 1 にセットし、32-bit 保護モード (Protected Mode) へ昇格",
+         "#FFE0B2", "#FB8C00", "#E65100"),
+
+        ("5. ページング構築 & 64-bit ロングモード移行",
+         "• PAE (CR4.PAE = 1) 有効化 & 4階層ページテーブル (PML4) 構築\n• IA32_EFER.LME = 1 & CR0.PG = 1 でようやく 64-bit Long Mode へ到達！\n• ※OSブートローダ開発の最大の挫折ポイント",
+         "#FFF3E0", "#FF9800", "#EF6C00"),
+
+        ("6. 64-bit カーネルエントリポイント呼び出し",
+         "• ようやく 64-bit カーネルコードを実行可能\n• しかし画面描画はVGAテキスト(80x25)か低解像度VESAに制限",
+         "#E8F5E9", "#43A047", "#1B5E20")
+    ]
+
+    y_pos = 0.95
+    step_h = 0.125
+    gap = 0.032
+    for i, (title, desc, fc, ec, tc) in enumerate(bios_steps):
+        ax_left.add_patch(FancyBboxPatch((0.05, y_pos - step_h), 0.90, step_h,
+                                        boxstyle="round,pad=0.015", facecolor=fc, edgecolor=ec, lw=1.8))
+        ax_left.text(0.08, y_pos - 0.032, title, fontsize=9.2, fontweight="bold", color=tc)
+        ax_left.text(0.08, y_pos - 0.062, desc, fontsize=7.8, color="#212121", va="top", linespacing=1.35)
+        if i < len(bios_steps) - 1:
+            ax_left.annotate("", xy=(0.5, y_pos - step_h - gap + 0.005), xytext=(0.5, y_pos - step_h),
+                            arrowprops=dict(arrowstyle="->", color="#C62828", lw=2.0))
+        y_pos -= (step_h + gap)
+
+    # Right: UEFI Flow
+    uefi_steps = [
+        ("1. 電源投入 & SEC フェーズ (Security Phase)",
+         "• CPU リセットベクタ 0xFFFFFFF0 (4GB直下) から直ちに 64-bit 初期化開始\n• キャッシュをRAMとして使用 (CAR: Cache-as-RAM) し、早期 C 言語実行",
+         "#E3F2FD", "#1976D2", "#0D47A1"),
+
+        ("2. PEI / DXE フェーズ (メモリ & ハードウェア初期化)",
+         "• 本格的な DRAM コントローラ初期化、PCI バス探索、UEFI ドライバ展開\n• 4階層ページングが自動構築され、CPU は完全な 64-bit Long Mode へ移行",
+         "#BBDEFB", "#1E88E5", "#0D47A1"),
+
+        ("3. BDS フェーズ: ESP & FAT32 ファイル認識",
+         "• GPT (GUID Partition Table) を解析し、EFI システムパーティションを特定\n• 内蔵 FAT32 ドライバにより /EFI/BOOT/BOOTX64.EFI を通常ファイルとして検出",
+         "#90CAF9", "#2196F3", "#0D47A1"),
+
+        ("4. BOOTX64.EFI ロード & PE32+ 再配置",
+         "• PE32+ 実行ファイルを物理メモリへロードし、ベース再配置 (Relocation) 適用\n• サイズ制限なし！ 数十MBの巨大ブートローダも一括ロード可能",
+         "#E1F5FE", "#0288D1", "#01579B"),
+
+        ("5. 64-bit Long Mode で EfiMain() を直接実行",
+         "• RCX=ImageHandle, RDX=SystemTable で C/C++ 関数ポインタ呼び出し\n• GOP による高解像度 32-bit フルカラー描画、メモリマップ取得が即座に使用可能！",
+         "#E8F5E9", "#2E7D32", "#1B5E20"),
+
+        ("6. ExitBootServices() による OS カーネルへの引き渡し",
+         "• ブートサービスを解放し、OS カーネルが全物理メモリとハードウェアを完全掌握\n• 煩わしい CPU モード昇格・セグメント計算がゼロ！",
+         "#C8E6C9", "#388E3C", "#1B5E20")
+    ]
+
+    y_pos = 0.95
+    for i, (title, desc, fc, ec, tc) in enumerate(uefi_steps):
+        ax_right.add_patch(FancyBboxPatch((0.05, y_pos - step_h), 0.90, step_h,
+                                         boxstyle="round,pad=0.015", facecolor=fc, edgecolor=ec, lw=1.8))
+        ax_right.text(0.08, y_pos - 0.032, title, fontsize=9.2, fontweight="bold", color=tc)
+        ax_right.text(0.08, y_pos - 0.062, desc, fontsize=7.8, color="#212121", va="top", linespacing=1.35)
+        if i < len(uefi_steps) - 1:
+            ax_right.annotate("", xy=(0.5, y_pos - step_h - gap + 0.005), xytext=(0.5, y_pos - step_h),
+                             arrowprops=dict(arrowstyle="->", color="#1565C0", lw=2.0))
+        y_pos -= (step_h + gap)
+
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_mbr_vs_gpt_disk_layout(output_path: str = "1/result/fig1_14_mbr_vs_gpt_disk_layout.png") -> str:
+    """Generate high-resolution architecture diagram comparing MBR vs GPT disk partitioning layouts."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax_mbr, ax_gpt) = plt.subplots(2, 1, figsize=(15, 9.2), dpi=300,
+                                         gridspec_kw={"height_ratios": [1, 1.25], "hspace": 0.35, "left": 0.05, "right": 0.95, "top": 0.92, "bottom": 0.05})
+
+    # Top: MBR Layout
+    ax_mbr.set_title("MBR (Master Boot Record) ディスクレイアウト — わずか 512 バイトの単一セクタ構造 (2.0 TiB 制限)",
+                     fontsize=11.5, fontweight="bold", pad=10, color="#C62828")
+    ax_mbr.set_xlim(0, 512)
+    ax_mbr.set_ylim(0, 1)
+    ax_mbr.axis("off")
+
+    # MBR segments
+    mbr_segments = [
+        (0, 446, "ブートストラップ機械語コード (Bootstrap Code)",
+         "446 Bytes\n• リアルモード機械語\n• ファイルシステム解釈不可\n• 次セクタ読み込みのみ", "#FFCDD2", "#C62828"),
+        (446, 16, "PT 1", "16B\n#1", "#FFE0B2", "#E65100"),
+        (462, 16, "PT 2", "16B\n#2", "#FFE0B2", "#E65100"),
+        (478, 16, "PT 3", "16B\n#3", "#FFE0B2", "#E65100"),
+        (494, 16, "PT 4", "16B\n#4", "#FFE0B2", "#E65100"),
+        (510, 2, "シグネチャ\n0x55, 0xAA", "2B\nValid", "#C8E6C9", "#2E7D32")
+    ]
+
+    for start, size, title, label, fc, ec in mbr_segments:
+        ax_mbr.add_patch(FancyBboxPatch((start, 0.25), size, 0.55, boxstyle="square,pad=0",
+                                        facecolor=fc, edgecolor=ec, lw=1.5))
+        mid = start + size / 2
+        ax_mbr.text(mid, 0.55, title, fontsize=8.5, fontweight="bold", ha="center", va="center", color=ec)
+        ax_mbr.text(mid, 0.38, label, fontsize=7.2, ha="center", va="center", color="#263238")
+
+    ax_mbr.text(256, 0.08,
+                "[!] MBR の致命的制約: 32-bit LBA (2^32 * 512B = 2.0 TiB限界) / パーティション最大4つ / 冗長性ゼロ (破損時復旧不能)",
+                fontsize=8.5, fontweight="bold", color="#B71C1C", ha="center")
+
+    # Bottom: GPT Layout
+    ax_gpt.set_title("GPT (GUID Partition Table) ディスクレイアウト — 64-bit LBA (9.4 ZB) と完全な冗長性 (Backup Header/Array)",
+                     fontsize=11.5, fontweight="bold", pad=10, color="#0D47A1")
+    ax_gpt.set_xlim(0, 100)
+    ax_gpt.set_ylim(0, 1)
+    ax_gpt.axis("off")
+
+    gpt_blocks = [
+        (1, 7, "Protective\nMBR", "LBA 0\n(512B)\n保護用MBR", "#ECEFF1", "#607D8B"),
+        (9, 10, "Primary\nGPT Header", "LBA 1\n(92B+0Pad)\nGUID/CRC32", "#BBDEFB", "#1976D2"),
+        (20, 14, "Partition\nEntry Array", "LBA 2..33\n128エントリ\n各128バイト", "#FFE0B2", "#F57C00"),
+        (35, 20, "EFI System Partition\n(ESP: FAT32)", "LBA 34..K\n/EFI/BOOT/\nBOOTX64.EFI", "#C8E6C9", "#388E3C"),
+        (56, 22, "OS Data Partitions\n(MikanOS / Linux / Windows)", "LBA K+1..M\nファイルシステム\nユーザーデータ領域", "#E1BEE7", "#7B1FA2"),
+        (79, 12, "Backup Entry\nArray", "LBA N-33..N-1\n冗長エントリ\n(CRC32照合)", "#FFE0B2", "#F57C00"),
+        (92, 7, "Backup\nHeader", "LBA N\n末尾冗長\nヘッダ", "#BBDEFB", "#1976D2")
+    ]
+
+    for start, size, title, label, fc, ec in gpt_blocks:
+        ax_gpt.add_patch(FancyBboxPatch((start, 0.30), size, 0.52, boxstyle="square,pad=0",
+                                        facecolor=fc, edgecolor=ec, lw=1.5))
+        mid = start + size / 2
+        ax_gpt.text(mid, 0.62, title, fontsize=8.0, fontweight="bold", ha="center", va="center", color=ec)
+        ax_gpt.text(mid, 0.42, label, fontsize=7.0, ha="center", va="center", color="#37474F")
+
+    ax_gpt.text(50, 0.12,
+                "[OK] GPT の革命的進歩: 64-bit LBA (9.4 Zettabytes) / 標準128パーティション / 128-bit GUID識別 / 末尾バックアップと双方向CRC32自己検証",
+                fontsize=8.5, fontweight="bold", color="#0D47A1", ha="center")
+
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path

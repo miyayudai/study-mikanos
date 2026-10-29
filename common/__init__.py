@@ -85,6 +85,17 @@ from common.os_sim import (
     BinaryMutator,
     plot_hands_on_experiment_cycle,
     plot_binary_mutation_anatomy,
+    FirmwareType,
+    CpuMode,
+    PartitionScheme,
+    BootComparisonFeature,
+    RealModeAddress,
+    MbrPartitionEntry,
+    GptHeader,
+    GptPartitionEntry,
+    LegacyBiosVsUefiComparator,
+    plot_legacy_bios_vs_uefi_boot_flow,
+    plot_mbr_vs_gpt_disk_layout,
 )
 
 __all__ = [
@@ -172,4 +183,15 @@ __all__ = [
     "BinaryMutator",
     "plot_hands_on_experiment_cycle",
     "plot_binary_mutation_anatomy",
+    "FirmwareType",
+    "CpuMode",
+    "PartitionScheme",
+    "BootComparisonFeature",
+    "RealModeAddress",
+    "MbrPartitionEntry",
+    "GptHeader",
+    "GptPartitionEntry",
+    "LegacyBiosVsUefiComparator",
+    "plot_legacy_bios_vs_uefi_boot_flow",
+    "plot_mbr_vs_gpt_disk_layout",
 ]
