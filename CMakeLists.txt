@@ -36,6 +36,10 @@ add_test(NAME test_ch01_pe32plus_parser COMMAND ch01_pe32plus_parser ../vendor/m
 add_executable(ch01_block_device_inspector src/ch01/block_device_inspector.cpp)
 add_test(NAME test_ch01_block_device_inspector COMMAND ch01_block_device_inspector --demo)
 
+add_executable(ch01_wsl_environment_inspector src/ch01/wsl_environment_inspector.cpp)
+add_test(NAME test_ch01_wsl_environment_inspector COMMAND ch01_wsl_environment_inspector --demo)
+
+
 
 
 

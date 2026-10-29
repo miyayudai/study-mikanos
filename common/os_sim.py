@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import struct
+from typing import Any, Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -2099,6 +2101,345 @@ def plot_uefi_usb_fat_structure(output_path: str | Path) -> Path:
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 1.3: Windows Subsystem for Linux (WSL) Architecture & Storage Simulation
+# ==============================================================================
+
+
+class WSLArchType(Enum):
+    """WSL Architecture classification."""
+    WSL1 = "WSL1 (System Call Translation / LXCore.sys)"
+    WSL2 = "WSL2 (Hyper-V Lightweight Utility VM + Native Linux Kernel)"
+    NATIVE_LINUX = "Native Linux (Direct Hardware / Bare Metal)"
+
+
+@dataclass
+class DrvFsMountOptions:
+    """DrvFs (Windows Drive Mount on WSL) mount options configuration."""
+    metadata: bool = True
+    case: str = "dir"  # "off", "dir", "force"
+    uid: int = 1000
+    gid: int = 1000
+    umask: int = 0o022
+    fmask: int = 0o111
+    dmask: int = 0o000
+
+    def to_mount_flags_string(self) -> str:
+        """Generate mount options argument string for mount command or wsl.conf."""
+        opts = []
+        if self.metadata:
+            opts.append("metadata")
+        if self.case in ("off", "dir", "force"):
+            opts.append(f"case={self.case}")
+        opts.append(f"uid={self.uid}")
+        opts.append(f"gid={self.gid}")
+        opts.append(f"umask={oct(self.umask)[2:]}")
+        opts.append(f"fmask={oct(self.fmask)[2:]}")
+        opts.append(f"dmask={oct(self.dmask)[2:]}")
+        return ",".join(opts)
+
+    def calculate_file_permissions(self, is_directory: bool = False, has_metadata: bool = False, stored_mode: Optional[int] = None) -> int:
+        """Calculate effective POSIX permission mode (e.g. 0o755)."""
+        if has_metadata and stored_mode is not None:
+            return stored_mode & 0o7777
+
+        base_mode = 0o777 if is_directory else 0o777
+        mask = self.dmask if is_directory else self.fmask
+        # Also apply general umask
+        effective = base_mode & ~(mask | self.umask)
+        return effective
+
+
+class WSLPathConverter:
+    """Bi-directional path converter between Windows and WSL2 Linux."""
+
+    @staticmethod
+    def is_windows_path(path: str) -> bool:
+        """Check if path is a Windows style path (e.g. C:\\... or D:/...)."""
+        if len(path) >= 2 and path[0].isalpha() and path[1] == ":":
+            return True
+        if path.startswith("\\\\") or path.startswith("//"):
+            return True
+        return False
+
+    @staticmethod
+    def is_wsl_path(path: str) -> bool:
+        """Check if path is a standard Unix/WSL POSIX path."""
+        return path.startswith("/")
+
+    @staticmethod
+    def windows_to_wsl(win_path: str, mount_root: str = "/mnt") -> str:
+        """Convert a Windows path (e.g. D:\\EFI\\BOOT\\BOOTX64.EFI) to WSL path (/mnt/d/EFI/BOOT/BOOTX64.EFI)."""
+        clean_path = win_path.replace("\\", "/")
+        # UNC WSL path check: \\wsl$\Ubuntu\home\... -> /home/...
+        unc_wsl_prefix = "//wsl$/"
+        if clean_path.lower().startswith(unc_wsl_prefix):
+            parts = clean_path[len(unc_wsl_prefix):].split("/", 1)
+            if len(parts) > 1:
+                return "/" + parts[1]
+            return "/"
+
+        # Drive letter check: C:/path or D:/path
+        if len(clean_path) >= 2 and clean_path[0].isalpha() and clean_path[1] == ":":
+            drive = clean_path[0].lower()
+            rest = clean_path[2:]
+            if not rest.startswith("/"):
+                rest = "/" + rest
+            root = mount_root.rstrip("/")
+            return f"{root}/{drive}{rest}"
+
+        return clean_path
+
+    @staticmethod
+    def wsl_to_windows(wsl_path: str, distro_name: str = "Ubuntu", mount_root: str = "/mnt") -> str:
+        """Convert a WSL path (/mnt/d/EFI/BOOT) to Windows path (D:\\EFI\\BOOT or \\\\wsl$\\Distro\\...)."""
+        clean_path = wsl_path.replace("\\", "/")
+        root = mount_root.rstrip("/") + "/"
+        if clean_path.startswith(root):
+            # Mounted Windows drive: /mnt/c/path -> C:\path
+            sub = clean_path[len(root):]
+            if len(sub) > 0 and sub[0].isalpha():
+                drive = sub[0].upper()
+                rest = sub[1:].replace("/", "\\")
+                if not rest.startswith("\\") and len(rest) > 0:
+                    rest = "\\" + rest
+                return f"{drive}:{rest}"
+
+        # Native Linux path: /home/student/mikanos -> \\wsl$\Ubuntu\home\student\mikanos
+        rel_posix = clean_path.lstrip("/").replace("/", "\\")
+        return f"\\\\wsl$\\{distro_name}\\{rel_posix}"
+
+
+class WSLStorageSimulator:
+    """Simulator for WSL1 vs WSL2 storage architectures, DrvFs, 9P/virtio-fs, and USB/IP."""
+
+    @staticmethod
+    def detect_environment(version_string: str) -> WSLArchType:
+        """Detect WSL version from /proc/version or uname output."""
+        v_lower = version_string.lower()
+        if "microsoft-standard" in v_lower or "wsl2" in v_lower:
+            return WSLArchType.WSL2
+        elif "microsoft" in v_lower or "wsl" in v_lower:
+            return WSLArchType.WSL1
+        return WSLArchType.NATIVE_LINUX
+
+    @staticmethod
+    def parse_proc_mounts(mounts_data: str) -> List[Dict[str, Any]]:
+        """Parse Linux /proc/mounts to find 9p, virtiofs, and drvfs entries."""
+        results = []
+        for line in mounts_data.strip().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 4:
+                dev, mnt_point, fstype, options = parts[0], parts[1], parts[2], parts[3]
+                opts_list = options.split(",")
+                results.append({
+                    "device": dev,
+                    "mount_point": mnt_point,
+                    "fstype": fstype,
+                    "options": opts_list,
+                    "is_drvfs": fstype in ("drvfs", "9p", "virtiofs") and mnt_point.startswith("/mnt/"),
+                })
+        return results
+
+    @staticmethod
+    def get_storage_performance_matrix() -> Dict[str, Dict[str, Any]]:
+        """Return I/O performance characteristics of WSL2 storage backends."""
+        return {
+            "ext4_vhdx": {
+                "name": "WSL2 Virtual Hard Disk (ext4 inside VHDX)",
+                "location": "/home/username/... or /root/...",
+                "read_iops": "High (Native Linux Block I/O)",
+                "write_iops": "High (Native Linux Block I/O)",
+                "git_status_speed": "Instant (~0.05s)",
+                "case_sensitive": True,
+                "posix_metadata": True,
+                "recommended_for": "Compiling MikanOS, EDK II build, Git clone",
+            },
+            "drvfs_9p": {
+                "name": "Windows Host Drive via DrvFs (9P / virtio-fs)",
+                "location": "/mnt/c/..., /mnt/d/...",
+                "read_iops": "Moderate (Inter-VM IPC via 9P/virtio-fs)",
+                "write_iops": "Moderate to Low (NTFS Filter & IPC roundtrips)",
+                "git_status_speed": "Noticeably slower (~1.5s - 5.0s)",
+                "case_sensitive": "Configurable (case=dir / case=off)",
+                "posix_metadata": "Configurable (metadata option required)",
+                "recommended_for": "Copying final BOOTX64.EFI to USB, Host editor access",
+            },
+            "usbip_raw": {
+                "name": "USB/IP Direct Hardware Attach (usbipd-win)",
+                "location": "/dev/sdb, /dev/sdc",
+                "read_iops": "High (Raw USB Block SCSI Pass-through)",
+                "write_iops": "High (Raw USB Block SCSI Pass-through)",
+                "git_status_speed": "N/A (Raw device)",
+                "case_sensitive": "Filesystem dependent",
+                "posix_metadata": "Filesystem dependent",
+                "recommended_for": "QEMU direct disk pass-through, Raw partition management",
+            },
+        }
+
+    @staticmethod
+    def generate_boot_media_copy_script(efi_binary_source: str, windows_drive_letter: str) -> List[str]:
+        """Generate safe, idempotent bash commands to copy BOOTX64.EFI to mounted USB drive."""
+        clean_drive = windows_drive_letter.rstrip(":").upper()
+        drive_lower = clean_drive.lower()
+        mount_point = f"/mnt/{drive_lower}"
+        target_dir = f"{mount_point}/EFI/BOOT"
+        target_file = f"{target_dir}/BOOTX64.EFI"
+
+        script = [
+            f"# Check if Windows drive {clean_drive}: is mounted at {mount_point}",
+            f"if ! mountpoint -q {mount_point}; then",
+            f"    sudo mkdir -p {mount_point}",
+            f"    sudo mount -t drvfs {clean_drive}: {mount_point} -o metadata,case=dir",
+            "fi",
+            f"# Ensure target UEFI directory hierarchy exists (case-preserving)",
+            f"sudo mkdir -p {target_dir}",
+            f"# Copy built EFI application to the standard UEFI fallback boot path",
+            f"sudo cp {efi_binary_source} {target_file}",
+            f"# Flush OS buffers to ensure complete physical disk persistence",
+            "sync",
+            f"echo 'Successfully deployed {efi_binary_source} -> {target_file}'",
+        ]
+        return script
+
+
+def plot_wsl1_vs_wsl2_architecture(
+    output_path: str = "1/result/fig1_5_wsl1_vs_wsl2_architecture.png",
+) -> str:
+    """Generate high-resolution architecture comparison diagram between WSL1 and WSL2."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 9.5), gridspec_kw={"width_ratios": [1, 1]})
+
+    # Left: WSL1 Architecture (System Call Emulation)
+    wsl1_layers = [
+        ("User Space (Linux ELF64 Binaries)\nBash, GCC, Clang, Python, Git (Unmodified)", "#E1F5FE", "#0288D1", 0.14),
+        ("POSIX System Call API (SYS_read, SYS_write, fork, clone...)", "#FFF9C4", "#FBC02D", 0.09),
+        ("Translation Layer: LXSS / LXCore.sys\n(Translates Linux Syscalls -> Windows NT Kernel APIs in real-time)\n• No real Linux kernel running\n• Pico Process / Pico Provider architecture", "#FFE0B2", "#E65100", 0.22),
+        ("Windows NT Kernel & Native Drivers (ntoskrnl.exe)\nThread Scheduler, Object Manager, Virtual Memory Manager", "#E8EAF6", "#3F51B5", 0.16),
+        ("Direct NTFS / FAT File System Drivers\nDirect disk access via Windows I/O subsystem", "#C8E6C9", "#2E7D32", 0.14),
+        ("Physical x86-64 Hardware (CPU, RAM, USB Host Controller, Storage)", "#CFD8DC", "#37474F", 0.12),
+    ]
+
+    cur_y = 0.0
+    for title, fcolor, ecolor, height in wsl1_layers:
+        ax1.broken_barh([(0.05, 0.9)], (cur_y, height), facecolors=fcolor, edgecolor=ecolor, linewidth=1.8)
+        ax1.text(0.5, cur_y + height / 2.0, title, ha="center", va="center", fontsize=9.2, color="#212121", linespacing=1.2)
+        cur_y += height + 0.02
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(-0.04, cur_y + 0.04)
+    ax1.axis("off")
+    ax1.set_title("WSL1: System Call Translation Architecture\n(LXCore.sys Emulation, No Linux Kernel, High NTFS Compatibility)", fontsize=11.5, fontweight="bold", color="#C62828")
+
+    # Right: WSL2 Architecture (Hyper-V Utility VM + Native Linux Kernel)
+    wsl2_layers = [
+        ("User Space (Linux ELF64 Binaries)\nBash, GCC, Clang, EDK II, QEMU, Docker (100% Native Syscalls)", "#E1F5FE", "#0288D1", 0.14),
+        ("Native Linux Kernel (x86-64 v5.x / v6.x MS-Standard)\nReal Page Tables, Real cgroups, Real Netfilter, ext4 Driver", "#C8E6C9", "#2E7D32", 0.18),
+        ("Inter-VM Storage & I/O Communication Bridge\n• 9P / virtio-fs File Sharing Bridge -> DrvFs (/mnt/c, /mnt/d)\n• Virtual ext4 VHDX (Direct raw block I/O at native Linux speed!)\n• USB/IP Driver (usbipd-win attach /dev/sdX)", "#FFF9C4", "#F57F17", 0.20),
+        ("Hyper-V Lightweight Utility VM (Hypervisor Type-1)\nDynamic Memory Allocation (vHost), Micro-VM Container (<1s boot)", "#FFE0B2", "#FB8C00", 0.14),
+        ("Host Windows 11/10 OS & Hyper-V Hypervisor\nHardware Virtualization (Intel VT-x / AMD-V, SLAT / EPT)", "#E8EAF6", "#3F51B5", 0.14),
+        ("Physical x86-64 Hardware (CPU, RAM, USB 3.0 xHCI Controller, Storage)", "#CFD8DC", "#37474F", 0.12),
+    ]
+
+    cur_y = 0.0
+    for title, fcolor, ecolor, height in wsl2_layers:
+        ax2.broken_barh([(0.05, 0.9)], (cur_y, height), facecolors=fcolor, edgecolor=ecolor, linewidth=1.8)
+        ax2.text(0.5, cur_y + height / 2.0, title, ha="center", va="center", fontsize=9.2, color="#212121", linespacing=1.2)
+        cur_y += height + 0.02
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(-0.04, cur_y + 0.04)
+    ax2.axis("off")
+    ax2.set_title("WSL2: Hyper-V Utility VM + Native Linux Kernel\n(100% System Call Compatibility, VHDX ext4 Speed, USB/IP Support)", fontsize=11.5, fontweight="bold", color="#1565C0")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_wsl_storage_and_usb_mount(
+    output_path: str = "1/result/fig1_6_wsl_storage_and_usb_mount.png",
+) -> str:
+    """Generate high-resolution diagram of WSL2 storage sharing, DrvFs mount, and USB/IP access."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(15, 9))
+
+    # Containers representing Windows Host vs WSL2 VM
+    # Windows Host Box
+    rect_win = plt.Rectangle((0.03, 0.08), 0.42, 0.84, facecolor="#F3E5F5", edgecolor="#7B1FA2", linewidth=2.2, linestyle="--", alpha=0.5)
+    ax.add_patch(rect_win)
+    ax.text(0.24, 0.88, "Windows Host Operating System\n(NTFS, Explorer, Hardware Management)", ha="center", va="center", fontsize=11, fontweight="bold", color="#4A148C")
+
+    # WSL2 VM Box
+    rect_wsl = plt.Rectangle((0.55, 0.08), 0.42, 0.84, facecolor="#E3F2FD", edgecolor="#1976D2", linewidth=2.2, linestyle="--", alpha=0.5)
+    ax.add_patch(rect_wsl)
+    ax.text(0.76, 0.88, "WSL2 Virtual Machine (Linux Kernel)\n(ext4, DrvFs, GNU/Clang Toolchain)", ha="center", va="center", fontsize=11, fontweight="bold", color="#0D47A1")
+
+    # Windows Components
+    win_nodes = [
+        ("Host C: Drive (NTFS)\nC:\\Users\\uchan\\mikanos", 0.68, "#FFFFFF", "#7B1FA2"),
+        ("USB Flash Drive (FAT32, D:)\nPhysical UEFI Boot Media", 0.46, "#FFF9C4", "#F57F17"),
+        ("usbipd-win Service\nUSB/IP Server Daemon for Windows", 0.24, "#FFE0B2", "#E65100"),
+    ]
+    for text, y, fcol, ecol in win_nodes:
+        ax.broken_barh([(0.06, 0.36)], (y - 0.07, 0.14), facecolors=fcol, edgecolor=ecol, linewidth=1.6)
+        ax.text(0.24, y, text, ha="center", va="center", fontsize=9.2, color="#212121", linespacing=1.2)
+
+    # WSL2 Components
+    wsl_nodes = [
+        ("DrvFs Mount: /mnt/c\n(9P / virtio-fs file protocol bridge)", 0.68, "#FFFFFF", "#1976D2"),
+        ("DrvFs USB Mount: /mnt/d\n(sudo mount -t drvfs D: /mnt/d -o metadata)", 0.46, "#FFF9C4", "#F57F17"),
+        ("USB/IP Client (vhci_hcd)\nRaw Block Device: /dev/sdb (SCSI Disk)", 0.24, "#C8E6C9", "#2E7D32"),
+    ]
+    for text, y, fcol, ecol in wsl_nodes:
+        ax.broken_barh([(0.58, 0.36)], (y - 0.07, 0.14), facecolors=fcol, edgecolor=ecol, linewidth=1.6)
+        ax.text(0.76, y, text, ha="center", va="center", fontsize=9.2, color="#212121", linespacing=1.2)
+
+    # Connecting arrows between Windows and WSL2
+    # 1. /mnt/c bridging
+    ax.annotate(
+        "9P / virtio-fs Bridge\n(Cross-VM File I/O)",
+        xy=(0.58, 0.68), xytext=(0.42, 0.68),
+        arrowprops=dict(arrowstyle="<->", color="#7B1FA2", lw=2.2),
+        ha="center", va="bottom", fontsize=8.8, fontweight="bold", color="#4A148C"
+    )
+
+    # 2. DrvFs USB Mount (Method A)
+    ax.annotate(
+        "Method A: DrvFs Mount\n(File-level FAT32 Access)\nsudo mount -t drvfs D: /mnt/d",
+        xy=(0.58, 0.46), xytext=(0.42, 0.46),
+        arrowprops=dict(arrowstyle="->", color="#E65100", lw=2.2),
+        ha="center", va="bottom", fontsize=8.8, fontweight="bold", color="#BF360C"
+    )
+
+    # 3. USB/IP Pass-through (Method B)
+    ax.annotate(
+        "Method B: usbipd-win Pass-through\n(Raw Hardware Block Pass-through)\nusbipd attach --wsl --busid X-Y",
+        xy=(0.58, 0.24), xytext=(0.42, 0.24),
+        arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2.2),
+        ha="center", va="bottom", fontsize=8.8, fontweight="bold", color="#1B5E20"
+    )
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0.05, 0.96)
+    ax.axis("off")
+    ax.set_title("WSL2 Storage Interoperability & USB Media Access Architecture\n(DrvFs File Bridge vs USB/IP Hardware Pass-through)", fontsize=13, fontweight="bold", color="#0D47A1", pad=15)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
 
 
 

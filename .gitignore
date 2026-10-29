@@ -38,6 +38,7 @@ bin/
 *.a
 *.lib
 block_device_inspector
+wsl_environment_inspector
 1/*.cpp
 CMakeCache.txt
 CMakeFiles/

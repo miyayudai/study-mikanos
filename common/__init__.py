@@ -50,6 +50,12 @@ from common.os_sim import (
     LinuxBlockSubsystemSimulator,
     plot_linux_block_layer_and_usb_detection,
     plot_uefi_usb_fat_structure,
+    WSLArchType,
+    DrvFsMountOptions,
+    WSLPathConverter,
+    WSLStorageSimulator,
+    plot_wsl1_vs_wsl2_architecture,
+    plot_wsl_storage_and_usb_mount,
 )
 
 __all__ = [
@@ -102,4 +108,10 @@ __all__ = [
     "LinuxBlockSubsystemSimulator",
     "plot_linux_block_layer_and_usb_detection",
     "plot_uefi_usb_fat_structure",
+    "WSLArchType",
+    "DrvFsMountOptions",
+    "WSLPathConverter",
+    "WSLStorageSimulator",
+    "plot_wsl1_vs_wsl2_architecture",
+    "plot_wsl_storage_and_usb_mount",
 ]
