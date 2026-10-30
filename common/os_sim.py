@@ -16898,3 +16898,681 @@ def plot_fig4_08_cxa_pure_virtual_and_abi(output_path: str) -> str:
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 4.5: ELF Loader, PT_LOAD Segments & .bss Zero-Clear Simulator
+# ==============================================================================
+
+# ELF Header Ident indices and constants
+EI_NIDENT = 16
+ELF_MAGIC = b"\x7fELF"
+
+ELFCLASSNONE = 0
+ELFCLASS32 = 1
+ELFCLASS64 = 2
+
+ELFDATANONE = 0
+ELFDATA2LSB = 1  # Little endian
+ELFDATA2MSB = 2  # Big endian
+
+EV_CURRENT = 1
+
+ET_NONE = 0
+ET_REL = 1
+ET_EXEC = 2
+ET_DYN = 3
+ET_CORE = 4
+
+EM_NONE = 0
+EM_386 = 3
+EM_X86_64 = 62
+
+# Segment types (p_type)
+PT_NULL = 0
+PT_LOAD = 1
+PT_DYNAMIC = 2
+PT_INTERP = 3
+PT_NOTE = 4
+PT_SHLIB = 5
+PT_PHDR = 6
+PT_TLS = 7
+
+# Segment flags (p_flags)
+PF_X = 0x1  # Execute
+PF_W = 0x2  # Write
+PF_R = 0x4  # Read
+
+
+@dataclass
+class Elf64Ehdr:
+    """ELF-64 Header (64 bytes).
+    
+    Offset  Size  Field
+    0       16    e_ident
+    16      2     e_type
+    18      2     e_machine
+    20      4     e_version
+    24      8     e_entry
+    32      8     e_phoff
+    40      8     e_shoff
+    48      4     e_flags
+    52      2     e_ehsize
+    54      2     e_phentsize
+    56      2     e_phnum
+    58      2     e_shentsize
+    60      2     e_shnum
+    62      2     e_shstrndx
+    """
+    e_ident: bytes = field(default_factory=lambda: b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8)
+    e_type: int = ET_EXEC
+    e_machine: int = EM_X86_64
+    e_version: int = EV_CURRENT
+    e_entry: int = 0x100000
+    e_phoff: int = 64
+    e_shoff: int = 0
+    e_flags: int = 0
+    e_ehsize: int = 64
+    e_phentsize: int = 56
+    e_phnum: int = 0
+    e_shentsize: int = 64
+    e_shnum: int = 0
+    e_shstrndx: int = 0
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> Elf64Ehdr:
+        """Parse 64-byte ELF header from binary data."""
+        if len(data) < 64:
+            raise ValueError(f"Data too short for Elf64_Ehdr: {len(data)} bytes (expected >= 64)")
+        
+        ident = data[:16]
+        fields = struct.unpack("<HHIQQQIHHHHHH", data[16:64])
+        return cls(
+            e_ident=ident,
+            e_type=fields[0],
+            e_machine=fields[1],
+            e_version=fields[2],
+            e_entry=fields[3],
+            e_phoff=fields[4],
+            e_shoff=fields[5],
+            e_flags=fields[6],
+            e_ehsize=fields[7],
+            e_phentsize=fields[8],
+            e_phnum=fields[9],
+            e_shentsize=fields[10],
+            e_shnum=fields[11],
+            e_shstrndx=fields[12],
+        )
+
+    def to_bytes(self) -> bytes:
+        """Serialize Elf64_Ehdr into 64 bytes."""
+        ident_padded = (self.e_ident + b"\x00" * 16)[:16]
+        return struct.pack(
+            "<16sHHIQQQIHHHHHH",
+            ident_padded,
+            self.e_type,
+            self.e_machine,
+            self.e_version,
+            self.e_entry,
+            self.e_phoff,
+            self.e_shoff,
+            self.e_flags,
+            self.e_ehsize,
+            self.e_phentsize,
+            self.e_phnum,
+            self.e_shentsize,
+            self.e_shnum,
+            self.e_shstrndx,
+        )
+
+    @property
+    def is_valid_magic(self) -> bool:
+        """Check if magic is 0x7f 'E' 'L' 'F'."""
+        return self.e_ident[:4] == ELF_MAGIC
+
+    @property
+    def is_64bit(self) -> bool:
+        """Check if ELF class is 64-bit (ELFCLASS64 == 2)."""
+        return len(self.e_ident) > 4 and self.e_ident[4] == ELFCLASS64
+
+    @property
+    def is_little_endian(self) -> bool:
+        """Check if ELF data encoding is 2's complement little endian (ELFDATA2LSB == 1)."""
+        return len(self.e_ident) > 5 and self.e_ident[5] == ELFDATA2LSB
+
+    @property
+    def is_x86_64(self) -> bool:
+        """Check if target machine is AMD x86-64 (EM_X86_64 == 62)."""
+        return self.e_machine == EM_X86_64
+
+
+@dataclass
+class Elf64Phdr:
+    """ELF-64 Program Header (56 bytes).
+    
+    Offset  Size  Field
+    0       4     p_type
+    4       4     p_flags
+    8       8     p_offset
+    16      8     p_vaddr
+    24      8     p_paddr
+    32      8     p_filesz
+    40      8     p_memsz
+    48      8     p_align
+    """
+    p_type: int = PT_LOAD
+    p_flags: int = PF_R | PF_X
+    p_offset: int = 0
+    p_vaddr: int = 0x100000
+    p_paddr: int = 0x100000
+    p_filesz: int = 0
+    p_memsz: int = 0
+    p_align: int = 0x1000
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> Elf64Phdr:
+        """Parse 56-byte ELF program header from binary data."""
+        if len(data) < 56:
+            raise ValueError(f"Data too short for Elf64_Phdr: {len(data)} bytes (expected >= 56)")
+        fields = struct.unpack("<IIQQQQQQ", data[:56])
+        return cls(
+            p_type=fields[0],
+            p_flags=fields[1],
+            p_offset=fields[2],
+            p_vaddr=fields[3],
+            p_paddr=fields[4],
+            p_filesz=fields[5],
+            p_memsz=fields[6],
+            p_align=fields[7],
+        )
+
+    def to_bytes(self) -> bytes:
+        """Serialize Elf64_Phdr into 56 bytes."""
+        return struct.pack(
+            "<IIQQQQQQ",
+            self.p_type,
+            self.p_flags,
+            self.p_offset,
+            self.p_vaddr,
+            self.p_paddr,
+            self.p_filesz,
+            self.p_memsz,
+            self.p_align,
+        )
+
+    @property
+    def is_load(self) -> bool:
+        """Check if segment is PT_LOAD."""
+        return self.p_type == PT_LOAD
+
+    @property
+    def flags_str(self) -> str:
+        """Human-readable segment permissions (e.g. 'R-X', 'RW-')."""
+        r = "R" if (self.p_flags & PF_R) else "-"
+        w = "W" if (self.p_flags & PF_W) else "-"
+        x = "X" if (self.p_flags & PF_X) else "-"
+        return f"{r}{w}{x}"
+
+    @property
+    def bss_size(self) -> int:
+        """Calculate BSS size (p_memsz - p_filesz)."""
+        return max(0, self.p_memsz - self.p_filesz)
+
+
+class ElfLoaderSimulator:
+    """Simulator of MikanOS UEFI bootloader ELF segment loading logic."""
+
+    @staticmethod
+    def parse_elf(elf_data: bytes) -> Tuple[Elf64Ehdr, List[Elf64Phdr]]:
+        """Parse ELF header and all program headers from raw binary."""
+        ehdr = Elf64Ehdr.from_bytes(elf_data)
+        if not ehdr.is_valid_magic:
+            raise ValueError("Invalid ELF magic number (expected \\x7fELF)")
+        if not ehdr.is_64bit:
+            raise ValueError("Not a 64-bit ELF binary (ELFCLASS64 required)")
+        if not ehdr.is_x86_64:
+            raise ValueError(f"Machine architecture {ehdr.e_machine} is not x86-64 (expected {EM_X86_64})")
+
+        phdrs: List[Elf64Phdr] = []
+        for i in range(ehdr.e_phnum):
+            ph_offset = ehdr.e_phoff + i * ehdr.e_phentsize
+            ph_data = elf_data[ph_offset : ph_offset + ehdr.e_phentsize]
+            phdrs.append(Elf64Phdr.from_bytes(ph_data))
+        return ehdr, phdrs
+
+    @staticmethod
+    def calc_load_address_range(ehdr: Elf64Ehdr, phdrs: List[Elf64Phdr]) -> Tuple[int, int]:
+        """Compute [first, last) virtual address range for PT_LOAD segments.
+        
+        Corresponds to CalcLoadAddressRange() in MikanLoaderPkg/Main.c:
+            *first = MAX_UINT64;
+            *last = 0;
+            for (Elf64_Half i = 0; i < ehdr->e_phnum; ++i) {
+                if (phdr[i].p_type != PT_LOAD) continue;
+                *first = MIN(*first, phdr[i].p_vaddr);
+                *last = MAX(*last, phdr[i].p_vaddr + phdr[i].p_memsz);
+            }
+        """
+        first = 0xFFFFFFFFFFFFFFFF
+        last = 0
+        has_load = False
+
+        for phdr in phdrs:
+            if phdr.p_type != PT_LOAD:
+                continue
+            has_load = True
+            first = min(first, phdr.p_vaddr)
+            last = max(last, phdr.p_vaddr + phdr.p_memsz)
+
+        if not has_load:
+            return (0, 0)
+        return (first, last)
+
+    @staticmethod
+    def calc_required_pages(first_addr: int, last_addr: int, page_size: int = 4096) -> int:
+        """Calculate number of 4KiB pages required to cover the address range.
+        
+        Formula from Main.c:
+            num_pages = (kernel_last_addr - kernel_first_addr + 0xfff) / 0x1000
+        """
+        if last_addr <= first_addr:
+            return 0
+        span = last_addr - first_addr
+        return (span + page_size - 1) // page_size
+
+    @staticmethod
+    def copy_load_segments(
+        ehdr: Elf64Ehdr,
+        phdrs: List[Elf64Phdr],
+        elf_data: bytes,
+        memory: bytearray,
+        base_vaddr: int = 0x100000,
+    ) -> Dict[str, Any]:
+        """Simulate CopyLoadSegments from MikanLoaderPkg/Main.c.
+        
+        Copies segment file data to destination vaddr, and zeroes out the remaining
+        BSS region (p_memsz - p_filesz).
+        """
+        loaded_segments_info = []
+
+        for idx, phdr in enumerate(phdrs):
+            if phdr.p_type != PT_LOAD:
+                continue
+
+            file_start = phdr.p_offset
+            file_end = file_start + phdr.p_filesz
+            if file_end > len(elf_data):
+                raise ValueError(
+                    f"Segment {idx} file range [0x{file_start:x}, 0x{file_end:x}) exceeds file size {len(elf_data)}"
+                )
+
+            seg_data = elf_data[file_start:file_end]
+
+            mem_offset = phdr.p_vaddr - base_vaddr
+            if mem_offset < 0 or (mem_offset + phdr.p_memsz) > len(memory):
+                raise ValueError(
+                    f"Segment {idx} memory range [0x{phdr.p_vaddr:x}, 0x{phdr.p_vaddr + phdr.p_memsz:x}) "
+                    f"out of allocated buffer bounds [0x{base_vaddr:x}, 0x{base_vaddr + len(memory):x})"
+                )
+
+            # CopyMem(vaddr, segm_in_file, filesz)
+            memory[mem_offset : mem_offset + phdr.p_filesz] = seg_data
+
+            # SetMem(vaddr + filesz, remain_bytes, 0)
+            remain_bytes = phdr.p_memsz - phdr.p_filesz
+            if remain_bytes > 0:
+                bss_start = mem_offset + phdr.p_filesz
+                bss_end = bss_start + remain_bytes
+                memory[bss_start:bss_end] = b"\x00" * remain_bytes
+
+            loaded_segments_info.append({
+                "index": idx,
+                "vaddr": phdr.p_vaddr,
+                "filesz": phdr.p_filesz,
+                "memsz": phdr.p_memsz,
+                "bss_size": remain_bytes,
+                "flags": phdr.flags_str,
+            })
+
+        return {
+            "loaded_count": len(loaded_segments_info),
+            "segments": loaded_segments_info,
+        }
+
+    @staticmethod
+    def build_mock_elf(
+        entry: int = 0x100000,
+        segments: Optional[List[Dict[str, Any]]] = None,
+        machine: int = EM_X86_64,
+    ) -> bytes:
+        """Construct synthetic ELF64 executable binary for tests and notebooks."""
+        if segments is None:
+            segments = [
+                {
+                    "type": PT_LOAD,
+                    "flags": PF_R | PF_X,
+                    "vaddr": 0x100000,
+                    "data": b"\x48\x31\xc0\xc3" + b"\x90" * 252,  # 256 bytes code
+                    "memsz": 0x200,  # 512 bytes total (256 bytes code + 256 bytes BSS)
+                    "align": 0x1000,
+                }
+            ]
+
+        ehdr_size = 64
+        phdr_size = 56
+        phnum = len(segments)
+        phoff = ehdr_size
+
+        curr_offset = ehdr_size + phnum * phdr_size
+        align_padding = (16 - (curr_offset % 16)) % 16
+        curr_offset += align_padding
+
+        phdrs_bytes = bytearray()
+        data_blocks = bytearray()
+
+        for seg in segments:
+            seg_type = seg.get("type", PT_LOAD)
+            seg_flags = seg.get("flags", PF_R | PF_X)
+            seg_vaddr = seg.get("vaddr", 0x100000)
+            seg_data = seg.get("data", b"")
+            filesz = len(seg_data)
+            memsz = seg.get("memsz", filesz)
+            align = seg.get("align", 0x1000)
+
+            phdr = Elf64Phdr(
+                p_type=seg_type,
+                p_flags=seg_flags,
+                p_offset=curr_offset,
+                p_vaddr=seg_vaddr,
+                p_paddr=seg_vaddr,
+                p_filesz=filesz,
+                p_memsz=memsz,
+                p_align=align,
+            )
+            phdrs_bytes.extend(phdr.to_bytes())
+            data_blocks.extend(seg_data)
+            curr_offset += filesz
+
+        ehdr = Elf64Ehdr(
+            e_type=ET_EXEC,
+            e_machine=machine,
+            e_entry=entry,
+            e_phoff=phoff,
+            e_ehsize=ehdr_size,
+            e_phentsize=phdr_size,
+            e_phnum=phnum,
+        )
+
+        elf_bytes = bytearray()
+        elf_bytes.extend(ehdr.to_bytes())
+        elf_bytes.extend(phdrs_bytes)
+        elf_bytes.extend(b"\x00" * align_padding)
+        elf_bytes.extend(data_blocks)
+        return bytes(elf_bytes)
+
+
+def generate_fig4_09_elf_segment_structure(
+    output_path: str = "4/result/fig4_09_elf_segment_structure.png"
+) -> str:
+    """Generate high-DPI architecture diagram showing ELF-64 header, Phdrs, and segment mapping."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 9), facecolor="#FAFAFA")
+    gs = GridSpec(2, 2, figure=fig, height_ratios=[1.1, 1.0], hspace=0.32, wspace=0.25)
+
+    # 1. ELF File Binary Layout vs Memory Address Space Mapping
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. ELF-64 ファイルバイナリ構造と仮想メモリ空間へのセグメント写像 (ELF Layout & Segment Mapping)",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # Drawing File Layout on Left
+    ax1.text(0.04, 0.90, "【ELF ファイル上の構造 (オンディスク)】", fontsize=9.5, fontweight="bold", color="#37474F")
+    
+    file_blocks = [
+        ("Elf64_Ehdr\n(64 Bytes)", 0.04, 0.50, 0.12, 0.32, "#E3F2FD", "#1565C0", "マジック数, e_entry,\ne_phoff (32B), e_phnum"),
+        ("Elf64_Phdr[0]\n(56 Bytes)", 0.17, 0.50, 0.11, 0.32, "#FFF3E0", "#E65100", "p_type = PT_LOAD\np_flags = R-X (コード)"),
+        ("Elf64_Phdr[1]\n(56 Bytes)", 0.29, 0.50, 0.11, 0.32, "#FFF3E0", "#E65100", "p_type = PT_LOAD\np_flags = RW- (データ)"),
+        (".text / .rodata\n(Code & Readonly)", 0.41, 0.50, 0.14, 0.32, "#E8F5E9", "#2E7D32", "機械語命令, 文字列定数\n(p_filesz == p_memsz)"),
+        (".data\n(Initialized)", 0.56, 0.50, 0.11, 0.32, "#F3E5F5", "#6A1B9A", "初期値付き大域変数\n(p_filesz < p_memsz)"),
+    ]
+
+    for title, x, y, w, h, bg, border, desc in file_blocks:
+        box = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.5)
+        ax1.add_patch(box)
+        ax1.text(x + w / 2, y + h * 0.65, title, ha="center", va="center",
+                 fontsize=8.2, fontweight="bold", color=border)
+        ax1.text(x + w / 2, y + h * 0.25, desc, ha="center", va="center",
+                 fontsize=6.8, color="#424242", linespacing=1.2)
+
+    # Drawing Memory Space on Right
+    ax1.text(0.72, 0.90, "【メモリ上の仮想アドレス空間 (RAM)】", fontsize=9.5, fontweight="bold", color="#37474F")
+    
+    mem_blocks = [
+        ("Code Segment\n(0x100000)\n.text / .rodata", 0.72, 0.52, 0.11, 0.30, "#E8F5E9", "#2E7D32", "R-X (実行可能)\nfilesz = memsz"),
+        ("Data Segment\n(0x101000)\n.data", 0.84, 0.52, 0.065, 0.30, "#F3E5F5", "#6A1B9A", "RW-\nfilesz"),
+        (".bss 領域\n(Zero-Cleared)", 0.91, 0.52, 0.065, 0.30, "#FFEBEE", "#C62828", "RW-\nmemsz - filesz\nゼロ埋め！"),
+    ]
+
+    for title, x, y, w, h, bg, border, desc in mem_blocks:
+        box = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.5)
+        ax1.add_patch(box)
+        ax1.text(x + w / 2, y + h * 0.65, title, ha="center", va="center",
+                 fontsize=7.8, fontweight="bold", color=border)
+        ax1.text(x + w / 2, y + h * 0.25, desc, ha="center", va="center",
+                 fontsize=6.8, color="#424242", linespacing=1.2)
+
+    # Arrows from file to memory
+    arrow1 = patches.FancyArrowPatch((0.48, 0.50), (0.75, 0.40),
+                                     arrowstyle="->", connectionstyle="arc3,rad=-0.15",
+                                     color="#2E7D32", lw=2, mutation_scale=15)
+    ax1.add_patch(arrow1)
+    ax1.text(0.60, 0.40, "CopyMem: p_offset → p_vaddr", fontsize=7.8, color="#2E7D32", fontweight="bold")
+
+    arrow2 = patches.FancyArrowPatch((0.61, 0.50), (0.86, 0.40),
+                                     arrowstyle="->", connectionstyle="arc3,rad=-0.15",
+                                     color="#6A1B9A", lw=2, mutation_scale=15)
+    ax1.add_patch(arrow2)
+    ax1.text(0.70, 0.32, "CopyMem: .data", fontsize=7.8, color="#6A1B9A", fontweight="bold")
+
+    # Bottom notes
+    note1 = (
+        "[POINT] 重要: ELFファイル中のヘッダ (Elf64_Ehdr, Elf64_Phdr) 自体はカーネル実行には不要！\n"
+        "セグメント (PT_LOAD) だけを p_vaddr へコピーし、未初期化の .bss (p_memsz - p_filesz) は 0 で埋めるのが正規のOSローダ！"
+    )
+    ax1.text(0.04, 0.10, note1, fontsize=8.2, color="#0D47A1",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#E3F2FD", edgecolor="#90CAF9"))
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. Elf64_Ehdr (64-byte Header Bit Layout)
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. Elf64_Ehdr (64バイト) フィールド構造と役割",
+                  fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    ehdr_fields = [
+        ("0x00 (16B)", "e_ident[16]", "\\x7fELF, 64-bit(2), LittleEndian(1), SYSV(0)"),
+        ("0x10 (2B)", "e_type", "ET_EXEC (2) または ET_DYN (3)"),
+        ("0x12 (2B)", "e_machine", "EM_X86_64 (62 = 0x3E)"),
+        ("0x14 (4B)", "e_version", "EV_CURRENT (1)"),
+        ("0x18 (8B)", "e_entry", "エントリポイント仮想アドレス (KernelMain)"),
+        ("0x20 (8B)", "e_phoff", "プログラムヘッダテーブルのファイルオフセット"),
+        ("0x30 (2B)", "e_phentsize", "プログラムヘッダ1個のバイトサイズ (56B)"),
+        ("0x38 (2B)", "e_phnum", "プログラムヘッダの個数"),
+    ]
+
+    y_pos = 0.88
+    for off, name, val in ehdr_fields:
+        ax2.text(0.04, y_pos, off, fontsize=7.8, family="monospace", color="#546E7A", fontweight="bold")
+        ax2.text(0.26, y_pos, name, fontsize=8.2, family="monospace", color="#0D47A1", fontweight="bold")
+        ax2.text(0.50, y_pos, val, fontsize=7.8, color="#263238")
+        y_pos -= 0.11
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    # 3. Elf64_Phdr (56-byte Program Header Bit Layout)
+    ax3 = fig.add_subplot(gs[1, 1])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. Elf64_Phdr (56バイト) フィールド構造とロード数理",
+                  fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    phdr_fields = [
+        ("0x00 (4B)", "p_type", "PT_LOAD (1: メモリ展開対象) / PT_DYNAMIC (2)"),
+        ("0x04 (4B)", "p_flags", "PF_X(1), PF_W(2), PF_R(4) のビット論理和"),
+        ("0x08 (8B)", "p_offset", "ファイル先頭からのオフセット (CopyMem 元)"),
+        ("0x10 (8B)", "p_vaddr", "配置先仮想アドレス (CopyMem 先)"),
+        ("0x20 (8B)", "p_filesz", "ファイル上の実データ長 (CopyMem 長さ)"),
+        ("0x28 (8B)", "p_memsz", "メモリ上所要サイズ (memsz >= filesz)"),
+        ("0x30 (8B)", "p_align", "アライメント境界 (例: 0x1000 = 4096B)"),
+    ]
+
+    y_pos = 0.88
+    for off, name, val in phdr_fields:
+        ax3.text(0.04, y_pos, off, fontsize=7.8, family="monospace", color="#546E7A", fontweight="bold")
+        ax3.text(0.24, y_pos, name, fontsize=8.2, family="monospace", color="#E65100", fontweight="bold")
+        ax3.text(0.44, y_pos, val, fontsize=7.8, color="#263238")
+        y_pos -= 0.115
+
+    note3 = "数理則: .bss サイズ = p_memsz - p_filesz\n(filesz 分をコピーした後、差分を SetMem で 0 クリア)"
+    ax3.text(0.04, 0.08, note3, fontsize=7.8, color="#C2185B",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#FCE4EC", edgecolor="#F48FB1"))
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_fig4_10_pt_load_and_bss_clearing(
+    output_path: str = "4/result/fig4_10_pt_load_and_bss_clearing.png"
+) -> str:
+    """Generate high-DPI architecture diagram showing 2-stage loading and .bss zero-clearing."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 9), facecolor="#FAFAFA")
+    gs = GridSpec(2, 2, figure=fig, height_ratios=[1.0, 1.1], hspace=0.30, wspace=0.25)
+
+    # 1. Naive Direct Copy vs 2-Stage ELF Loading Architecture
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 従来のベタコピー (day03a) の致命的欠陥",
+                  fontsize=11, fontweight="bold", color="#C62828", pad=10)
+
+    flaw_text = (
+        "【従来の単純ファイル読み込み方式】\n"
+        "gBS->AllocatePages(0x100000, FileSize);\n"
+        "kernel_file->Read(kernel_file, FileSize, 0x100000);\n\n"
+        "[NG] 致命的課題 1: ELFヘッダ混入\n"
+        "   0x100000 先頭に 64B の Elf64_Ehdr やプログラムヘッダが直配置され、\n"
+        "   リンカが想定したセグメント仮想アドレスと完全に乖離する。\n\n"
+        "[NG] 致命的課題 2: .bss 領域が未初期化・未確保\n"
+        "   ELFファイル上に実データを持たない未初期化大域変数の空間が確保されず、\n"
+        "   後続メモリの破壊やゴミデータによるカーネル暴走を招く！\n\n"
+        "[NG] 致命的課題 3: 複数セグメントのアライメント崩壊\n"
+        "   ファイル上のオフセットとメモリ上のページ境界（4KiB）の不一致に対応不能。"
+    )
+    fbox = FancyBboxPatch((0.04, 0.05), 0.92, 0.90, boxstyle="round,pad=0.02",
+                          facecolor="#FFEBEE", edgecolor="#EF5350", lw=1.5)
+    ax1.add_patch(fbox)
+    ax1.text(0.07, 0.50, flaw_text, fontsize=7.8, color="#B71C1C", linespacing=1.28)
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. Correct 2-Stage ELF Loader (day04d) Sequence
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 改良型 2段階ローダ (day04d) の処理フロー",
+                  fontsize=11, fontweight="bold", color="#2E7D32", pad=10)
+
+    flow_steps = [
+        ("Step 1", "AllocatePool で一時バッファ確保 & ELFファイル丸ごと読み込み", "#E8F5E9", "#2E7D32"),
+        ("Step 2", "CalcLoadAddressRange で全 PT_LOAD の [first, last) を走査", "#E3F2FD", "#1565C0"),
+        ("Step 3", "num_pages 計算 & AllocatePages(first) で正確なRAMページ確保", "#FFF3E0", "#E65100"),
+        ("Step 4", "CopyLoadSegments: CopyMem(filesz) + SetMem(remain_bytes, 0)", "#F3E5F5", "#6A1B9A"),
+        ("Step 5", "FreePool で一時バッファ解放 & ExitBootServices → entry_addr 実行", "#E0F2F1", "#00695C"),
+    ]
+
+    y_pos = 0.84
+    for step_num, desc, bg, border in flow_steps:
+        box = FancyBboxPatch((0.04, y_pos - 0.06), 0.92, 0.12, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax2.add_patch(box)
+        ax2.text(0.08, y_pos, step_num, fontsize=8.2, fontweight="bold", color=border)
+        ax2.text(0.22, y_pos, desc, fontsize=7.6, color="#263238")
+        y_pos -= 0.165
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    # 3. .bss Zero-Clear Math & Memory Visualization
+    ax3 = fig.add_subplot(gs[1, :])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. PT_LOAD セグメントと .bss ゼロクリア (Zero-Clearing) の詳細メカニズム",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # Segment visual bar
+    ax3.text(0.05, 0.85, "メモリ配置アドレス: phdr->p_vaddr", fontsize=8.5, fontweight="bold", color="#37474F")
+    
+    # Block 1: File data (filesz)
+    b1 = FancyBboxPatch((0.05, 0.45), 0.50, 0.32, boxstyle="square,pad=0.0",
+                        facecolor="#C8E6C9", edgecolor="#2E7D32", lw=2)
+    ax3.add_patch(b1)
+    ax3.text(0.30, 0.65, "実データ領域: p_filesz バイト\n(CopyMem(vaddr, segm_in_file, p_filesz))",
+             ha="center", va="center", fontsize=8.8, fontweight="bold", color="#1B5E20")
+    ax3.text(0.30, 0.52, "初期値ありデータ (.text, .rodata, .data の初期値)",
+             ha="center", va="center", fontsize=7.8, color="#388E3C")
+
+    # Block 2: BSS data (remain_bytes = memsz - filesz)
+    b2 = FancyBboxPatch((0.55, 0.45), 0.35, 0.32, boxstyle="square,pad=0.0",
+                        facecolor="#FFCDD2", edgecolor="#C62828", lw=2, hatch="//")
+    ax3.add_patch(b2)
+    ax3.text(0.725, 0.65, "BSS 未初期化領域: p_memsz - p_filesz バイト\n(SetMem(vaddr + p_filesz, remain_bytes, 0))",
+             ha="center", va="center", fontsize=8.8, fontweight="bold", color="#B71C1C")
+    ax3.text(0.725, 0.52, "0 クリア必須！(C/C++規格で未初期化大域変数は 0 保証)",
+             ha="center", va="center", fontsize=7.8, color="#D32F2F")
+
+    # Brackets & annotations
+    ax3.annotate("", xy=(0.05, 0.40), xytext=(0.55, 0.40),
+                 arrowprops=dict(arrowstyle="<->", lw=1.5, color="#2E7D32"))
+    ax3.text(0.30, 0.33, "p_filesz", ha="center", fontsize=9, fontweight="bold", color="#2E7D32")
+
+    ax3.annotate("", xy=(0.55, 0.40), xytext=(0.90, 0.40),
+                 arrowprops=dict(arrowstyle="<->", lw=1.5, color="#C62828"))
+    ax3.text(0.725, 0.33, "remain_bytes = p_memsz - p_filesz", ha="center", fontsize=9, fontweight="bold", color="#C62828")
+
+    ax3.annotate("", xy=(0.05, 0.23), xytext=(0.90, 0.23),
+                 arrowprops=dict(arrowstyle="<->", lw=1.8, color="#0D47A1"))
+    ax3.text(0.475, 0.16, "p_memsz (セグメント全体のメモリ所要量)", ha="center", fontsize=9.5, fontweight="bold", color="#0D47A1")
+
+    # Entry point pointer note
+    note_entry = (
+        "エントリポイント導出:\n"
+        "UINT64 entry_addr = *(UINT64*)(kernel_first_addr + 24);\n"
+        "※ Elf64_Ehdr の offset 24 は e_entry (KernelMain の仮想アドレス)"
+    )
+    ax3.text(0.05, 0.04, note_entry, fontsize=7.8, color="#01579B",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#E1F5FE", edgecolor="#81D4FA"))
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

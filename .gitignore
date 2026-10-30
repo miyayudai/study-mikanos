@@ -9,6 +9,7 @@ generate_nb_*.py
 create_nb*.py
 create_ch*.py
 make_notebook*.py
+build_*.py
 append_*.py
 scratch_*.py
 develop-eggs/
