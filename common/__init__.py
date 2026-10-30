@@ -113,6 +113,16 @@ from common.os_sim import (
     Chapter1TheoryValidator,
     plot_chapter1_exercises_summary,
     plot_chapter1_mastery_radar,
+    Edk2ModuleType,
+    Edk2Architecture,
+    Edk2DecModel,
+    Edk2InfModel,
+    Edk2DscModel,
+    DscDependencyResolver,
+    Edk2BuildPipelineSimulator,
+    BuildApproachComparator,
+    plot_edk2_architecture_and_packages,
+    plot_edk2_build_pipeline_comparison,
 )
 
 __all__ = [
@@ -228,4 +238,14 @@ __all__ = [
     "Chapter1TheoryValidator",
     "plot_chapter1_exercises_summary",
     "plot_chapter1_mastery_radar",
+    "Edk2ModuleType",
+    "Edk2Architecture",
+    "Edk2DecModel",
+    "Edk2InfModel",
+    "Edk2DscModel",
+    "DscDependencyResolver",
+    "Edk2BuildPipelineSimulator",
+    "BuildApproachComparator",
+    "plot_edk2_architecture_and_packages",
+    "plot_edk2_build_pipeline_comparison",
 ]

@@ -5480,3 +5480,583 @@ def plot_chapter1_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 2.1: EDK II Architecture & Build System Models
+# ==============================================================================
+
+class Edk2ModuleType(str, Enum):
+    """EDK II Module Types as specified by UEFI Platform Initialization (PI) and EDK II specifications."""
+    BASE = "BASE"
+    SEC = "SEC"
+    PEI_CORE = "PEI_CORE"
+    PEIM = "PEIM"
+    DXE_CORE = "DXE_CORE"
+    DXE_DRIVER = "DXE_DRIVER"
+    DXE_RUNTIME_DRIVER = "DXE_RUNTIME_DRIVER"
+    DXE_SMM_DRIVER = "DXE_SMM_DRIVER"
+    UEFI_DRIVER = "UEFI_DRIVER"
+    UEFI_APPLICATION = "UEFI_APPLICATION"
+    USER_DEFINED = "USER_DEFINED"
+
+
+class Edk2Architecture(str, Enum):
+    """Target CPU Architectures supported by EDK II."""
+    IA32 = "IA32"
+    X64 = "X64"
+    ARM = "ARM"
+    AARCH64 = "AARCH64"
+    RISCV64 = "RISCV64"
+
+
+@dataclass
+class Edk2DecModel:
+    """EDK II Package Declaration File (.dec) model."""
+    package_name: str
+    package_guid: str
+    package_version: str = "0.1"
+    dec_specification: str = "0x00010005"
+    includes: list[str] = field(default_factory=list)
+    guids: dict[str, str] = field(default_factory=dict)
+    protocols: dict[str, str] = field(default_factory=dict)
+    pcds: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def parse_dec_text(cls, text: str) -> Edk2DecModel:
+        """Parse raw .dec file text into an Edk2DecModel instance."""
+        defines: dict[str, str] = {}
+        includes: list[str] = []
+        guids: dict[str, str] = {}
+        protocols: dict[str, str] = {}
+        pcds: dict[str, str] = {}
+
+        current_section = ""
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if line.startswith("[") and line.endswith("]"):
+                current_section = line[1:-1].strip().lower()
+                continue
+
+            if current_section == "defines":
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    defines[k.strip()] = v.strip()
+            elif current_section.startswith("includes"):
+                includes.append(line)
+            elif current_section.startswith("guids"):
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    guids[k.strip()] = v.strip()
+            elif current_section.startswith("protocols"):
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    protocols[k.strip()] = v.strip()
+            elif "pcd" in current_section:
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    pcds[k.strip()] = v.strip()
+
+        return cls(
+            package_name=defines.get("PACKAGE_NAME", "UnknownPackage"),
+            package_guid=defines.get("PACKAGE_GUID", ""),
+            package_version=defines.get("PACKAGE_VERSION", "0.1"),
+            dec_specification=defines.get("DEC_SPECIFICATION", "0x00010005"),
+            includes=includes,
+            guids=guids,
+            protocols=protocols,
+            pcds=pcds,
+        )
+
+
+@dataclass
+class Edk2InfModel:
+    """EDK II Module Information File (.inf) model."""
+    base_name: str
+    file_guid: str
+    module_type: str = "UEFI_APPLICATION"
+    version_string: str = "0.1"
+    entry_point: str = "UefiMain"
+    inf_version: str = "0x00010006"
+    sources: list[str] = field(default_factory=list)
+    packages: list[str] = field(default_factory=list)
+    library_classes: list[str] = field(default_factory=list)
+    protocols: list[str] = field(default_factory=list)
+    guids: list[str] = field(default_factory=list)
+
+    @classmethod
+    def parse_inf_text(cls, text: str) -> Edk2InfModel:
+        """Parse raw .inf file text into an Edk2InfModel instance."""
+        defines: dict[str, str] = {}
+        sources: list[str] = []
+        packages: list[str] = []
+        library_classes: list[str] = []
+        protocols: list[str] = []
+        guids: list[str] = []
+
+        current_section = ""
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if line.startswith("[") and line.endswith("]"):
+                current_section = line[1:-1].strip().lower()
+                continue
+
+            if current_section == "defines":
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    defines[k.strip()] = v.strip()
+            elif current_section.startswith("sources"):
+                sources.append(line)
+            elif current_section.startswith("packages"):
+                packages.append(line)
+            elif current_section.startswith("libraryclasses"):
+                library_classes.append(line)
+            elif current_section.startswith("protocols"):
+                protocols.append(line)
+            elif current_section.startswith("guids"):
+                guids.append(line)
+
+        return cls(
+            base_name=defines.get("BASE_NAME", "UnknownModule"),
+            file_guid=defines.get("FILE_GUID", ""),
+            module_type=defines.get("MODULE_TYPE", "UEFI_APPLICATION"),
+            version_string=defines.get("VERSION_STRING", "0.1"),
+            entry_point=defines.get("ENTRY_POINT", "UefiMain"),
+            inf_version=defines.get("INF_VERSION", "0x00010006"),
+            sources=sources,
+            packages=packages,
+            library_classes=library_classes,
+            protocols=protocols,
+            guids=guids,
+        )
+
+
+@dataclass
+class Edk2DscModel:
+    """EDK II Platform Description File (.dsc) model."""
+    platform_name: str
+    platform_guid: str
+    platform_version: str = "0.1"
+    dsc_specification: str = "0x00010005"
+    output_directory: str = "Build/MikanLoader$(ARCH)"
+    supported_architectures: list[str] = field(default_factory=lambda: ["X64"])
+    build_targets: list[str] = field(default_factory=lambda: ["DEBUG", "RELEASE", "NOOPT"])
+    library_classes: dict[str, str] = field(default_factory=dict)
+    components: list[str] = field(default_factory=list)
+
+    @classmethod
+    def parse_dsc_text(cls, text: str) -> Edk2DscModel:
+        """Parse raw .dsc file text into an Edk2DscModel instance."""
+        defines: dict[str, str] = {}
+        library_classes: dict[str, str] = {}
+        components: list[str] = []
+
+        current_section = ""
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if line.startswith("[") and line.endswith("]"):
+                current_section = line[1:-1].strip().lower()
+                continue
+
+            if current_section == "defines":
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    defines[k.strip()] = v.strip()
+            elif current_section.startswith("libraryclasses"):
+                if "|" in line:
+                    cls_name, inf_path = line.split("|", 1)
+                    library_classes[cls_name.strip()] = inf_path.strip()
+            elif current_section.startswith("components"):
+                components.append(line)
+
+        archs = [a.strip() for a in defines.get("SUPPORTED_ARCHITECTURES", "X64").split("|")]
+        targets = [t.strip() for t in defines.get("BUILD_TARGETS", "DEBUG|RELEASE|NOOPT").split("|")]
+
+        return cls(
+            platform_name=defines.get("PLATFORM_NAME", "UnknownPlatform"),
+            platform_guid=defines.get("PLATFORM_GUID", ""),
+            platform_version=defines.get("PLATFORM_VERSION", "0.1"),
+            dsc_specification=defines.get("DSC_SPECIFICATION", "0x00010005"),
+            output_directory=defines.get("OUTPUT_DIRECTORY", "Build/MikanLoader$(ARCH)"),
+            supported_architectures=archs,
+            build_targets=targets,
+            library_classes=library_classes,
+            components=components,
+        )
+
+
+@dataclass
+class DscDependencyResolver:
+    """Dependency resolver connecting Module INF requirements with Platform DSC bindings."""
+    dsc: Edk2DscModel
+    modules: dict[str, Edk2InfModel] = field(default_factory=dict)
+
+    def register_module(self, path: str, module: Edk2InfModel) -> None:
+        """Register a module INF model under a specific path."""
+        self.modules[path] = module
+
+    def resolve_dependencies(self, component_path: str) -> dict[str, Any]:
+        """Resolve all library classes required by a component against the DSC library bindings."""
+        if component_path not in self.modules:
+            return {
+                "component": component_path,
+                "is_valid": False,
+                "error": f"Component {component_path} not found in registered modules",
+                "resolved": {},
+                "missing": [],
+            }
+
+        module = self.modules[component_path]
+        resolved: dict[str, str] = {}
+        missing: list[str] = []
+
+        for req_class in module.library_classes:
+            if req_class in self.dsc.library_classes:
+                resolved[req_class] = self.dsc.library_classes[req_class]
+            else:
+                missing.append(req_class)
+
+        return {
+            "component": component_path,
+            "base_name": module.base_name,
+            "is_valid": len(missing) == 0,
+            "resolved": resolved,
+            "missing": missing,
+            "total_required": len(module.library_classes),
+            "total_resolved": len(resolved),
+        }
+
+    def get_full_build_tree(self) -> dict[str, Any]:
+        """Get the full dependency resolution tree for all components listed in DSC."""
+        tree: dict[str, Any] = {}
+        all_valid = True
+        for comp in self.dsc.components:
+            res = self.resolve_dependencies(comp)
+            tree[comp] = res
+            if not res.get("is_valid", False):
+                all_valid = False
+        return {
+            "platform_name": self.dsc.platform_name,
+            "all_valid": all_valid,
+            "components": tree,
+        }
+
+
+@dataclass
+class Edk2BuildPipelineSimulator:
+    """Simulates the 6-step EDK II BaseTools build pipeline."""
+    workspace: str = "/home/student/edk2"
+    edk_tools_path: str = "/home/student/edk2/BaseTools"
+    target_arch: str = "X64"
+    target_toolchain: str = "CLANG38"
+    build_target: str = "DEBUG"
+
+    def simulate_build(self, dsc: Edk2DscModel, inf: Edk2InfModel) -> dict[str, Any]:
+        """Simulate execution of the 'build' command for the specified DSC and main INF."""
+        steps: list[dict[str, Any]] = []
+
+        # Step 1: Environment Inspection
+        env_valid = bool(self.workspace and self.edk_tools_path)
+        steps.append({
+            "step": 1,
+            "name": "Environment Validation",
+            "command": "edksetup.sh",
+            "detail": f"WORKSPACE={self.workspace}, EDK_TOOLS_PATH={self.edk_tools_path}",
+            "status": "PASS" if env_valid else "FAIL",
+        })
+
+        # Step 2: DSC Parsing & Target Resolution
+        arch_supported = self.target_arch in dsc.supported_architectures
+        target_supported = self.build_target in dsc.build_targets
+        steps.append({
+            "step": 2,
+            "name": "Platform & Target Resolution",
+            "command": f"build -p {dsc.platform_name}.dsc -a {self.target_arch} -b {self.build_target} -t {self.target_toolchain}",
+            "detail": f"Target Arch: {self.target_arch} (Supported: {arch_supported}), Mode: {self.build_target} (Supported: {target_supported})",
+            "status": "PASS" if (arch_supported and target_supported) else "FAIL",
+        })
+
+        # Step 3: Library Class Dependency Injection
+        resolver = DscDependencyResolver(dsc=dsc)
+        resolver.register_module(f"{dsc.platform_name}/{inf.base_name}.inf", inf)
+        res = resolver.resolve_dependencies(f"{dsc.platform_name}/{inf.base_name}.inf")
+        steps.append({
+            "step": 3,
+            "name": "Library Dependency Resolution",
+            "command": "Dependency Injection (LibraryClasses -> Instances)",
+            "detail": f"Required {res['total_required']} classes, Resolved {res['total_resolved']} instances (Missing: {res['missing']})",
+            "status": "PASS" if res["is_valid"] else "FAIL",
+        })
+
+        # Step 4: AutoGen Code Generation
+        out_dir = dsc.output_directory.replace("$(ARCH)", self.target_arch)
+        module_build_dir = f"{out_dir}/{self.build_target}_{self.target_toolchain}/{self.target_arch}/{dsc.platform_name}/{inf.base_name}"
+        autogen_files = [f"{module_build_dir}/AutoGen.c", f"{module_build_dir}/AutoGen.h", f"{module_build_dir}/Makefile"]
+        steps.append({
+            "step": 4,
+            "name": "AutoGen Synthesizer",
+            "command": "BaseTools/Bin/build.py (AutoGen phase)",
+            "detail": f"Generated {len(autogen_files)} AutoGen artifacts (Entry vector, GUID descriptors, dependency Makefile)",
+            "generated_files": autogen_files,
+            "status": "PASS",
+        })
+
+        # Step 5: Compilation & Native LLD Linking
+        compile_cmd = f"clang -target x86_64-pc-win32-coff -c {inf.sources[0]} -o {module_build_dir}/{inf.base_name}.obj"
+        link_cmd = f"lld-link /out:{module_build_dir}/{inf.base_name}.dll /subsystem:efi_application {module_build_dir}/{inf.base_name}.obj"
+        steps.append({
+            "step": 5,
+            "name": "Compile & Link Execution",
+            "command": f"{compile_cmd} && {link_cmd}",
+            "detail": f"Compiled {len(inf.sources)} source files into COFF object and linked into PE/COFF image",
+            "status": "PASS",
+        })
+
+        # Step 6: GenFw Post-Processing & Final EFI Image Creation
+        final_efi = f"{module_build_dir}/{inf.base_name}.efi"
+        genfw_cmd = f"GenFw -e EFI_APPLICATION -o {final_efi} {module_build_dir}/{inf.base_name}.dll"
+        steps.append({
+            "step": 6,
+            "name": "GenFw Image Packaging",
+            "command": genfw_cmd,
+            "detail": f"Packaged final executable: {final_efi}",
+            "output_binary": final_efi,
+            "status": "PASS",
+        })
+
+        success = all(s["status"] == "PASS" for s in steps)
+        return {
+            "success": success,
+            "final_efi": final_efi if success else None,
+            "steps": steps,
+        }
+
+
+@dataclass
+class BuildApproachComparator:
+    """Comprehensive comparison between Chapter 1 manual Clang build and Chapter 2 EDK II build."""
+    criteria: list[dict[str, str]] = field(default_factory=lambda: [
+        {
+            "category": "ツールチェーン & 駆動方式",
+            "ch1_manual": "Clang + LLD をシェルから直接ワンライナー実行",
+            "ch2_edk2": "Python/C による BaseTools (`build`) 駆動のメタビルド",
+            "advantage": "EDK II は数千ファイルの巨大ファームウェアでも破綻しない",
+        },
+        {
+            "category": "UEFI 仕様準拠と標準ヘッダ",
+            "ch1_manual": "必要な構造体（`EFI_SYSTEM_TABLE` 等）と型を手書き定義",
+            "ch2_edk2": "`MdePkg` (Module Dev Env) による全仕様ヘッダの完全提供",
+            "advantage": "EDK II は仕様変更や拡張プロトコル（GOP, FS, USB）に即応可能",
+        },
+        {
+            "category": "ライブラリ抽象化 (DI)",
+            "ch1_manual": "なし（関数ポインタ直接呼び出し）",
+            "ch2_edk2": "LibraryClass 抽象インターフェースと DSC での実装注入",
+            "advantage": "実機デバッグ用とNULLスタブ用ライブラリをDSC一行で切替可能",
+        },
+        {
+            "category": "マルチアーキテクチャ移植性",
+            "ch1_manual": "x86-64 専用フラグをハードコード",
+            "ch2_edk2": "DSC/INF で X64, IA32, ARM, AARCH64, RISCV64 を透過サポート",
+            "advantage": "CPUアーキテクチャ非依存の共通ローダ設計が可能",
+        },
+        {
+            "category": "学習コストと初期設定",
+            "ch1_manual": "極めて低い（LLVMさえあれば1秒で実行可能）",
+            "ch2_edk2": "高い（BaseToolsビルド、環境変数、DSC/INF構文の習得が必要）",
+            "advantage": "第1章は入門に最適、第2章以降の実践OS開発にはEDK IIが必須",
+        },
+    ])
+
+
+def plot_edk2_architecture_and_packages(output_path: Path | str) -> Path:
+    """Generate high-DPI architecture diagram illustrating EDK II Package hierarchy (DEC/INF/DSC) and DI."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(13, 8))
+    ax.set_facecolor("#F8F9FA")
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+
+    # Title
+    ax.text(50, 96, "EDK II Package Architecture & Dependency Injection Model",
+            fontsize=15, fontweight="bold", ha="center", va="center", color="#0D47A1")
+    ax.text(50, 92, "DEC (Interface Declaration) ↔ INF (Module Spec) ↔ DSC (Platform Description & Library Binding)",
+            fontsize=10.5, ha="center", va="center", color="#424242", style="italic")
+
+    # Left Container: MdePkg (Standard Foundation)
+    p1 = FancyBboxPatch((4, 25), 42, 62, boxstyle="round,pad=1.5",
+                        facecolor="#E3F2FD", edgecolor="#1565C0", linewidth=2.0)
+    ax.add_patch(p1)
+    ax.text(25, 83, "MdePkg (Module Development Environment Package)",
+            fontsize=11.5, fontweight="bold", ha="center", color="#0D47A1")
+    ax.text(25, 79, "UEFI Specification Standard Headers & Base Libraries",
+            fontsize=9.5, ha="center", color="#1976D2")
+
+    # MdePkg sub-components
+    # DEC Box
+    b_dec = FancyBboxPatch((6, 62), 38, 13, boxstyle="round,pad=0.8",
+                           facecolor="#FFFFFF", edgecolor="#1976D2", linewidth=1.5)
+    ax.add_patch(b_dec)
+    ax.text(8, 71, "[DEC] MdePkg.dec (Package Declaration)", fontsize=10.5, fontweight="bold", color="#0D47A1")
+    ax.text(8, 66.5, "• [Includes]: Include/ (Uefi.h, PiPei.h, PiDxe.h)\n• [Guids], [Protocols]: gEfiLoadedImageProtocolGuid ...",
+            fontsize=8.5, color="#37474F")
+
+    # Library Instances Box
+    b_libs = FancyBboxPatch((6, 29), 38, 30, boxstyle="round,pad=0.8",
+                            facecolor="#FFFFFF", edgecolor="#1976D2", linewidth=1.5)
+    ax.add_patch(b_libs)
+    ax.text(8, 55, "[LIBS] Library Implementations (Instances)", fontsize=10.5, fontweight="bold", color="#0D47A1")
+    ax.text(8, 50.5, "• UefiApplicationEntryPoint.inf (main wrapper)\n• UefiLib.inf (Print, AsciiPrint, StatusToString)\n• BaseLib.inf (CPU intrinsic: AsmCli, AsmHlt, AsmReadCr3)\n• BaseMemoryLib.inf (CopyMem, SetMem, CompareMem)\n• UefiBootServicesTableLib.inf (gBS global pointer)\n• BasePrintLib.inf, DevicePathLib.inf ...",
+            fontsize=8.5, color="#37474F")
+
+    # Right Container: MikanLoaderPkg (User Custom OS Loader)
+    p2 = FancyBboxPatch((54, 25), 42, 62, boxstyle="round,pad=1.5",
+                        facecolor="#FFF3E0", edgecolor="#E65100", linewidth=2.0)
+    ax.add_patch(p2)
+    ax.text(75, 83, "MikanLoaderPkg (Custom Loader Package)",
+            fontsize=11.5, fontweight="bold", ha="center", color="#E65100")
+    ax.text(75, 79, "OS Loader Application & Platform Description",
+            fontsize=9.5, ha="center", color="#EF6C00")
+
+    # MikanLoaderPkg sub-components
+    # DEC Box
+    b_mdec = FancyBboxPatch((56, 68), 38, 7.5, boxstyle="round,pad=0.8",
+                            facecolor="#FFFFFF", edgecolor="#F57C00", linewidth=1.2)
+    ax.add_patch(b_mdec)
+    ax.text(58, 72.5, "[DEC] MikanLoaderPkg.dec", fontsize=10, fontweight="bold", color="#E65100")
+    ax.text(58, 69.5, "Defines PACKAGE_NAME, PACKAGE_GUID, PACKAGE_VERSION", fontsize=8.5, color="#4E342E")
+
+    # INF Box
+    b_inf = FancyBboxPatch((56, 45), 38, 20.5, boxstyle="round,pad=0.8",
+                           facecolor="#FFFFFF", edgecolor="#F57C00", linewidth=1.5)
+    ax.add_patch(b_inf)
+    ax.text(58, 62, "[INF] Loader.inf (Module Information)", fontsize=10.5, fontweight="bold", color="#E65100")
+    ax.text(58, 58, "• MODULE_TYPE = UEFI_APPLICATION, ENTRY_POINT = UefiMain\n• [Sources]: Main.c\n• [Packages]: MdePkg/MdePkg.dec\n• [LibraryClasses]: (Abstract Requirements)\n    - UefiLib\n    - UefiApplicationEntryPoint",
+            fontsize=8.5, color="#4E342E")
+
+    # DSC Box
+    b_dsc = FancyBboxPatch((56, 28), 38, 14.5, boxstyle="round,pad=0.8",
+                           facecolor="#FFFDE7", edgecolor="#F57F17", linewidth=1.8)
+    ax.add_patch(b_dsc)
+    ax.text(58, 39, "[DSC] MikanLoaderPkg.dsc (Dependency Injection)", fontsize=10.5, fontweight="bold", color="#F57F17")
+    ax.text(58, 35, "• [Components]: MikanLoaderPkg/Loader.inf\n• [LibraryClasses]: (Binding Abstract → Concrete)\n    UefiLib | MdePkg/.../UefiLib.inf\n    UefiApplicationEntryPoint | MdePkg/.../EntryPoint.inf",
+            fontsize=8.5, color="#5D4037")
+
+    # Arrows representing Dependency Injection / Resolution
+    ax.annotate("", xy=(44.5, 43), xytext=(55.5, 33),
+                arrowprops=dict(arrowstyle="->", color="#C2185B", lw=2.5, ls="--"))
+    ax.text(48, 39, "DSC Binds\nAbstract → Concrete", fontsize=9, fontweight="bold",
+            color="#C2185B", ha="center", bbox=dict(boxstyle="square,pad=0.2", facecolor="#FCE4EC", edgecolor="#C2185B"))
+
+    ax.annotate("", xy=(55.5, 52), xytext=(44.5, 68),
+                arrowprops=dict(arrowstyle="->", color="#1976D2", lw=2.0))
+    ax.text(51, 62, "INF Includes\nStandard DEC", fontsize=8.5, fontweight="bold",
+            color="#1976D2", ha="center")
+
+    # Bottom Legend / Summary
+    b_sum = FancyBboxPatch((4, 4), 92, 16.5, boxstyle="round,pad=1.0",
+                           facecolor="#ECEFF1", edgecolor="#607D8B", linewidth=1.5)
+    ax.add_patch(b_sum)
+    ax.text(6, 17, "[SUMMARY] 3大メタ設定ファイルの役割と依存性逆転原則 (Dependency Inversion Principle)",
+            fontsize=10.5, fontweight="bold", color="#263238")
+    ax.text(6, 13, "1. DEC (.dec): パッケージが「何を提供できるか」を世界に宣言する（公開ヘッダ、GUID、プロトコル）。", fontsize=9, color="#37474F")
+    ax.text(6, 9.5, "2. INF (.inf): 個別モジュール（Loader）が「何を必要とするか」を抽象ライブラリ名で要求する（UefiLib 等）。", fontsize=9, color="#37474F")
+    ax.text(6, 6, "3. DSC (.dsc): プラットフォーム全体が「抽象ライブラリ要求をどの具象実装に結びつけるか」を最終決定する（依存性注入）。", fontsize=9, color="#37474F")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_edk2_build_pipeline_comparison(output_path: Path | str) -> Path:
+    """Generate high-DPI diagram comparing Chapter 1 manual build vs Chapter 2 EDK II build pipeline."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 8), sharey=True)
+    fig.patch.set_facecolor("#FCFCFD")
+
+    # Chapter 1 Panel
+    ax1.set_facecolor("#F5F5F5")
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.text(50, 96, "【第1章】手動 Clang/LLD 直接ビルド", fontsize=12, fontweight="bold", ha="center", color="#424242")
+    ax1.text(50, 92, "Minimal Freestanding One-Liner Pipeline", fontsize=9.5, ha="center", color="#757575", style="italic")
+
+    ch1_steps = [
+        ("1. 手書きソースコード", "hello.c\n(自前 struct EFI_SYSTEM_TABLE)", "#E0E0E0", "#616161"),
+        ("2. Clang 直接コンパイル", "clang -target x86_64-pc-win32-coff\n-ffreestanding -mno-red-zone -c", "#FFE0B2", "#E65100"),
+        ("3. COFF オブジェクト生成", "hello.o (中間バイナリ)", "#E0E0E0", "#616161"),
+        ("4. LLD 直接リンク", "lld-link /subsystem:efi_application\n/entry:EfiMain hello.o", "#C8E6C9", "#2E7D32"),
+        ("5. 最終 UEFI アプリケーション", "hello.efi (PE32+ 実行ファイル)", "#BBDEFB", "#1565C0"),
+    ]
+
+    y_pos = 78
+    for idx, (title, desc, bg, fg) in enumerate(ch1_steps):
+        p = FancyBboxPatch((10, y_pos - 8), 80, 11, boxstyle="round,pad=0.8",
+                           facecolor=bg, edgecolor=fg, linewidth=1.5)
+        ax1.add_patch(p)
+        ax1.text(14, y_pos + 0.5, title, fontsize=10, fontweight="bold", color=fg)
+        ax1.text(14, y_pos - 5.5, desc, fontsize=8.5, color="#212121")
+        if idx < len(ch1_steps) - 1:
+            ax1.annotate("", xy=(50, y_pos - 10), xytext=(50, y_pos - 8),
+                         arrowprops=dict(arrowstyle="->", color="#616161", lw=2.0))
+        y_pos -= 15
+
+    ax1.text(50, 5, "特徴: 高速・シンプルだが、APIが増えると手書きヘッダが破綻",
+             fontsize=9, fontweight="bold", ha="center", color="#D32F2F",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFEBEE", edgecolor="#EF5350"))
+
+    # Chapter 2 Panel
+    ax2.set_facecolor("#F0F4C3")
+    ax2.patch.set_alpha(0.3)
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.text(50, 96, "【第2章】EDK II BaseTools メタビルド", fontsize=12, fontweight="bold", ha="center", color="#1B5E20")
+    ax2.text(50, 92, "Industrial Standard Package & AutoGen Pipeline", fontsize=9.5, ha="center", color="#33691E", style="italic")
+
+    ch2_steps = [
+        ("1. メタ定義ファイル", "MikanLoaderPkg.dsc, Loader.inf, Main.c\nMdePkg/MdePkg.dec (標準仕様ヘッダ)", "#E8F5E9", "#2E7D32"),
+        ("2. AutoGen (BaseTools build.py)", "依存解決 → AutoGen.c, AutoGen.h, Makefile 生成\n(Entry Point ラッパー合成, GUID テーブル生成)", "#FFF9C4", "#F57F17"),
+        ("3. Make & Clang コンパイル", "Makefile 駆動により Main.c + 依存ライブラリ群を\n-target x86_64-pc-win32-coff で並列コンパイル", "#FFE0B2", "#E65100"),
+        ("4. LLD-Link リンク", "各モジュール .obj とライブラリ群を合流\n/subsystem:efi_application で DLL/PE 出力", "#C8E6C9", "#2E7D32"),
+        ("5. GenFw 変換 & 検証", "GenFw により UEFI 仕様厳密チェックと\nLoader.efi への最終パッケージング", "#BBDEFB", "#0D47A1"),
+    ]
+
+    y_pos = 78
+    for idx, (title, desc, bg, fg) in enumerate(ch2_steps):
+        p = FancyBboxPatch((10, y_pos - 8), 80, 11, boxstyle="round,pad=0.8",
+                           facecolor=bg, edgecolor=fg, linewidth=1.5)
+        ax2.add_patch(p)
+        ax2.text(14, y_pos + 0.5, title, fontsize=10, fontweight="bold", color=fg)
+        ax2.text(14, y_pos - 5.5, desc, fontsize=8.5, color="#212121")
+        if idx < len(ch2_steps) - 1:
+            ax2.annotate("", xy=(50, y_pos - 10), xytext=(50, y_pos - 8),
+                         arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2.0))
+        y_pos -= 15
+
+    ax2.text(50, 5, "特徴: 初期構築は重厚だが、仕様準拠・依存解決・多言語移植性が完全保証",
+             fontsize=9, fontweight="bold", ha="center", color="#2E7D32",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#E8F5E9", edgecolor="#66BB6A"))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path

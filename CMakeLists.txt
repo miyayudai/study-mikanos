@@ -60,6 +60,11 @@ add_test(NAME test_ch01_uefi_c_hello_analyzer COMMAND ch01_uefi_c_hello_analyzer
 add_executable(ch01_os_chapter1_exercises src/ch01/os_chapter1_exercises.cpp)
 add_test(NAME test_ch01_os_chapter1_exercises COMMAND ch01_os_chapter1_exercises)
 
+# Chapter 2
+add_executable(ch02_edk2_package_analyzer src/ch02/edk2_package_analyzer.cpp)
+add_test(NAME test_ch02_edk2_package_analyzer COMMAND ch02_edk2_package_analyzer)
+
+
 
 
 
