@@ -6557,3 +6557,426 @@ def plot_preprocessor_include_expansion_and_tree(output_path: Path | str) -> Pat
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 2.3: Main Memory Architecture & MMIO Simulation Models
+# ==============================================================================
+
+class MemoryRegionType(Enum):
+    """Classification of physical memory address space regions."""
+    USABLE_RAM = "Usable RAM (DRAM)"
+    RESERVED = "Reserved / Platform Hardware"
+    ACPI_RECLAIM = "ACPI Reclaim Memory"
+    ACPI_NVS = "ACPI Non-Volatile Storage (NVS)"
+    MMIO = "Memory-Mapped I/O (MMIO)"
+    MMIO_PORT_SPACE = "MMIO Port Space"
+    FRAMEBUFFER = "Graphics Framebuffer (VRAM)"
+    BOOT_SERVICES_CODE = "UEFI Boot Services Code"
+    BOOT_SERVICES_DATA = "UEFI Boot Services Data"
+    RUNTIME_SERVICES_CODE = "UEFI Runtime Services Code"
+    RUNTIME_SERVICES_DATA = "UEFI Runtime Services Data"
+    FIRMWARE_ROM = "Firmware / Option ROM"
+    MEMORY_HOLE = "Unmapped Memory Hole (Bus Error on Access)"
+
+
+@dataclass(frozen=True)
+class PhysicalMemoryRegion:
+    """Represents a contiguous range in the physical address space."""
+    base_addr: int
+    length_bytes: int
+    region_type: MemoryRegionType
+    description: str
+    is_cacheable: bool = True
+
+    @property
+    def end_addr(self) -> int:
+        """Return the exclusive end address (base + length)."""
+        return self.base_addr + self.length_bytes
+
+    @property
+    def page_count(self) -> int:
+        """Return the number of 4KiB pages required to cover this region."""
+        return (self.length_bytes + 4095) // 4096
+
+    @property
+    def is_page_aligned(self) -> bool:
+        """Check if base address and length are aligned to 4KiB (0x1000) boundaries."""
+        return (self.base_addr & 0xFFF) == 0 and (self.length_bytes & 0xFFF) == 0
+
+    @property
+    def is_usable_ram(self) -> bool:
+        """Check if this region can be freely allocated for OS code/data after boot."""
+        return self.region_type in (
+            MemoryRegionType.USABLE_RAM,
+            MemoryRegionType.BOOT_SERVICES_CODE,
+            MemoryRegionType.BOOT_SERVICES_DATA,
+        )
+
+    def contains_address(self, addr: int) -> bool:
+        """Check whether a given physical address falls within this region."""
+        return self.base_addr <= addr < self.end_addr
+
+    def overlaps_with(self, other: "PhysicalMemoryRegion") -> bool:
+        """Check if this region overlaps with another region."""
+        return max(self.base_addr, other.base_addr) < min(self.end_addr, other.end_addr)
+
+
+class PhysicalAddressSpace:
+    """Simulates the 64-bit physical address space, address decoding, and memory holes."""
+
+    def __init__(self, address_width_bits: int = 48):
+        if address_width_bits not in (32, 36, 40, 48, 52):
+            raise ValueError(f"Unsupported physical address width: {address_width_bits} bits")
+        self.address_width_bits = address_width_bits
+        self.max_address = (1 << address_width_bits) - 1
+        self._regions: list[PhysicalMemoryRegion] = []
+
+    @property
+    def regions(self) -> list[PhysicalMemoryRegion]:
+        """Return regions sorted by base address."""
+        return sorted(self._regions, key=lambda r: r.base_addr)
+
+    def add_region(self, region: PhysicalMemoryRegion) -> None:
+        """Add a memory region to the physical address space."""
+        if region.end_addr > self.max_address + 1:
+            raise ValueError(
+                f"Region end 0x{region.end_addr:X} exceeds max physical address 0x{self.max_address:X}"
+            )
+        # Check overlaps with existing regions
+        for existing in self._regions:
+            if region.overlaps_with(existing):
+                raise ValueError(
+                    f"Address collision: '{region.description}' [0x{region.base_addr:08X}-0x{region.end_addr:08X}) "
+                    f"conflicts with '{existing.description}' [0x{existing.base_addr:08X}-0x{existing.end_addr:08X})"
+                )
+        self._regions.append(region)
+
+    def resolve_address(self, addr: int) -> Optional[PhysicalMemoryRegion]:
+        """Decode a physical address and return the destination memory or MMIO region."""
+        if addr > self.max_address:
+            return None
+        for r in self._regions:
+            if r.contains_address(addr):
+                return r
+        return None
+
+    def detect_memory_holes(self) -> list[tuple[int, int, int]]:
+        """Identify unmapped gaps (memory holes) between registered regions.
+        
+        Returns a list of tuples: (start_addr, end_addr, hole_size_bytes)
+        """
+        sorted_regs = self.regions
+        holes = []
+        if not sorted_regs:
+            return [(0, self.max_address + 1, self.max_address + 1)]
+
+        if sorted_regs[0].base_addr > 0:
+            holes.append((0, sorted_regs[0].base_addr, sorted_regs[0].base_addr))
+
+        for i in range(len(sorted_regs) - 1):
+            curr_end = sorted_regs[i].end_addr
+            next_start = sorted_regs[i + 1].base_addr
+            if curr_end < next_start:
+                holes.append((curr_end, next_start, next_start - curr_end))
+
+        return holes
+
+    def find_free_ram_chunk(self, size_bytes: int, alignment: int = 4096) -> Optional[int]:
+        """Search for a continuous usable RAM chunk of given size satisfying alignment.
+        
+        Returns the aligned starting physical address or None if not available.
+        """
+        for r in self.regions:
+            if r.region_type == MemoryRegionType.USABLE_RAM:
+                # Calculate aligned start
+                aligned_start = (r.base_addr + alignment - 1) & ~(alignment - 1)
+                if aligned_start + size_bytes <= r.end_addr:
+                    return aligned_start
+        return None
+
+    def get_memory_summary(self) -> dict[str, int]:
+        """Aggregate total bytes for each region type."""
+        summary: dict[str, int] = {
+            "total_usable_ram_bytes": 0,
+            "total_mmio_bytes": 0,
+            "total_reserved_bytes": 0,
+            "total_acpi_bytes": 0,
+            "total_firmware_bytes": 0,
+            "total_uefi_services_bytes": 0,
+            "total_mapped_bytes": 0,
+            "total_hole_bytes": 0,
+        }
+        for r in self._regions:
+            summary["total_mapped_bytes"] += r.length_bytes
+            if r.region_type == MemoryRegionType.USABLE_RAM:
+                summary["total_usable_ram_bytes"] += r.length_bytes
+            elif r.region_type in (MemoryRegionType.MMIO, MemoryRegionType.MMIO_PORT_SPACE, MemoryRegionType.FRAMEBUFFER):
+                summary["total_mmio_bytes"] += r.length_bytes
+            elif r.region_type == MemoryRegionType.RESERVED:
+                summary["total_reserved_bytes"] += r.length_bytes
+            elif r.region_type in (MemoryRegionType.ACPI_RECLAIM, MemoryRegionType.ACPI_NVS):
+                summary["total_acpi_bytes"] += r.length_bytes
+            elif r.region_type == MemoryRegionType.FIRMWARE_ROM:
+                summary["total_firmware_bytes"] += r.length_bytes
+            elif r.region_type in (
+                MemoryRegionType.BOOT_SERVICES_CODE,
+                MemoryRegionType.BOOT_SERVICES_DATA,
+                MemoryRegionType.RUNTIME_SERVICES_CODE,
+                MemoryRegionType.RUNTIME_SERVICES_DATA,
+            ):
+                summary["total_uefi_services_bytes"] += r.length_bytes
+
+        for _, _, hole_len in self.detect_memory_holes():
+            summary["total_hole_bytes"] += hole_len
+
+        return summary
+
+    @classmethod
+    def simulate_standard_pc_4gb(cls) -> "PhysicalAddressSpace":
+        """Construct a realistic 4GB+ modern x86-64 PC physical memory map (QEMU + OVMF style)."""
+        pas = cls(address_width_bits=48)
+        # 1. Real Mode IVT & BDA (0x0000_0000 - 0x0000_0FFF)
+        pas.add_region(PhysicalMemoryRegion(0x0000_0000, 0x1000, MemoryRegionType.RESERVED, "Real-Mode IVT & BDA", is_cacheable=True))
+        # 2. Low Usable Conventional RAM (0x0000_1000 - 0x0007_FFFF: 508 KiB)
+        pas.add_region(PhysicalMemoryRegion(0x0000_1000, 0x7F000, MemoryRegionType.USABLE_RAM, "Low Conventional RAM (<640KB)", is_cacheable=True))
+        # 3. EBDA (Extended BIOS Data Area) (0x0008_0000 - 0x0009_FFFF: 128 KiB)
+        pas.add_region(PhysicalMemoryRegion(0x0008_0000, 0x20000, MemoryRegionType.RESERVED, "Extended BIOS Data Area (EBDA)", is_cacheable=True))
+        # 4. VGA VRAM / MMIO (0x000A_0000 - 0x000B_FFFF: 128 KiB)
+        pas.add_region(PhysicalMemoryRegion(0x000A_0000, 0x20000, MemoryRegionType.FRAMEBUFFER, "Legacy VGA Framebuffer MMIO", is_cacheable=False))
+        # 5. Video BIOS / Option ROM (0x000C_0000 - 0x000D_FFFF: 128 KiB)
+        pas.add_region(PhysicalMemoryRegion(0x000C_0000, 0x20000, MemoryRegionType.FIRMWARE_ROM, "Video BIOS & Option ROMs", is_cacheable=True))
+        # 6. Motherboard BIOS / UEFI Low ROM (0x000E_0000 - 0x000F_FFFF: 128 KiB)
+        pas.add_region(PhysicalMemoryRegion(0x000E_0000, 0x20000, MemoryRegionType.FIRMWARE_ROM, "Motherboard UEFI / BIOS ROM", is_cacheable=True))
+        # 7. Main Usable RAM below 2GB (0x0010_0000 - 0x7FFF_FFFF: ~2047 MiB)
+        pas.add_region(PhysicalMemoryRegion(0x0010_0000, 0x7FE0_0000, MemoryRegionType.USABLE_RAM, "Main Conventional RAM (1MB-2GB)", is_cacheable=True))
+        # 8. UEFI Boot Services Code/Data (0x7FF0_0000 - 0x7FFF_FFFF: 1 MiB)
+        pas.add_region(PhysicalMemoryRegion(0x7FF0_0000, 0x10_0000, MemoryRegionType.BOOT_SERVICES_DATA, "UEFI Boot Services Pool", is_cacheable=True))
+        # 9. ACPI Reclaim & NVS (0x8000_0000 - 0x800F_FFFF: 1 MiB)
+        pas.add_region(PhysicalMemoryRegion(0x8000_0000, 0x10_0000, MemoryRegionType.ACPI_RECLAIM, "ACPI Tables & Reclaim Memory", is_cacheable=True))
+        # 10. High GOP Framebuffer MMIO (0xC000_0000 - 0xC0FF_FFFF: 16 MiB)
+        pas.add_region(PhysicalMemoryRegion(0xC000_0000, 0x0100_0000, MemoryRegionType.FRAMEBUFFER, "GOP High-Res Framebuffer MMIO", is_cacheable=False))
+        # 11. PCIe MMIO Bar Space (0xC100_0000 - 0xFEB0_0000: ~987 MiB)
+        pas.add_region(PhysicalMemoryRegion(0xC100_0000, 0x3DB0_0000, MemoryRegionType.MMIO, "PCI Express Device MMIO Space (xHCI/NVMe/NIC)", is_cacheable=False))
+        # 12. I/O APIC MMIO (0xFEC0_0000 - 0xFEC0_0FFF: 4 KiB)
+        pas.add_region(PhysicalMemoryRegion(0xFEC0_0000, 0x1000, MemoryRegionType.MMIO, "I/O APIC MMIO Register Window", is_cacheable=False))
+        # 13. Local APIC MMIO (0xFEE0_0000 - 0xFEE0_0FFF: 4 KiB)
+        pas.add_region(PhysicalMemoryRegion(0xFEE0_0000, 0x1000, MemoryRegionType.MMIO, "Local APIC MMIO Register Window", is_cacheable=False))
+        # 14. High OVMF Firmware Flash ROM (0xFFC0_0000 - 0xFFFF_FFFF: 4 MiB)
+        pas.add_region(PhysicalMemoryRegion(0xFFC0_0000, 0x40_0000, MemoryRegionType.FIRMWARE_ROM, "OVMF High Firmware Flash ROM (Reset Vector)", is_cacheable=True))
+        # 15. Extended RAM above 4GB (0x1_0000_0000 - 0x1_7FFF_FFFF: 2 GiB)
+        pas.add_region(PhysicalMemoryRegion(0x1_0000_0000, 0x8000_0000, MemoryRegionType.USABLE_RAM, "High RAM above 4GB (>4GB Conventional RAM)", is_cacheable=True))
+        return pas
+
+    @classmethod
+    def simulate_legacy_1mb_layout(cls) -> "PhysicalAddressSpace":
+        """Construct the historical 1MB (20-bit address bus) PC/XT memory map."""
+        pas = cls(address_width_bits=32)
+        pas.add_region(PhysicalMemoryRegion(0x00000, 0x00400, MemoryRegionType.RESERVED, "Interrupt Vector Table (IVT: 256 x 4B)", is_cacheable=True))
+        pas.add_region(PhysicalMemoryRegion(0x00400, 0x00100, MemoryRegionType.RESERVED, "BIOS Data Area (BDA: 256B)", is_cacheable=True))
+        pas.add_region(PhysicalMemoryRegion(0x00500, 0x07700, MemoryRegionType.USABLE_RAM, "Low RAM (DOS Data / Free: ~29.75KB)", is_cacheable=True))
+        pas.add_region(PhysicalMemoryRegion(0x07C00, 0x00200, MemoryRegionType.USABLE_RAM, "MBR Bootsector Load Location (512B)", is_cacheable=True))
+        pas.add_region(PhysicalMemoryRegion(0x07E00, 0x78200, MemoryRegionType.USABLE_RAM, "Conventional DOS Memory Free RAM (~480.5KB)", is_cacheable=True))
+        pas.add_region(PhysicalMemoryRegion(0x80000, 0x20000, MemoryRegionType.RESERVED, "Extended BIOS Data Area (EBDA: 128KB)", is_cacheable=True))
+        pas.add_region(PhysicalMemoryRegion(0xA0000, 0x10000, MemoryRegionType.FRAMEBUFFER, "EGA/VGA Graphics VRAM MMIO (64KB)", is_cacheable=False))
+        pas.add_region(PhysicalMemoryRegion(0xB0000, 0x08000, MemoryRegionType.FRAMEBUFFER, "MDA Monochrome Text RAM (32KB)", is_cacheable=False))
+        pas.add_region(PhysicalMemoryRegion(0xB8000, 0x08000, MemoryRegionType.FRAMEBUFFER, "CGA Color Text RAM (32KB)", is_cacheable=False))
+        pas.add_region(PhysicalMemoryRegion(0xC0000, 0x08000, MemoryRegionType.FIRMWARE_ROM, "Video BIOS ROM (32KB)", is_cacheable=True))
+        pas.add_region(PhysicalMemoryRegion(0xC8000, 0x18000, MemoryRegionType.FIRMWARE_ROM, "Option ROMs / SCSI / Network (96KB)", is_cacheable=True))
+        pas.add_region(PhysicalMemoryRegion(0xE0000, 0x20000, MemoryRegionType.FIRMWARE_ROM, "Motherboard System BIOS ROM (128KB)", is_cacheable=True))
+        return pas
+
+
+def plot_physical_address_space_and_mmio(
+    output_path: str = "2/result/fig2_05_physical_address_space_and_mmio_architecture.png",
+) -> str:
+    """Generate high-resolution architecture diagram of modern 64-bit physical address space and MMIO routing."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 9.5))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.6, 1.0], width_ratios=[1.1, 1.0], hspace=0.28, wspace=0.24)
+
+    ax_map = fig.add_subplot(gs[0, 0])
+    ax_mmio = fig.add_subplot(gs[0, 1])
+    ax_summary = fig.add_subplot(gs[1, :])
+
+    # -------------------------------------------------------------
+    # Panel 1: Physical Memory Address Layout (0 to 6GB)
+    # -------------------------------------------------------------
+    ax_map.set_title("x86-64 物理アドレス空間（Physical Address Space）の配置", fontsize=11, fontweight="bold", pad=12)
+    ax_map.set_xlim(0, 100)
+    ax_map.set_ylim(0, 100)
+    ax_map.axis("off")
+
+    # Map blocks: bottom=0 to top=6GB (normalized)
+    regions_viz = [
+        ("0x1_0000_0000 - 0x1_7FFF_FFFF\n(4GB - 6GB: 2GB High RAM)", 79, 17, "#81C784", "#2E7D32", "High Usable RAM (DRAM)\n4GB以上拡張メモリ"),
+        ("0xFFC0_0000 - 0xFFFF_FFFF (4MB)", 73, 5, "#BA68C8", "#6A1B9A", "High OVMF Flash ROM\nReset Vector (0xFFFFFFF0)"),
+        ("0xFEE0_0000 (4KB) & 0xFEC0_0000 (4KB)", 67, 5, "#FFB74D", "#E65100", "Local APIC & I/O APIC MMIO"),
+        ("0xC100_0000 - 0xFEB0_0000 (~1GB)", 53, 13, "#FF8A65", "#BF360C", "PCIe MMIO Hole (BAR空間)\nxHCI/NVMe/NIC レジスタ"),
+        ("0xC000_0000 - 0xC0FF_FFFF (16MB)", 46, 6, "#FFD54F", "#F57F17", "GOP Framebuffer (VRAM MMIO)\n画面描画ピクセル領域"),
+        ("0x8000_0000 - 0x800F_FFFF (1MB)", 40, 5, "#4DD0E1", "#006064", "ACPI Reclaim / NVS テーブル"),
+        ("0x0010_0000 - 0x7FFF_FFFF (~2GB)", 19, 20, "#A5D6A7", "#1B5E20", "Main Usable RAM (DRAM)\nカーネル・スタック・ヒープ配置可能"),
+        ("0x000A_0000 - 0x000F_FFFF (384KB)", 11, 7, "#E0E0E0", "#424242", "Legacy VGA, Option ROM, BIOS"),
+        ("0x0000_0000 - 0x0009_FFFF (640KB)", 2, 8, "#C8E6C9", "#2E7D32", "Low Conventional RAM & BDA/EBDA"),
+    ]
+
+    for addr_label, y_pos, height, color, border_color, desc in regions_viz:
+        rect = FancyBboxPatch(
+            (2, y_pos), 46, height,
+            boxstyle="round,pad=0.4", facecolor=color, edgecolor=border_color, lw=1.3, alpha=0.92
+        )
+        ax_map.add_patch(rect)
+        ax_map.text(25, y_pos + height / 2, desc, fontsize=7.6, ha="center", va="center", fontweight="bold", color="#1A237E" if "RAM" not in desc else "#003300")
+        ax_map.text(50, y_pos + height / 2, addr_label, fontsize=7.2, va="center", family="monospace", color="#37474F")
+
+    # Legend at right bottom of panel 1
+    ax_map.text(2, 0.5, "※ 物理アドレス空間には DRAM だけでなく、デバイスレジスタ (MMIO) や ROM がマッピングされる", fontsize=7.3, color="#D32F2F", fontstyle="italic")
+
+    # -------------------------------------------------------------
+    # Panel 2: Memory Controller & MMIO Address Routing Mechanism
+    # -------------------------------------------------------------
+    ax_mmio.set_title("CPU とメモリコントローラによる MMIO ルーティング機構", fontsize=11, fontweight="bold", pad=12)
+    ax_mmio.set_xlim(0, 100)
+    ax_mmio.set_ylim(0, 100)
+    ax_mmio.axis("off")
+
+    # CPU Core
+    cpu_box = FancyBboxPatch((30, 82), 40, 14, boxstyle="round,pad=0.5", facecolor="#E1F5FE", edgecolor="#0288D1", lw=1.8)
+    ax_mmio.add_patch(cpu_box)
+    ax_mmio.text(50, 91, "x86-64 CPU Core", fontsize=9.5, fontweight="bold", ha="center", color="#01579B")
+    ax_mmio.text(50, 85, "mov [0x00100000], eax  vs  mov [0xFEE00020], eax", fontsize=7.2, family="monospace", ha="center", color="#0277BD")
+
+    # Arrow Down to System Agent / Root Complex
+    ax_mmio.annotate("", xy=(50, 68), xytext=(50, 82), arrowprops=dict(facecolor="#37474F", edgecolor="#37474F", width=2, headwidth=8))
+    ax_mmio.text(52, 75, "Physical Address Bus (48/52-bit)", fontsize=7.2, va="center", color="#37474F", family="monospace")
+
+    # Host Bridge / Memory Controller / PCIe Root Complex
+    mc_box = FancyBboxPatch((15, 46), 70, 22, boxstyle="round,pad=0.6", facecolor="#FFF9C4", edgecolor="#FBC02D", lw=1.8)
+    ax_mmio.add_patch(mc_box)
+    ax_mmio.text(50, 61, "Memory Controller / PCIe Root Complex", fontsize=9.2, fontweight="bold", ha="center", color="#F57F17")
+    ax_mmio.text(50, 53, "アドレスデコーダ（Address Decoder）が番地を判定:\n・DRAM範囲ならメモリチャネルへルーティング\n・BAR/MMIO範囲なら PCIe / APIC 内部バスへ転送", fontsize=7.5, ha="center", color="#E65100")
+
+    # Branch 1: DRAM Bus (Left Arrow)
+    ax_mmio.annotate("", xy=(25, 26), xytext=(35, 46), arrowprops=dict(facecolor="#2E7D32", edgecolor="#2E7D32", width=2, headwidth=8))
+    dram_box = FancyBboxPatch((5, 10), 40, 16, boxstyle="round,pad=0.5", facecolor="#C8E6C9", edgecolor="#388E3C", lw=1.5)
+    ax_mmio.add_patch(dram_box)
+    ax_mmio.text(25, 21, "DDR4 / DDR5 DRAM (DIMM)", fontsize=8.5, fontweight="bold", ha="center", color="#1B5E20")
+    ax_mmio.text(25, 14, "通常のRAM (読み書き高速・キャッシュ有効)\nOSカーネル・ヒープ・スタック配置領域", fontsize=6.8, ha="center", color="#2E7D32")
+
+    # Branch 2: PCIe / MMIO Bus (Right Arrow)
+    ax_mmio.annotate("", xy=(75, 26), xytext=(65, 46), arrowprops=dict(facecolor="#C2185B", edgecolor="#C2185B", width=2, headwidth=8))
+    mmio_box = FancyBboxPatch((55, 10), 42, 16, boxstyle="round,pad=0.5", facecolor="#FFCDD2", edgecolor="#D32F2F", lw=1.5)
+    ax_mmio.add_patch(mmio_box)
+    ax_mmio.text(76, 21, "PCIe MMIO & Local APIC", fontsize=8.5, fontweight="bold", ha="center", color="#B71C1C")
+    ax_mmio.text(76, 14, "デバイス制御レジスタ (キャッシュ無効)\n書き込むと機器制御・描画が発生", fontsize=6.8, ha="center", color="#C2185B")
+
+    # -------------------------------------------------------------
+    # Panel 3: Technical Summary & Operating System Implications
+    # -------------------------------------------------------------
+    ax_summary.set_title("OS開発における物理メモリアーキテクチャの必須知識と落とし穴", fontsize=10.5, fontweight="bold", pad=8)
+    ax_summary.set_xlim(0, 100)
+    ax_summary.set_ylim(0, 100)
+    ax_summary.axis("off")
+
+    cards = [
+        (
+            2, 94, 30, 86, "#E8F5E9", "#4CAF50",
+            "1. 物理RAMの不連続性 (Sparsity)",
+            "・搭載RAMが8GBや16GBあっても、0番地から連続して配置されているわけではない。\n"
+            "・32bit互換の歴史的都合により、3.5GB〜4GB付近に『PCI MMIO Hole』が存在する。\n"
+            "・ホールに押し出された物理RAMは4GB以上の領域（High Memory）に再配置される。"
+        ),
+        (
+            35, 94, 30, 86, "#FFF3E0", "#FF9800",
+            "2. MMIO (Memory-Mapped I/O) の危険性",
+            "・MMIO領域はRAMではない。読み書きするとハードウェアの状態が変化する（Side Effect）。\n"
+            "・OSが空きメモリと誤認してページテーブルやスタックを配置すると暴走・クラッシュする。\n"
+            "・CPUキャッシュ（PAT/MTRR）を無効（Uncacheable）にする必要がある。"
+        ),
+        (
+            68, 94, 30, 86, "#EDE7F6", "#7E57C2",
+            "3. なぜブートローダがメモリマップを取得するのか？",
+            "・CPU起動直後はどこがRAMでどこがMMIO/予約領域かOSには分からない。\n"
+            "・UEFIファームウェアだけがマザーボードのハードウェア構成を把握している。\n"
+            "・次節以降の GetMemoryMap() で正確な『利用可能RAMリスト』を取得することが不可欠！"
+        ),
+    ]
+
+    for x, y_top, w, h, bg, border, title, body in cards:
+        card = FancyBboxPatch((x, y_top - h), w, h, boxstyle="round,pad=0.5", facecolor=bg, edgecolor=border, lw=1.5)
+        ax_summary.add_patch(card)
+        ax_summary.text(x + w / 2, y_top - 12, title, fontsize=8.2, fontweight="bold", ha="center", color="#212121")
+        ax_summary.text(x + 2, y_top - 20, body, fontsize=6.8, va="top", color="#424242", linespacing=1.35)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_x86_legacy_and_modern_memory_layout_comparison(
+    output_path: str = "2/result/fig2_06_x86_legacy_and_modern_memory_layout_comparison.png",
+) -> str:
+    """Generate high-resolution comparison plot between 1MB Legacy PC layout and 64-bit Modern UEFI layout."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_leg, ax_mod) = plt.subplots(1, 2, figsize=(15, 8.5), gridspec_kw={"wspace": 0.28})
+
+    # Left: 1MB Legacy PC Layout
+    ax_leg.set_title("レガシーPC (1MB / 20-bit Real Mode) メモリマップ", fontsize=11, fontweight="bold", pad=12)
+    ax_leg.set_xlim(0, 100)
+    ax_leg.set_ylim(0, 100)
+    ax_leg.axis("off")
+
+    leg_blocks = [
+        ("0xE0000 - 0xFFFFF (128KB)", 86, 12, "#CE93D8", "#6A1B9A", "System BIOS ROM (Reset Vector 0xFFFF0)"),
+        ("0xC8000 - 0xDFFFF (96KB)", 74, 11, "#D1C4E9", "#4527A0", "Option ROMs (SCSI / Network / Storage)"),
+        ("0xC0000 - 0xC7FFF (32KB)", 64, 9, "#B39DDB", "#311B92", "Video BIOS ROM (VGA INT 10h)"),
+        ("0xB8000 - 0xBFFFF (32KB)", 56, 7, "#FFE082", "#FF8F00", "CGA Color Text Buffer (0xB8000)"),
+        ("0xB0000 - 0xB7FFF (32KB)", 50, 5, "#FFECB3", "#FFA000", "MDA Monochrome Text Buffer"),
+        ("0xA0000 - 0xAFFFF (64KB)", 40, 9, "#FFCC80", "#E65100", "EGA/VGA Graphics Framebuffer (MMIO)"),
+        ("0x80000 - 0x9FFFF (128KB)", 28, 11, "#CFD8DC", "#37474F", "Extended BIOS Data Area (EBDA)"),
+        ("0x07E00 - 0x7FFFF (~480KB)", 14, 13, "#A5D6A7", "#1B5E20", "Conventional Free RAM (DOS Program Area)"),
+        ("0x07C00 - 0x07DFF (512B)", 9, 4, "#EF9A9A", "#B71C1C", "MBR Bootsector (0x7C00 ジャンプ位置)"),
+        ("0x00500 - 0x07BFF (~29KB)", 5, 3.5, "#C8E6C9", "#2E7D32", "DOS Low System RAM"),
+        ("0x00400 - 0x004FF (256B)", 2.5, 2, "#FFF59D", "#F57F17", "BIOS Data Area (BDA)"),
+        ("0x00000 - 0x003FF (1KB)", 0.2, 1.8, "#FFAB91", "#BF360C", "Interrupt Vector Table (IVT: 256エントリ)"),
+    ]
+
+    for addr, y, h, c, bc, label in leg_blocks:
+        box = FancyBboxPatch((2, y), 50, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_leg.add_patch(box)
+        ax_leg.text(27, y + h / 2, label, fontsize=6.8, ha="center", va="center", fontweight="bold", color="#212121")
+        ax_leg.text(54, y + h / 2, addr, fontsize=6.8, va="center", family="monospace", color="#37474F")
+
+    # Right: Modern 64-bit UEFI Layout
+    ax_mod.set_title("現代の 64-bit UEFI システム (x86-64) メモリマップ", fontsize=11, fontweight="bold", pad=12)
+    ax_mod.set_xlim(0, 100)
+    ax_mod.set_ylim(0, 100)
+    ax_mod.axis("off")
+
+    mod_blocks = [
+        ("0x1_0000_0000+ (High RAM)", 82, 16, "#81C784", "#1B5E20", "High Conventional RAM\n(4GB以上の広大なメイン物理RAM)"),
+        ("0xFFC0_0000 - 0xFFFF_FFFF (4MB)", 73, 8, "#BA68C8", "#4A148C", "OVMF / UEFI Firmware Flash ROM\n(64-bit Reset Vector)"),
+        ("0xFEC0_0000 - 0xFEE0_0FFF (8KB)", 64, 8, "#FFB74D", "#E65100", "Local APIC & I/O APIC MMIO Windows"),
+        ("0xC100_0000 - 0xFEB0_0000 (~1GB)", 47, 16, "#FF8A65", "#BF360C", "PCIe MMIO Hole (BAR空間)\nグラフィックボード・NVMe・NICの制御空間"),
+        ("0xC000_0000 - 0xC0FF_FFFF (16MB)", 38, 8, "#FFE082", "#FF8F00", "GOP (Graphics Output Protocol) フレームバッファ"),
+        ("0x8000_0000 - 0x800F_FFFF (1MB)", 30, 7, "#80DEEA", "#006064", "ACPI Reclaim / NVS テーブル領域"),
+        ("0x7FF0_0000 - 0x7FFF_FFFF (1MB)", 22, 7, "#B2DFDB", "#004D40", "UEFI Boot Services Code & Data"),
+        ("0x0010_0000 - 0x7FEF_FFFF (~2GB)", 6, 15, "#A5D6A7", "#2E7D32", "Main Conventional RAM (1MB - 2GB)\nブートローダ・OSカーネル読み込み先"),
+        ("0x0000_0000 - 0x000F_FFFF (1MB)", 0.5, 5, "#EEEEEE", "#616161", "1MB以下 レガシー互換領域 (互換性維持用)"),
+    ]
+
+    for addr, y, h, c, bc, label in mod_blocks:
+        box = FancyBboxPatch((2, y), 50, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_mod.add_patch(box)
+        ax_mod.text(27, y + h / 2, label, fontsize=7.1, ha="center", va="center", fontweight="bold", color="#212121")
+        ax_mod.text(54, y + h / 2, addr, fontsize=7.0, va="center", family="monospace", color="#37474F")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path

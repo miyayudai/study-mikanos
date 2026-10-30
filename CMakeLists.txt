@@ -67,6 +67,10 @@ add_test(NAME test_ch02_edk2_package_analyzer COMMAND ch02_edk2_package_analyzer
 add_executable(ch02_uefi_hello_world_sim src/ch02/uefi_hello_world_sim.cpp)
 add_test(NAME test_ch02_uefi_hello_world_sim COMMAND ch02_uefi_hello_world_sim --test)
 
+add_executable(ch02_main_memory_architecture_sim src/ch02/main_memory_architecture_sim.cpp)
+add_test(NAME test_ch02_main_memory_architecture_sim COMMAND ch02_main_memory_architecture_sim --test)
+
+
 
 
 

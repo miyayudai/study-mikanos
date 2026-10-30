@@ -129,6 +129,11 @@ from common.os_sim import (
     CPreprocessorSimulator,
     plot_uefi_hello_world_execution_flow,
     plot_preprocessor_include_expansion_and_tree,
+    MemoryRegionType,
+    PhysicalMemoryRegion,
+    PhysicalAddressSpace,
+    plot_physical_address_space_and_mmio,
+    plot_x86_legacy_and_modern_memory_layout_comparison,
 )
 
 __all__ = [
@@ -260,4 +265,9 @@ __all__ = [
     "CPreprocessorSimulator",
     "plot_uefi_hello_world_execution_flow",
     "plot_preprocessor_include_expansion_and_tree",
+    "MemoryRegionType",
+    "PhysicalMemoryRegion",
+    "PhysicalAddressSpace",
+    "plot_physical_address_space_and_mmio",
+    "plot_x86_legacy_and_modern_memory_layout_comparison",
 ]
