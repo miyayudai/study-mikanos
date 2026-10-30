@@ -90,7 +90,7 @@ cmake --build build
 | **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | [`0_Exercises.ipynb`](0/0_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | [`1_Exercises.ipynb`](1/1_Exercises.ipynb) | `[x]` 完了 (10/10) |
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | [`2_Exercises.ipynb`](2/2_Exercises.ipynb) | `[x]` 完了 (10/10) |
-| **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[...]` 進行中 (1/8) |
+| **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[...]` 進行中 (2/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[ ]` 未着手 (0/5) |
@@ -170,6 +170,7 @@ cmake --build build
 | ノートブック | 内容 | Colab で開く |
 |---|---|:---:|
 | [`3.1_QEMU_Monitor_and_Debugging.ipynb`](3/3.1_QEMU_Monitor_and_Debugging.ipynb) | 3.1 QEMUモニタ（非侵襲ハードウェアインスペクタ・GUI/CLI操作モード・`info registers`レジスタ状態解読・`xp`物理メモリダンプとリトルエンディアン数理・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/3/3.1_QEMU_Monitor_and_Debugging.ipynb) |
+| [`3.2_x86_64_Registers.ipynb`](3/3.2_x86_64_Registers.ipynb) | 3.2 レジスタ（x86-64汎用レジスタ体系・32ビットゼロ拡張の罠とアウトオブオーダー最適化・RIP/RSPスタック動作・RFLAGSフラグ演算数理・CR0/CR3/CR4・ABI呼び出し規約・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/3/3.2_x86_64_Registers.ipynb) |
 
 
 

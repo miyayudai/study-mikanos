@@ -95,6 +95,9 @@ add_test(NAME test_ch02_os_chapter2_exercises COMMAND ch02_os_chapter2_exercises
 add_executable(ch03_qemu_monitor_sim src/ch03/qemu_monitor_sim.cpp)
 add_test(NAME test_ch03_qemu_monitor_sim COMMAND ch03_qemu_monitor_sim --test)
 
+add_executable(ch03_registers_sim src/ch03/registers_sim.cpp)
+add_test(NAME test_ch03_registers_sim COMMAND ch03_registers_sim --test)
+
 
 
 

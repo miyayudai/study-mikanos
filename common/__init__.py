@@ -193,6 +193,12 @@ from common.os_sim import (
     QemuMonitorEngine,
     plot_qemu_monitor_architecture,
     plot_qemu_registers_and_memory_dump,
+    X86_64RegisterFile,
+    RFlagsRegister,
+    ControlRegisters,
+    CallingConventionSimulator,
+    plot_x86_64_register_hierarchy,
+    plot_rflags_and_control_registers,
 )
 
 __all__ = [
@@ -388,4 +394,10 @@ __all__ = [
     "QemuMonitorEngine",
     "plot_qemu_monitor_architecture",
     "plot_qemu_registers_and_memory_dump",
+    "X86_64RegisterFile",
+    "RFlagsRegister",
+    "ControlRegisters",
+    "CallingConventionSimulator",
+    "plot_x86_64_register_hierarchy",
+    "plot_rflags_and_control_registers",
 ]

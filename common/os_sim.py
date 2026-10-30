@@ -9,6 +9,7 @@ from pathlib import Path
 import struct
 from typing import Any, Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from matplotlib.patches import Rectangle, FancyBboxPatch, ArrowStyle
 import numpy as np
 
@@ -10747,3 +10748,638 @@ def plot_qemu_registers_and_memory_dump(output_path: Path | str) -> Path:
     plt.close()
     return output_path
 
+
+
+# =============================================================================
+# Chapter 3.2: x86-64 Architecture Register Simulation & Visualizations
+# =============================================================================
+
+class X86_64RegisterFile:
+    """Simulates 64-bit General-Purpose Registers, sub-register aliasing,
+
+    the 32-bit zero-extension rule, and LIFO stack operations.
+    """
+
+    GPR_64_NAMES = [
+        "rax", "rbx", "rcx", "rdx",
+        "rsi", "rdi", "rbp", "rsp",
+        "r8",  "r9",  "r10", "r11",
+        "r12", "r13", "r14", "r15",
+    ]
+
+    SUB_32_TO_64 = {
+        "eax": "rax", "ebx": "rbx", "ecx": "rcx", "edx": "rdx",
+        "esi": "rsi", "edi": "rdi", "ebp": "rbp", "esp": "rsp",
+        "r8d": "r8",  "r9d": "r9",  "r10d": "r10", "r11d": "r11",
+        "r12d": "r12", "r13d": "r13", "r14d": "r14", "r15d": "r15",
+    }
+
+    SUB_16_TO_64 = {
+        "ax": "rax", "bx": "rbx", "cx": "rcx", "dx": "rdx",
+        "si": "rsi", "di": "rdi", "bp": "rbp", "sp": "rsp",
+        "r8w": "r8", "r9w": "r9", "r10w": "r10", "r11w": "r11",
+        "r12w": "r12", "r13w": "r13", "r14w": "r14", "r15w": "r15",
+    }
+
+    SUB_8L_TO_64 = {
+        "al": "rax", "bl": "rbx", "cl": "rcx", "dl": "rdx",
+        "sil": "rsi", "dil": "rdi", "bpl": "rbp", "spl": "rsp",
+        "r8b": "r8", "r9b": "r9", "r10b": "r10", "r11b": "r11",
+        "r12b": "r12", "r13b": "r13", "r14b": "r14", "r15b": "r15",
+    }
+
+    SUB_8H_TO_64 = {
+        "ah": "rax", "bh": "rbx", "ch": "rcx", "dh": "rdx",
+    }
+
+    def __init__(self, initial_rsp: int = 0x0000000007FE3DC0, initial_rip: int = 0x00100000):
+        self.gprs: dict[str, int] = {name: 0 for name in self.GPR_64_NAMES}
+        self.gprs["rsp"] = initial_rsp & 0xFFFFFFFFFFFFFFFF
+        self.rip: int = initial_rip & 0xFFFFFFFFFFFFFFFF
+        self.stack_memory: dict[int, int] = {}  # 64-bit aligned virtual stack memory
+
+    @property
+    def rsp(self) -> int:
+        return self.gprs["rsp"]
+
+    @rsp.setter
+    def rsp(self, val: int) -> None:
+        self.gprs["rsp"] = val & 0xFFFFFFFFFFFFFFFF
+
+    def read_64(self, name: str) -> int:
+        name = name.lower()
+        if name == "rip":
+            return self.rip
+        if name not in self.gprs:
+            raise KeyError(f"Unknown 64-bit register: {name}")
+        return self.gprs[name]
+
+    def write_64(self, name: str, value: int) -> None:
+        name = name.lower()
+        if name == "rip":
+            self.rip = value & 0xFFFFFFFFFFFFFFFF
+            return
+        if name not in self.gprs:
+            raise KeyError(f"Unknown 64-bit register: {name}")
+        self.gprs[name] = value & 0xFFFFFFFFFFFFFFFF
+
+    def read_32(self, name: str) -> int:
+        name = name.lower()
+        reg64 = self.SUB_32_TO_64.get(name) or name
+        return self.read_64(reg64) & 0xFFFFFFFF
+
+    def write_32(self, name: str, value: int) -> None:
+        """Writes to a 32-bit register.
+
+        CRITICAL x86-64 RULE: Writing a 32-bit sub-register automatically
+        ZERO-EXTENDS into the full 64-bit register, setting bits 32..63 to zero!
+        """
+        name = name.lower()
+        reg64 = self.SUB_32_TO_64.get(name)
+        if not reg64:
+            if name in self.gprs:
+                reg64 = name
+            else:
+                raise KeyError(f"Unknown 32-bit register: {name}")
+        self.gprs[reg64] = value & 0xFFFFFFFF
+
+    def read_16(self, name: str) -> int:
+        name = name.lower()
+        reg64 = self.SUB_16_TO_64.get(name) or name
+        return self.read_64(reg64) & 0xFFFF
+
+    def write_16(self, name: str, value: int) -> None:
+        """Writes to a 16-bit register.
+
+        PRESERVES upper 48 bits unchanged.
+        """
+        name = name.lower()
+        reg64 = self.SUB_16_TO_64.get(name)
+        if not reg64:
+            raise KeyError(f"Unknown 16-bit register: {name}")
+        curr = self.gprs[reg64]
+        self.gprs[reg64] = (curr & ~0xFFFF) | (value & 0xFFFF)
+
+    def read_8(self, name: str) -> int:
+        name = name.lower()
+        if name in self.SUB_8H_TO_64:
+            reg64 = self.SUB_8H_TO_64[name]
+            return (self.gprs[reg64] >> 8) & 0xFF
+        if name in self.SUB_8L_TO_64:
+            reg64 = self.SUB_8L_TO_64[name]
+            return self.gprs[reg64] & 0xFF
+        raise KeyError(f"Unknown 8-bit register: {name}")
+
+    def write_8(self, name: str, value: int) -> None:
+        """Writes to an 8-bit register (low byte or high byte AH/BH/CH/DH).
+
+        PRESERVES unaffected bits.
+        """
+        name = name.lower()
+        if name in self.SUB_8H_TO_64:
+            reg64 = self.SUB_8H_TO_64[name]
+            curr = self.gprs[reg64]
+            self.gprs[reg64] = (curr & ~0xFF00) | ((value & 0xFF) << 8)
+            return
+        if name in self.SUB_8L_TO_64:
+            reg64 = self.SUB_8L_TO_64[name]
+            curr = self.gprs[reg64]
+            self.gprs[reg64] = (curr & ~0xFF) | (value & 0xFF)
+            return
+        raise KeyError(f"Unknown 8-bit register: {name}")
+
+    def push(self, value: int) -> int:
+        """Simulates x86-64 `push value`: RSP -= 8, [RSP] = value."""
+        self.rsp = (self.rsp - 8) & 0xFFFFFFFFFFFFFFFF
+        self.stack_memory[self.rsp] = value & 0xFFFFFFFFFFFFFFFF
+        return self.rsp
+
+    def pop(self) -> int:
+        """Simulates x86-64 `pop`: value = [RSP], RSP += 8."""
+        if self.rsp not in self.stack_memory:
+            raise RuntimeError(f"Stack underflow at RSP = 0x{self.rsp:016x}")
+        val = self.stack_memory.pop(self.rsp)
+        self.rsp = (self.rsp + 8) & 0xFFFFFFFFFFFFFFFF
+        return val
+
+
+class RFlagsRegister:
+    """Simulates x86-64 RFLAGS (64-bit) / EFLAGS (32-bit) / FLAGS (16-bit).
+
+    Computes arithmetic status flags (CF, PF, AF, ZF, SF, OF) and manages system/control flags.
+    """
+
+    CF_MASK = 1 << 0
+    RES1_MASK = 1 << 1  # Always 1
+    PF_MASK = 1 << 2
+    AF_MASK = 1 << 4
+    ZF_MASK = 1 << 6
+    SF_MASK = 1 << 7
+    TF_MASK = 1 << 8
+    IF_MASK = 1 << 9
+    DF_MASK = 1 << 10
+    OF_MASK = 1 << 11
+    IOPL_MASK = 3 << 12
+    NT_MASK = 1 << 14
+    RF_MASK = 1 << 16
+    VM_MASK = 1 << 17
+    AC_MASK = 1 << 18
+    VIF_MASK = 1 << 19
+    VIP_MASK = 1 << 20
+    ID_MASK = 1 << 21
+
+    def __init__(self, raw: int = 0x00000202):
+        self.raw = raw | self.RES1_MASK
+
+    @property
+    def cf(self) -> bool:
+        return bool(self.raw & self.CF_MASK)
+
+    @property
+    def pf(self) -> bool:
+        return bool(self.raw & self.PF_MASK)
+
+    @property
+    def af(self) -> bool:
+        return bool(self.raw & self.AF_MASK)
+
+    @property
+    def zf(self) -> bool:
+        return bool(self.raw & self.ZF_MASK)
+
+    @property
+    def sf(self) -> bool:
+        return bool(self.raw & self.SF_MASK)
+
+    @property
+    def tf(self) -> bool:
+        return bool(self.raw & self.TF_MASK)
+
+    @property
+    def if_flag(self) -> bool:
+        return bool(self.raw & self.IF_MASK)
+
+    @property
+    def df(self) -> bool:
+        return bool(self.raw & self.DF_MASK)
+
+    @property
+    def of(self) -> bool:
+        return bool(self.raw & self.OF_MASK)
+
+    @property
+    def iopl(self) -> int:
+        return (self.raw >> 12) & 0x3
+
+    def _set_bit(self, mask: int, val: bool) -> None:
+        if val:
+            self.raw |= mask
+        else:
+            self.raw &= ~mask
+        self.raw |= self.RES1_MASK
+
+    def update_arithmetic_add(self, a: int, b: int, width: int = 64) -> int:
+        mask = (1 << width) - 1
+        sign_bit = 1 << (width - 1)
+        res_full = a + b
+        res = res_full & mask
+
+        # Carry Flag: unsigned overflow
+        self._set_bit(self.CF_MASK, res_full > mask)
+
+        # Zero Flag
+        self._set_bit(self.ZF_MASK, res == 0)
+
+        # Sign Flag
+        self._set_bit(self.SF_MASK, bool(res & sign_bit))
+
+        # Overflow Flag: signed overflow
+        sa = (a & sign_bit) != 0
+        sb = (b & sign_bit) != 0
+        sres = (res & sign_bit) != 0
+        self._set_bit(self.OF_MASK, (sa == sb) and (sres != sa))
+
+        # Parity Flag: lowest byte has even number of 1-bits
+        lowest_byte = res & 0xFF
+        ones = bin(lowest_byte).count("1")
+        self._set_bit(self.PF_MASK, (ones % 2) == 0)
+
+        return res
+
+    def update_arithmetic_sub(self, a: int, b: int, width: int = 64) -> int:
+        mask = (1 << width) - 1
+        sign_bit = 1 << (width - 1)
+        res_full = a - b
+        res = res_full & mask
+
+        # Carry Flag: unsigned borrow (a < b)
+        self._set_bit(self.CF_MASK, a < b)
+
+        # Zero Flag
+        self._set_bit(self.ZF_MASK, res == 0)
+
+        # Sign Flag
+        self._set_bit(self.SF_MASK, bool(res & sign_bit))
+
+        # Overflow Flag: signed overflow (pos - neg = neg OR neg - pos = pos)
+        sa = (a & sign_bit) != 0
+        sb = (b & sign_bit) != 0
+        sres = (res & sign_bit) != 0
+        self._set_bit(self.OF_MASK, (sa != sb) and (sres != sa))
+
+        # Parity Flag
+        lowest_byte = res & 0xFF
+        ones = bin(lowest_byte).count("1")
+        self._set_bit(self.PF_MASK, (ones % 2) == 0)
+
+        return res
+
+    def format_flags_summary(self) -> str:
+        flags = []
+        if self.cf: flags.append("CF")
+        if self.pf: flags.append("PF")
+        if self.af: flags.append("AF")
+        if self.zf: flags.append("ZF")
+        if self.sf: flags.append("SF")
+        if self.tf: flags.append("TF")
+        if self.if_flag: flags.append("IF")
+        if self.df: flags.append("DF")
+        if self.of: flags.append("OF")
+        flags.append(f"IOPL={self.iopl}")
+        return f"[{' '.join(flags)}]"
+
+
+@dataclass
+class ControlRegisters:
+    """Models x86-64 Control Registers (CR0..CR4, CR8) and MSR IA32_EFER."""
+    cr0: int = 0x80010033  # PG=1, WP=1, ET=1, PE=1
+    cr2: int = 0x0         # Page Fault Linear Address
+    cr3: int = 0x07FA0000  # PML4 Root Base Address
+    cr4: int = 0x000006F0  # PAE=1, OSFXSR=1, OSXMMEXCPT=1
+    cr8: int = 0x0         # Task Priority Register (TPR)
+    ia32_efer: int = 0x00000D01  # LME=1, LMA=1, NXE=1, SCE=1
+
+    @property
+    def is_protected_mode(self) -> bool:
+        return bool(self.cr0 & (1 << 0))
+
+    @property
+    def is_write_protect(self) -> bool:
+        return bool(self.cr0 & (1 << 16))
+
+    @property
+    def is_paging_enabled(self) -> bool:
+        return bool(self.cr0 & (1 << 31))
+
+    @property
+    def pml4_base_address(self) -> int:
+        return self.cr3 & 0x000FFFFFFFFFF000
+
+    @property
+    def is_pae_enabled(self) -> bool:
+        return bool(self.cr4 & (1 << 5))
+
+    @property
+    def is_osfxsr_enabled(self) -> bool:
+        return bool(self.cr4 & (1 << 9))
+
+    @property
+    def is_syscall_extension_enabled(self) -> bool:
+        return bool(self.ia32_efer & (1 << 0))
+
+    @property
+    def is_long_mode_active(self) -> bool:
+        return bool(self.ia32_efer & (1 << 10))
+
+    @property
+    def is_no_execute_enabled(self) -> bool:
+        return bool(self.ia32_efer & (1 << 11))
+
+
+class CallingConventionSimulator:
+    """Simulates System V AMD64 ABI function calling conventions."""
+
+    ARG_REGISTERS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+    RETURN_REGISTERS = ["rax", "rdx"]
+    CALLEE_SAVED = ["rbx", "rsp", "rbp", "r12", "r13", "r14", "r15"]
+    CALLER_SAVED = ["rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"]
+
+    @classmethod
+    def prepare_call(cls, rf: X86_64RegisterFile, args: list[int]) -> tuple[dict[str, int], list[int]]:
+        """Maps arguments to registers RDI..R9, pushes excess arguments to stack."""
+        reg_args = {}
+        stack_args = []
+        for i, val in enumerate(args):
+            if i < len(cls.ARG_REGISTERS):
+                reg_name = cls.ARG_REGISTERS[i]
+                rf.write_64(reg_name, val)
+                reg_args[reg_name] = val
+            else:
+                rf.push(val)
+                stack_args.append(val)
+        return reg_args, stack_args
+
+
+def plot_x86_64_register_hierarchy(output_path: Path) -> Path:
+    """Generates visualization for x86-64 register naming hierarchies,
+
+    sub-register bit ranges, and the 32-bit zero-extension rule.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_hier, ax_zero) = plt.subplots(1, 2, figsize=(16, 9))
+    fig.patch.set_facecolor("#FFFFFF")
+
+    # 1. Left Subplot: Register Sub-access Hierarchy
+    ax_hier.set_facecolor("#F9FAFB")
+    ax_hier.set_title("1. x86-64 Register Sub-Access Hierarchy & Aliasing", fontsize=12.5, fontweight="bold", color="#1565C0", pad=12)
+
+    # Example A: RAX Hierarchy
+    ax_hier.text(0.04, 0.94, "A. Legacy Register Group (RAX Example)", fontsize=11, fontweight="bold", color="#283593")
+
+    # Full 64-bit RAX box
+    rax_box = patches.FancyBboxPatch(
+        (0.04, 0.83), 0.92, 0.08,
+        boxstyle="round,pad=0.008,rounding_size=0.01",
+        facecolor="#E1F5FE", edgecolor="#0288D1", linewidth=1.5, zorder=2
+    )
+    ax_hier.add_patch(rax_box)
+    ax_hier.text(0.06, 0.86, "RAX (64-bit: Bits 63 .. 0)", fontsize=10, fontweight="bold", color="#01579B")
+
+    # 32-bit EAX box (bits 31..0)
+    eax_box = patches.FancyBboxPatch(
+        (0.50, 0.72), 0.46, 0.08,
+        boxstyle="round,pad=0.008,rounding_size=0.01",
+        facecolor="#E8F5E9", edgecolor="#4CAF50", linewidth=1.5, zorder=2
+    )
+    ax_hier.add_patch(eax_box)
+    ax_hier.text(0.52, 0.75, "EAX (32-bit: Bits 31 .. 0)", fontsize=9.5, fontweight="bold", color="#1B5E20")
+
+    # 16-bit AX box (bits 15..0)
+    ax_box = patches.FancyBboxPatch(
+        (0.73, 0.61), 0.23, 0.08,
+        boxstyle="round,pad=0.008,rounding_size=0.01",
+        facecolor="#FFF9C4", edgecolor="#FBC02D", linewidth=1.5, zorder=2
+    )
+    ax_hier.add_patch(ax_box)
+    ax_hier.text(0.75, 0.64, "AX (16-bit: 15..0)", fontsize=9, fontweight="bold", color="#F57F17")
+
+    # 8-bit AH (bits 15..8) and AL (bits 7..0)
+    ah_box = patches.FancyBboxPatch(
+        (0.73, 0.50), 0.11, 0.08,
+        boxstyle="round,pad=0.006,rounding_size=0.01",
+        facecolor="#FFE0B2", edgecolor="#FB8C00", linewidth=1.3, zorder=2
+    )
+    ax_hier.add_patch(ah_box)
+    ax_hier.text(0.74, 0.53, "AH (15..8)", fontsize=8.5, fontweight="bold", color="#E65100")
+
+    al_box = patches.FancyBboxPatch(
+        (0.85, 0.50), 0.11, 0.08,
+        boxstyle="round,pad=0.006,rounding_size=0.01",
+        facecolor="#FFCCBC", edgecolor="#FF5722", linewidth=1.3, zorder=2
+    )
+    ax_hier.add_patch(al_box)
+    ax_hier.text(0.86, 0.53, "AL (7..0)", fontsize=8.5, fontweight="bold", color="#BF360C")
+
+    # Example B: R8..R15 Hierarchy
+    y_r8 = 0.42
+    ax_hier.text(0.04, y_r8, "B. Extended Register Group (R8 Example: No High-Byte sub-register)", fontsize=11, fontweight="bold", color="#283593")
+    y_r8 -= 0.10
+
+    r8_box = patches.FancyBboxPatch(
+        (0.04, y_r8), 0.92, 0.07,
+        boxstyle="round,pad=0.008,rounding_size=0.01",
+        facecolor="#EDE7F6", edgecolor="#673AB7", linewidth=1.5, zorder=2
+    )
+    ax_hier.add_patch(r8_box)
+    ax_hier.text(0.06, y_r8 + 0.025, "R8 (64-bit: Bits 63 .. 0)", fontsize=10, fontweight="bold", color="#311B92")
+    y_r8 -= 0.09
+
+    r8d_box = patches.FancyBboxPatch(
+        (0.50, y_r8), 0.46, 0.07,
+        boxstyle="round,pad=0.008,rounding_size=0.01",
+        facecolor="#E0F2F1", edgecolor="#00897B", linewidth=1.5, zorder=2
+    )
+    ax_hier.add_patch(r8d_box)
+    ax_hier.text(0.52, y_r8 + 0.025, "R8D (32-bit: Bits 31 .. 0)", fontsize=9.5, fontweight="bold", color="#004D40")
+    y_r8 -= 0.09
+
+    r8w_box = patches.FancyBboxPatch(
+        (0.73, y_r8), 0.23, 0.07,
+        boxstyle="round,pad=0.008,rounding_size=0.01",
+        facecolor="#FCE4EC", edgecolor="#D81B60", linewidth=1.5, zorder=2
+    )
+    ax_hier.add_patch(r8w_box)
+    ax_hier.text(0.75, y_r8 + 0.025, "R8W (16-bit: 15..0)", fontsize=9, fontweight="bold", color="#880E4F")
+    y_r8 -= 0.09
+
+    r8b_box = patches.FancyBboxPatch(
+        (0.85, y_r8), 0.11, 0.07,
+        boxstyle="round,pad=0.006,rounding_size=0.01",
+        facecolor="#F3E5F5", edgecolor="#8E24AA", linewidth=1.3, zorder=2
+    )
+    ax_hier.add_patch(r8b_box)
+    ax_hier.text(0.86, y_r8 + 0.025, "R8B (7..0)", fontsize=8.5, fontweight="bold", color="#4A148C")
+
+    ax_hier.set_xlim(0, 1.0)
+    ax_hier.set_ylim(0, 1.0)
+    ax_hier.axis("off")
+
+    # 2. Right Subplot: 32-bit Zero-Extension Rule vs 16/8-bit Preservation
+    ax_zero.set_facecolor("#F9FAFB")
+    ax_zero.set_title("2. Zero-Extension Rule vs Upper-Bit Preservation", fontsize=12.5, fontweight="bold", color="#C2185B", pad=12)
+
+    # Warning Box
+    rule_box = patches.FancyBboxPatch(
+        (0.04, 0.82), 0.92, 0.14,
+        boxstyle="round,pad=0.01,rounding_size=0.015",
+        facecolor="#FFF3E0", edgecolor="#FF9800", linewidth=1.5, zorder=2
+    )
+    ax_zero.add_patch(rule_box)
+    ax_zero.text(0.07, 0.91, "[CRITICAL] The Golden Rule of x86-64 Sub-Registers", fontsize=10.5, fontweight="bold", color="#E65100")
+    ax_zero.text(0.07, 0.85, "• 32-bit Write (MOV EAX, val): Upper 32 bits are AUTOMATICALLY ZEROED (Zero-Extended)\n• 16-bit Write (MOV AX, val):  Upper 48 bits are PRESERVED (Unchanged)\n• 8-bit Write  (MOV AL, val):  Upper 56 bits are PRESERVED (Unchanged)",
+                 fontsize=8.5, color="#BF360C")
+
+    # Step-by-step Visual Demonstration
+    demos = [
+        ("Step 0: Initial Full 64-bit RAX", "0xFFFFFFFFFFFFFFFF", "All 64 bits are 1"),
+        ("Step 1: Execute `mov eax, 0x12345678`", "0x0000000012345678", "Upper 32 bits CLEARED TO ZERO!"),
+        ("Step 2: Execute `mov ax, 0xAAAA`", "0x000000001234AAAA", "Bits 16..63 remain untouched"),
+        ("Step 3: Execute `mov ah, 0x55`", "0x00000000123455AA", "Only bits 8..15 modified"),
+        ("Step 4: Execute `mov al, 0x33`", "0x0000000012345533", "Only bits 0..7 modified"),
+    ]
+
+    y_d = 0.72
+    for title, hex_val, desc in demos:
+        ax_zero.text(0.04, y_d, title, fontsize=10, fontweight="bold", color="#37474F")
+        y_d -= 0.045
+        dcard = patches.FancyBboxPatch(
+            (0.04, y_d - 0.045), 0.92, 0.05,
+            boxstyle="round,pad=0.008,rounding_size=0.01",
+            facecolor="#FFFFFF", edgecolor="#5C6BC0", linewidth=1.2, zorder=2
+        )
+        ax_zero.add_patch(dcard)
+        ax_zero.text(0.07, y_d - 0.02, hex_val, fontsize=10, fontweight="bold", family="monospace", color="#C2185B")
+        ax_zero.text(0.48, y_d - 0.02, desc, fontsize=8.8, color="#2E7D32" if "Upper 32" in desc else "#424242")
+        y_d -= 0.075
+
+    ax_zero.set_xlim(0, 1.0)
+    ax_zero.set_ylim(0, 1.0)
+    ax_zero.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_rflags_and_control_registers(output_path: Path) -> Path:
+    """Generates visualization for RFLAGS status/system flags and CR0/CR3/CR4 control registers."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_rfl, ax_cr) = plt.subplots(1, 2, figsize=(16, 9))
+    fig.patch.set_facecolor("#FFFFFF")
+
+    # 1. Left Subplot: RFLAGS Bit Layout and Status Flags
+    ax_rfl.set_facecolor("#F9FAFB")
+    ax_rfl.set_title("1. x86-64 RFLAGS Register (64-bit) Architecture", fontsize=12.5, fontweight="bold", color="#00695C", pad=12)
+
+    # Explanation card
+    rfl_intro = patches.FancyBboxPatch(
+        (0.04, 0.85), 0.92, 0.11,
+        boxstyle="round,pad=0.01,rounding_size=0.015",
+        facecolor="#E0F2F1", edgecolor="#00897B", linewidth=1.5, zorder=2
+    )
+    ax_rfl.add_patch(rfl_intro)
+    ax_rfl.text(0.07, 0.92, "RFLAGS: Status Flags (Math), Control Flags, System Flags", fontsize=10.5, fontweight="bold", color="#004D40")
+    ax_rfl.text(0.07, 0.87, "• Bit 1: Reserved = 1 (Always set in x86 architecture)\n• Status Flags: CF (bit 0), PF (bit 2), AF (bit 4), ZF (bit 6), SF (bit 7), OF (bit 11)",
+                fontsize=8.8, color="#00695C")
+
+    # Table of Key Status Flags
+    flags_table = [
+        ("CF (Bit 0)", "Carry Flag", "Unsigned Overflow: 1 if unsigned carry/borrow occurs"),
+        ("ZF (Bit 6)", "Zero Flag", "Calculation Result: 1 if arithmetic/logic result == 0"),
+        ("SF (Bit 7)", "Sign Flag", "Signed Sign: 1 if Most Significant Bit (MSB) == 1"),
+        ("OF (Bit 11)", "Overflow Flag", "Signed Overflow: 1 if signed range exceeded (- / +)"),
+        ("IF (Bit 9)", "Interrupt Flag", "Hardware Interrupts: 1=Enabled (STI), 0=Disabled (CLI)"),
+        ("DF (Bit 10)", "Direction Flag", "String Instructions: 0=Increment (CLD), 1=Decrement (STD)"),
+    ]
+
+    y_f = 0.77
+    for bit_name, name, desc in flags_table:
+        fcard = patches.FancyBboxPatch(
+            (0.04, y_f - 0.05), 0.92, 0.052,
+            boxstyle="round,pad=0.008,rounding_size=0.01",
+            facecolor="#FFFFFF", edgecolor="#B2DFDB", linewidth=1.2, zorder=2
+        )
+        ax_rfl.add_patch(fcard)
+        ax_rfl.text(0.07, y_f - 0.023, bit_name, fontsize=9.5, fontweight="bold", family="monospace", color="#00796B")
+        ax_rfl.text(0.26, y_f - 0.023, name, fontsize=9, fontweight="bold", color="#37474F")
+        ax_rfl.text(0.48, y_f - 0.023, desc, fontsize=8.2, color="#555555")
+        y_f -= 0.068
+
+    # Math Example Box
+    math_box = patches.FancyBboxPatch(
+        (0.04, 0.08), 0.92, 0.22,
+        boxstyle="round,pad=0.01,rounding_size=0.015",
+        facecolor="#F3E5F5", edgecolor="#AB47BC", linewidth=1.5, zorder=2
+    )
+    ax_rfl.add_patch(math_box)
+    ax_rfl.text(0.07, 0.25, "[CALCULATION] Mathematical Flag Updates in Assembly", fontsize=10.5, fontweight="bold", color="#6A1B9A")
+    ax_rfl.text(0.07, 0.17, "Case 1: `sub rax, rax` (rax = rax)\n  -> Result = 0:  ZF = 1, SF = 0, CF = 0, OF = 0\nCase 2: `sub 3, 5`\n  -> Result = -2: CF = 1 (Borrow), SF = 1 (MSB=1), ZF = 0, OF = 0\nCase 3: `add 0x7FFFFFFF, 1` (32-bit signed max + 1)\n  -> Result = 0x80000000 (-2147483648): OF = 1 (Signed Overflow!), SF = 1, CF = 0",
+                fontsize=8.5, family="monospace", color="#4A148C")
+
+    ax_rfl.set_xlim(0, 1.0)
+    ax_rfl.set_ylim(0, 1.0)
+    ax_rfl.axis("off")
+
+    # 2. Right Subplot: CPU Control Registers (CR0, CR3, CR4, IA32_EFER)
+    ax_cr.set_facecolor("#F9FAFB")
+    ax_cr.set_title("2. CPU Control Registers (CR0, CR3, CR4) & MSR (EFER)", fontsize=12.5, fontweight="bold", color="#283593", pad=12)
+
+    cr_data = [
+        ("CR0 (Control Register 0)", [
+            ("PE (Bit 0)", "Protected Mode Enable (1 = 32/64-bit protected mode active)"),
+            ("WP (Bit 16)", "Write Protect (Ring 0 cannot write to read-only user pages)"),
+            ("PG (Bit 31)", "Paging Enable (1 = MMU translates virtual to physical addresses)"),
+        ]),
+        ("CR3 (Page Directory Base Register)", [
+            ("PML4 Base", "Bits 12..51: Physical address of top-level page table (4KiB aligned)"),
+            ("PCD / PWT", "Bits 4/3: Page-level Cache Disable & Write-Through caching control"),
+        ]),
+        ("CR4 (Architecture Extensions)", [
+            ("PAE (Bit 5)", "Physical Address Extension (Required for x86-64 64-bit Long Mode)"),
+            ("OSFXSR (Bit 9)", "Fast FPU/SSE Save & Restore (`fxsave` / `fxrstor`) Support"),
+        ]),
+        ("IA32_EFER (MSR 0xC0000080: Extended Features)", [
+            ("LME (Bit 8) & LMA (Bit 10)", "Long Mode Enable & Long Mode Active (64-bit execution active)"),
+            ("NXE (Bit 11)", "No-Execute Enable (Page fault on instruction fetch from data page)"),
+        ]),
+    ]
+
+    y_c = 0.94
+    for title, bits in cr_data:
+        ax_cr.text(0.04, y_c, title, fontsize=10.5, fontweight="bold", color="#1A237E")
+        y_c -= 0.04
+        for b_name, b_desc in bits:
+            ccard = patches.FancyBboxPatch(
+                (0.04, y_c - 0.045), 0.92, 0.048,
+                boxstyle="round,pad=0.008,rounding_size=0.01",
+                facecolor="#FFFFFF", edgecolor="#9FA8DA", linewidth=1.1, zorder=2
+            )
+            ax_cr.add_patch(ccard)
+            ax_cr.text(0.07, y_c - 0.02, b_name, fontsize=9.2, fontweight="bold", family="monospace", color="#C2185B")
+            ax_cr.text(0.35, y_c - 0.02, b_desc, fontsize=8.2, color="#37474F")
+            y_c -= 0.055
+        y_c -= 0.015
+
+    ax_cr.set_xlim(0, 1.0)
+    ax_cr.set_ylim(0, 1.0)
+    ax_cr.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
