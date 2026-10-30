@@ -13780,3 +13780,540 @@ def plot_pointer_casts_type_safety_memory(output_path: Path | str) -> Path:
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return Path(output_path)
+
+
+# ============================================================================
+# Chapter 3.7: Pointers & Assembly Level (SIB, MOV vs LEA, Disassembly & Volatile)
+# ============================================================================
+
+
+class AsmDataSize(Enum):
+    """x86-64 memory access operand sizes."""
+
+    BYTE = 1
+    WORD = 2
+    DWORD = 4
+    QWORD = 8
+
+    @property
+    def specifier(self) -> str:
+        """Return Intel assembly size specifier string."""
+        mapping = {
+            AsmDataSize.BYTE: "BYTE PTR",
+            AsmDataSize.WORD: "WORD PTR",
+            AsmDataSize.DWORD: "DWORD PTR",
+            AsmDataSize.QWORD: "QWORD PTR",
+        }
+        return mapping[self]
+
+    @classmethod
+    def from_type_name(cls, name: str) -> AsmDataSize:
+        """Map C/C++ type name to AsmDataSize."""
+        cleaned = name.strip().lower()
+        if cleaned in ("uint8_t", "int8_t", "char", "unsigned char", "bool"):
+            return cls.BYTE
+        if cleaned in ("uint16_t", "int16_t", "short", "unsigned short", "char16_t"):
+            return cls.WORD
+        if cleaned in ("uint32_t", "int32_t", "int", "unsigned int", "char32_t", "float"):
+            return cls.DWORD
+        if cleaned in ("uint64_t", "int64_t", "long", "unsigned long", "void*", "double") or "*" in cleaned:
+            return cls.QWORD
+        raise ValueError(f"Unknown type name: {name}")
+
+
+@dataclass
+class SIBAddress:
+    """x86-64 Scale-Index-Base (SIB) memory addressing calculation.
+
+    Effective Address = Base + (Index * Scale) + Displacement
+    """
+
+    base: int = 0
+    index: int = 0
+    scale: int = 1
+    displacement: int = 0
+
+    def __post_init__(self) -> None:
+        if self.scale not in (1, 2, 4, 8):
+            raise ValueError(f"Invalid SIB scale factor: {self.scale}. Must be 1, 2, 4, or 8.")
+
+    def calculate_effective_address(self) -> int:
+        """Calculate effective linear memory address."""
+        return self.base + (self.index * self.scale) + self.displacement
+
+    def scale_encoding(self) -> int:
+        """Return 2-bit SIB scale encoding (00b=1, 01b=2, 10b=4, 11b=8)."""
+        mapping = {1: 0b00, 2: 0b01, 4: 0b10, 8: 0b11}
+        return mapping[self.scale]
+
+    def to_assembly_string(self, base_reg: str = "rax", index_reg: str = "rcx") -> str:
+        """Format as Intel assembly memory operand bracket."""
+        parts = [base_reg]
+        if index_reg:
+            if self.scale > 1:
+                parts.append(f"{index_reg}*{self.scale}")
+            else:
+                parts.append(index_reg)
+        expr = " + ".join(parts)
+        if self.displacement > 0:
+            expr += f" + {self.displacement}"
+        elif self.displacement < 0:
+            expr += f" - {-self.displacement}"
+        return f"[{expr}]"
+
+
+class VirtualCpu:
+    """Lightweight virtual x86-64 machine simulator for MOV vs LEA verification."""
+
+    REGISTERS = ("rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+                 "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15")
+
+    def __init__(self, memory_size: int = 65536) -> None:
+        self.memory = bytearray(memory_size)
+        self.registers = {r: 0 for r in self.REGISTERS}
+        self.memory_write_count = 0
+        self.memory_read_count = 0
+        self.bytes_written = 0
+        self.bytes_read = 0
+        self.executed_instructions: list[str] = []
+
+    def get_reg(self, name: str) -> int:
+        return self.registers[name.lower()]
+
+    def set_reg(self, name: str, val: int) -> None:
+        self.registers[name.lower()] = val & 0xFFFF_FFFF_FFFF_FFFF
+
+    def execute_lea(self, dest_reg: str, sib: SIBAddress) -> int:
+        """Execute LEA dest, [mem].
+
+        CRITICAL: LEA performs address calculation ONLY and NEVER touches the memory bus!
+        """
+        eff_addr = sib.calculate_effective_address()
+        self.set_reg(dest_reg, eff_addr)
+        asm_line = f"lea {dest_reg.lower()}, {sib.to_assembly_string('rax', 'rcx')}"
+        self.executed_instructions.append(asm_line)
+        return eff_addr
+
+    def execute_mov_store(self, sib: SIBAddress, src_reg: str, size: AsmDataSize) -> None:
+        """Execute MOV [mem], src_reg (Write register value to memory via pointer)."""
+        eff_addr = sib.calculate_effective_address()
+        val = self.get_reg(src_reg)
+        num_bytes = size.value
+
+        if eff_addr + num_bytes > len(self.memory):
+            raise IndexError("Memory store out of range")
+
+        val_bytes = val.to_bytes(8, byteorder="little")[:num_bytes]
+        self.memory[eff_addr:eff_addr + num_bytes] = val_bytes
+        self.memory_write_count += 1
+        self.bytes_written += num_bytes
+
+        asm_line = f"mov {size.specifier} {sib.to_assembly_string('rax', 'rcx')}, {src_reg.lower()}"
+        self.executed_instructions.append(asm_line)
+
+    def execute_mov_load(self, dest_reg: str, sib: SIBAddress, size: AsmDataSize) -> int:
+        """Execute MOV dest_reg, [mem] (Read memory value into register via pointer)."""
+        eff_addr = sib.calculate_effective_address()
+        num_bytes = size.value
+
+        if eff_addr + num_bytes > len(self.memory):
+            raise IndexError("Memory load out of range")
+
+        raw_bytes = self.memory[eff_addr:eff_addr + num_bytes]
+        val = int.from_bytes(raw_bytes, byteorder="little")
+        self.set_reg(dest_reg, val)
+        self.memory_read_count += 1
+        self.bytes_read += num_bytes
+
+        asm_line = f"mov {dest_reg.lower()}, {size.specifier} {sib.to_assembly_string('rax', 'rcx')}"
+        self.executed_instructions.append(asm_line)
+        return val
+
+
+@dataclass
+class PixelOptimizationProfile:
+    """Disassembly analysis profile for a pixel drawing loop."""
+
+    opt_level: str
+    is_volatile: bool
+    instructions_executed: int
+    memory_writes: int
+    total_bytes_written: int
+    asm_snippet: list[str]
+
+
+class PixelDisassemblyAnalyzer:
+    """Simulator analyzing compiler optimization behavior for VRAM/framebuffer loops."""
+
+    @staticmethod
+    def simulate_o0(pixel_count: int) -> PixelOptimizationProfile:
+        """Simulate unoptimized -O0 compilation loop (naive stack and recalculation)."""
+        instrs_per_iter = 8
+        overhead = 2
+        return PixelOptimizationProfile(
+            opt_level="-O0 (Unoptimized)",
+            is_volatile=False,
+            instructions_executed=overhead + pixel_count * instrs_per_iter,
+            memory_writes=pixel_count,
+            total_bytes_written=pixel_count,
+            asm_snippet=[
+                "mov    DWORD PTR [rbp-4], 0",
+                ".L2:",
+                "mov    eax, DWORD PTR [rbp-4]",
+                "cdqe",
+                "mov    rdx, QWORD PTR [rbp-16]",
+                "add    rax, rdx",
+                "mov    BYTE PTR [rax], 255",
+                "add    DWORD PTR [rbp-4], 1",
+                "cmp    DWORD PTR [rbp-4], 100",
+                "jl     .L2",
+            ],
+        )
+
+    @staticmethod
+    def simulate_o2(pixel_count: int) -> PixelOptimizationProfile:
+        """Simulate optimized -O2 loop with SIMD (SSE/AVX 16-byte stores)."""
+        vector_size = 16
+        vector_iters = pixel_count // vector_size
+        remainder = pixel_count % vector_size
+        setup_instrs = 4
+        vector_instrs = vector_iters * 3
+        remainder_instrs = remainder * 3
+
+        return PixelOptimizationProfile(
+            opt_level="-O2 (SIMD Vectorized & Unrolled)",
+            is_volatile=False,
+            instructions_executed=setup_instrs + vector_instrs + remainder_instrs,
+            memory_writes=vector_iters + remainder,
+            total_bytes_written=pixel_count,
+            asm_snippet=[
+                "movdqa xmm0, XMMWORD PTR .LC0[rip]  ; 16 bytes broadcast 0xFF",
+                "xor    eax, eax",
+                ".L3:",
+                "movups XMMWORD PTR [rdi+rax], xmm0  ; 16 pixels per instruction!",
+                "add    rax, 16",
+                "cmp    rax, 96",
+                "jne    .L3",
+                "mov    DWORD PTR [rdi+96], -1       ; Remainder scalar store",
+            ],
+        )
+
+    @staticmethod
+    def simulate_volatile_o2(pixel_count: int) -> PixelOptimizationProfile:
+        """Simulate -O2 with volatile uint8_t* (Guarantees exact byte stores, no vector fusion)."""
+        instrs_per_iter = 3
+        setup = 2
+        return PixelOptimizationProfile(
+            opt_level="-O2 with volatile uint8_t*",
+            is_volatile=True,
+            instructions_executed=setup + pixel_count * instrs_per_iter,
+            memory_writes=pixel_count,
+            total_bytes_written=pixel_count,
+            asm_snippet=[
+                "xor    eax, eax",
+                ".L4:",
+                "mov    BYTE PTR [rdi+rax], 255      ; Guaranteed single-byte write!",
+                "add    rax, 1",
+                "cmp    rax, 100",
+                "jne    .L4",
+            ],
+        )
+
+
+def plot_fig3_13_pointer_to_assembly_mapping_and_sib(output_path: str | Path) -> Path:
+    """Generate Figure 3-13: Pointer to Assembly Mapping & SIB Hardware Addressing.
+
+    Panels:
+    (A) SIB (Scale-Index-Base) Hardware Addressing Mode & 2-bit scale encoding
+    (B) LEA vs MOV Hardware Execution Flow (Address Calculation vs Memory Bus Access)
+    (C) C++ Data Types & x86-64 Memory Size Specifiers (BYTE/WORD/DWORD/QWORD PTR)
+    """
+    setup_plot_style()
+    fig = plt.figure(figsize=(15, 11), facecolor="#F8FAFC")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.2, 1.0], hspace=0.35, wspace=0.25)
+
+    # ----------------------------------------------------
+    # Panel A: SIB Hardware Addressing
+    # ----------------------------------------------------
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("Figure 3-13 (A): x86-64 SIB (Scale-Index-Base) Hardware Addressing & C Pointer Arithmetic",
+                  fontsize=12, fontweight="bold", pad=12, color="#0F172A")
+
+    # Overall SIB formula
+    formula_box = patches.FancyBboxPatch((0.05, 0.72), 0.90, 0.20,
+                                         boxstyle="round,pad=0.02,rounding_size=0.03",
+                                         facecolor="#EFF6FF", edgecolor="#3B82F6", linewidth=1.8)
+    ax1.add_patch(formula_box)
+    ax1.text(0.50, 0.85, "Effective Linear Address = Base + (Index × Scale) + Displacement",
+             ha="center", va="center", fontsize=13, fontweight="bold", color="#1E3A8A")
+    ax1.text(0.50, 0.76, "Intel Syntax: [BaseReg + IndexReg * Scale + Disp]  (e.g., [rdi + rsi*4 + 16])",
+             ha="center", va="center", fontsize=10, family="monospace", color="#2563EB")
+
+    # 4 Components
+    components = [
+        ("Base Register (64-bit)", "Pointer Base Address\n(e.g., RAX, RDI, RSP, RBP)\nPoints to buffer start", "#FEF3C7", "#D97706", 0.05, 0.20),
+        ("Index Register (64-bit)", "Array Index Variable `i`\n(e.g., RCX, RSI, RDX)\nZero-extended integer", "#E0E7FF", "#4338CA", 0.28, 0.20),
+        ("Scale Factor (2-bit SIB)", "Size of Array Element\n1 (00b), 2 (01b), 4 (10b), 8 (11b)\nHardware sizeof(T) multiplier", "#DCFCE7", "#15803D", 0.51, 0.20),
+        ("Displacement (Offset)", "Immediate Offset (const)\nSigned 8-bit or 32-bit int\nStruct member offset & stack", "#FCE7F3", "#BE185D", 0.74, 0.20),
+    ]
+
+    for title, desc, bg, border, x, w in components:
+        box = patches.FancyBboxPatch((x, 0.15), w, 0.48, boxstyle="round,pad=0.02,rounding_size=0.03",
+                                     facecolor=bg, edgecolor=border, linewidth=1.5)
+        ax1.add_patch(box)
+        ax1.text(x + w / 2, 0.55, title, ha="center", va="center", fontsize=10, fontweight="bold", color="#0F172A")
+        ax1.text(x + w / 2, 0.34, desc, ha="center", va="center", fontsize=8.5, family="monospace", color="#334155")
+
+    # Connectors
+    ax1.text(0.26, 0.39, "+", fontsize=16, fontweight="bold", ha="center", va="center", color="#64748B")
+    ax1.text(0.495, 0.39, "×", fontsize=16, fontweight="bold", ha="center", va="center", color="#64748B")
+    ax1.text(0.725, 0.39, "+", fontsize=16, fontweight="bold", ha="center", va="center", color="#64748B")
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # ----------------------------------------------------
+    # Panel B: LEA vs MOV
+    # ----------------------------------------------------
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("Figure 3-13 (B): LEA vs MOV Hardware Execution Flow",
+                  fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    # LEA Box
+    lea_box = patches.FancyBboxPatch((0.05, 0.52), 0.90, 0.40,
+                                     boxstyle="round,pad=0.02,rounding_size=0.03",
+                                     facecolor="#F0FDF4", edgecolor="#16A34A", linewidth=1.6)
+    ax2.add_patch(lea_box)
+    ax2.text(0.08, 0.85, "LEA (Load Effective Address): `lea rdi, [rax + rcx*4]`",
+             fontsize=10, fontweight="bold", color="#15803D")
+    lea_desc = (
+        "• Operation: Evaluates SIB address inside ALU arithmetic unit\n"
+        "• Memory Bus Access: ZERO (Never accesses RAM or Cache!)\n"
+        "• Result: Destination register receives the calculated pointer address\n"
+        "• C Equivalent: Pointer calculation or address-of `&p[i]` / `p + i`"
+    )
+    ax2.text(0.08, 0.67, lea_desc, fontsize=8, family="monospace", color="#166534")
+
+    # MOV Box
+    mov_box = patches.FancyBboxPatch((0.05, 0.06), 0.90, 0.40,
+                                     boxstyle="round,pad=0.02,rounding_size=0.03",
+                                     facecolor="#FEF2F2", edgecolor="#DC2626", linewidth=1.6)
+    ax2.add_patch(mov_box)
+    ax2.text(0.08, 0.39, "MOV (Memory Dereference): `mov DWORD PTR [rax + rcx*4], edx`",
+             fontsize=10, fontweight="bold", color="#991B1B")
+    mov_desc = (
+        "• Operation: Evaluates address AND initiates Memory Bus Transfer\n"
+        "• Memory Bus Access: YES (L1/L2/L3 Cache or VRAM/RAM Bus Transaction)\n"
+        "• Result: Memory at target address is read from or modified\n"
+        "• C Equivalent: Pointer dereference `p[i] = val` or `val = p[i]`"
+    )
+    ax2.text(0.08, 0.21, mov_desc, fontsize=8, family="monospace", color="#7F1D1D")
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    # ----------------------------------------------------
+    # Panel C: Data Size Specifiers
+    # ----------------------------------------------------
+    ax3 = fig.add_subplot(gs[1, 1])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("Figure 3-13 (C): Type Sizes & x86-64 Memory Specifiers",
+                  fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    spec_rows = [
+        ("BYTE PTR", "1 byte (8-bit)", "uint8_t, char, bool", "Scale = 1 (00b)", "mov BYTE PTR [rax], dl", "#FEF3C7", "#92400E"),
+        ("WORD PTR", "2 bytes (16-bit)", "uint16_t, short", "Scale = 2 (01b)", "mov WORD PTR [rax], dx", "#E0E7FF", "#3730A3"),
+        ("DWORD PTR", "4 bytes (32-bit)", "uint32_t, int, float", "Scale = 4 (10b)", "mov DWORD PTR [rax], edx", "#DCFCE7", "#166534"),
+        ("QWORD PTR", "8 bytes (64-bit)", "uint64_t, pointers (T*)", "Scale = 8 (11b)", "mov QWORD PTR [rax], rdx", "#FCE7F3", "#9D174D"),
+    ]
+
+    y_start = 0.82
+    y_step = 0.22
+    for spec, size_str, types, scale_info, asm_ex, bg, fg in spec_rows:
+        row_box = patches.FancyBboxPatch((0.05, y_start - 0.17), 0.90, 0.19,
+                                         boxstyle="round,pad=0.015,rounding_size=0.02",
+                                         facecolor=bg, edgecolor=fg, linewidth=1.2)
+        ax3.add_patch(row_box)
+        ax3.text(0.08, y_start - 0.05, f"{spec} ({size_str})", fontsize=9.5, fontweight="bold", color=fg)
+        ax3.text(0.08, y_start - 0.13, f"C Types: {types} | {scale_info}", fontsize=8, color="#334155")
+        ax3.text(0.92, y_start - 0.09, asm_ex, ha="right", va="center", fontsize=8, family="monospace", color="#0F172A")
+        y_start -= y_step
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    dirname = os.path.dirname(output_path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return Path(output_path)
+
+
+def plot_fig3_14_disassembly_optimization_and_volatile(output_path: str | Path) -> Path:
+    """Generate Figure 3-14: Disassembly Optimization & Volatile Memory Semantics.
+
+    Panels:
+    (A) Disassembly comparison (-O0 vs -O2 SIMD vs -O2 volatile)
+    (B) Quantitative benchmark: Instructions executed vs Memory writes (N=100 pixels)
+    (C) Hardware VRAM / MMIO write mechanism and why volatile is mandatory
+    """
+    setup_plot_style()
+    fig = plt.figure(figsize=(15, 11), facecolor="#F8FAFC")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.1, 1.0], hspace=0.35, wspace=0.25)
+
+    # ----------------------------------------------------
+    # Panel A: Disassembly Comparison
+    # ----------------------------------------------------
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("Figure 3-14 (A): Framebuffer Loop Disassembly Comparison: -O0 vs -O2 (SIMD) vs -O2 with volatile",
+                  fontsize=12, fontweight="bold", pad=12, color="#0F172A")
+
+    columns = [
+        ("-O0 (No Optimization)", "#FEF2F2", "#DC2626", [
+            "; Naive stack recalculation each step",
+            "mov    DWORD PTR [rbp-4], 0",
+            ".L2:",
+            "mov    eax, DWORD PTR [rbp-4]",
+            "cdqe",
+            "mov    rdx, QWORD PTR [rbp-16]",
+            "add    rax, rdx",
+            "mov    BYTE PTR [rax], 255",
+            "add    DWORD PTR [rbp-4], 1",
+            "cmp    DWORD PTR [rbp-4], 100",
+            "jl     .L2",
+        ], 0.03, 0.29),
+        ("-O2 (SIMD Auto-Vectorized)", "#EFF6FF", "#2563EB", [
+            "; 16 bytes (128-bit) per instruction!",
+            "movdqa xmm0, XMMWORD PTR .LC0[rip]",
+            "xor    eax, eax",
+            ".L3:",
+            "movups XMMWORD PTR [rdi+rax], xmm0",
+            "add    rax, 16",
+            "cmp    rax, 96",
+            "jne    .L3",
+            "; Scalar stores for remainder",
+            "mov    DWORD PTR [rdi+96], -1",
+            "; Total: ~34 instructions!",
+        ], 0.355, 0.29),
+        ("-O2 with volatile uint8_t*", "#F0FDF4", "#16A34A", [
+            "; Dedicated register pointer step",
+            "; Guaranteed 1-byte memory write",
+            "xor    eax, eax",
+            ".L4:",
+            "mov    BYTE PTR [rdi+rax], 255",
+            "add    rax, 1",
+            "cmp    rax, 100",
+            "jne    .L4",
+            "; Never vectorized or eliminated!",
+            "; Exact 100 bus writes guaranteed",
+        ], 0.68, 0.29),
+    ]
+
+    for title, bg, border, asm_lines, x, w in columns:
+        col_box = patches.FancyBboxPatch((x, 0.08), w, 0.82, boxstyle="round,pad=0.02,rounding_size=0.03",
+                                         facecolor=bg, edgecolor=border, linewidth=1.5)
+        ax1.add_patch(col_box)
+        ax1.text(x + w / 2, 0.84, title, ha="center", va="center", fontsize=10, fontweight="bold", color="#0F172A")
+        y_text = 0.74
+        for line in asm_lines:
+            color = "#047857" if line.startswith(";") else "#1E293B"
+            ax1.text(x + 0.015, y_text, line, fontsize=7.5, family="monospace", color=color)
+            y_text -= 0.065
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # ----------------------------------------------------
+    # Panel B: Quantitative Benchmark (N=100)
+    # ----------------------------------------------------
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("Figure 3-14 (B): Instruction Count & Bus Writes (N=100 Pixels)",
+                  fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    labels = ["-O0\n(Naive)", "-O2\n(SIMD)", "-O2 + volatile\n(Hardware Safe)"]
+    instrs = [802, 34, 302]
+    writes = [100, 7, 100]
+
+    x = np.arange(len(labels))
+    width = 0.35
+
+    rects1 = ax2.bar(x - width/2, instrs, width, label="Instructions Executed", color="#6366F1", alpha=0.85)
+    rects2 = ax2.bar(x + width/2, writes, width, label="Memory Bus Writes", color="#10B981", alpha=0.85)
+
+    ax2.set_ylabel("Count")
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(labels, fontsize=9)
+    ax2.legend(fontsize=8.5, loc="upper right")
+    ax2.set_ylim(0, 950)
+
+    # Values on top of bars
+    for rect in rects1:
+        h = rect.get_height()
+        ax2.annotate(f"{h}",
+                     xy=(rect.get_x() + rect.get_width() / 2, h),
+                     xytext=(0, 3), textcoords="offset points",
+                     ha="center", va="bottom", fontsize=8, fontweight="bold", color="#4338CA")
+    for rect in rects2:
+        h = rect.get_height()
+        ax2.annotate(f"{h}",
+                     xy=(rect.get_x() + rect.get_width() / 2, h),
+                     xytext=(0, 3), textcoords="offset points",
+                     ha="center", va="bottom", fontsize=8, fontweight="bold", color="#065F46")
+
+    # ----------------------------------------------------
+    # Panel C: Volatile & MMIO / VRAM Hardware Necessity
+    # ----------------------------------------------------
+    ax3 = fig.add_subplot(gs[1, 1])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("Figure 3-14 (C): Why `volatile` is Mandatory for Hardware MMIO / VRAM",
+                  fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    # Dead Store Elimination Danger
+    danger_box = patches.FancyBboxPatch((0.05, 0.52), 0.90, 0.40,
+                                        boxstyle="round,pad=0.02,rounding_size=0.03",
+                                        facecolor="#FFF1F2", edgecolor="#F43F5E", linewidth=1.5)
+    ax3.add_patch(danger_box)
+    ax3.text(0.08, 0.85, "[Danger] Dead Store Elimination (Without volatile)",
+             fontsize=9.5, fontweight="bold", color="#BE123C")
+    danger_desc = (
+        "• Compiler sees: `*p = 10; *p = 20;`\n"
+        "• Optimizer assumption: 'Memory at p is passive RAM; first write is DEAD!'\n"
+        "• Result: Compiler deletes `*p = 10`! Only `*p = 20` is emitted.\n"
+        "• Hardware catastrophe: Hardware FIFO or reset register misses trigger!"
+    )
+    ax3.text(0.08, 0.67, danger_desc, fontsize=8, family="monospace", color="#9F1239")
+
+    # Volatile Guarantee
+    safe_box = patches.FancyBboxPatch((0.05, 0.06), 0.90, 0.40,
+                                      boxstyle="round,pad=0.02,rounding_size=0.03",
+                                      facecolor="#F0FDF4", edgecolor="#22C55E", linewidth=1.5)
+    ax3.add_patch(safe_box)
+    ax3.text(0.08, 0.39, "[Guarantee] Observable Side Effect (With volatile uint8_t*)",
+             fontsize=9.5, fontweight="bold", color="#15803D")
+    safe_desc = (
+        "• Compiler semantics: 'Every read/write is an observable side effect!'\n"
+        "• Optimization barrier: No reordering, no dead store elimination, no cache omission\n"
+        "• Result: Exactly 1 CPU MOV instruction hits the memory bus per iteration\n"
+        "• Golden rule: ALL MMIO, VRAM framebuffers, and interrupt FIFOs MUST be volatile!"
+    )
+    ax3.text(0.08, 0.21, safe_desc, fontsize=8, family="monospace", color="#166534")
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    dirname = os.path.dirname(output_path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return Path(output_path)

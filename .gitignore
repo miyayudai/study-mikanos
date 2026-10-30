@@ -6,7 +6,8 @@ __pycache__/
 .Python
 build/
 generate_nb_*.py
-create_nb_*.py
+create_nb*.py
+make_notebook*.py
 append_*.py
 scratch_*.py
 develop-eggs/

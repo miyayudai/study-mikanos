@@ -110,6 +110,9 @@ add_test(NAME test_ch03_kernel_pixel_sim COMMAND ch03_kernel_pixel_sim)
 add_executable(ch03_error_handling_sim src/ch03/error_handling_sim.cpp)
 add_test(NAME test_ch03_error_handling_sim COMMAND ch03_error_handling_sim)
 
+add_executable(ch03_pointer_assembly_sim src/ch03/pointer_assembly_sim.cpp)
+add_test(NAME test_ch03_pointer_assembly_sim COMMAND ch03_pointer_assembly_sim)
+
 
 
 

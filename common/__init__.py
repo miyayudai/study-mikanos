@@ -231,6 +231,13 @@ from common.os_sim import (
     PointerCastSimulator,
     plot_uefi_status_and_error_handling_flow,
     plot_pointer_casts_type_safety_memory,
+    AsmDataSize,
+    SIBAddress,
+    VirtualCpu,
+    PixelOptimizationProfile,
+    PixelDisassemblyAnalyzer,
+    plot_fig3_13_pointer_to_assembly_mapping_and_sib,
+    plot_fig3_14_disassembly_optimization_and_volatile,
 )
 
 __all__ = [
@@ -464,4 +471,11 @@ __all__ = [
     "PointerCastSimulator",
     "plot_uefi_status_and_error_handling_flow",
     "plot_pointer_casts_type_safety_memory",
+    "AsmDataSize",
+    "SIBAddress",
+    "VirtualCpu",
+    "PixelOptimizationProfile",
+    "PixelDisassemblyAnalyzer",
+    "plot_fig3_13_pointer_to_assembly_mapping_and_sib",
+    "plot_fig3_14_disassembly_optimization_and_volatile",
 ]
