@@ -15316,3 +15316,604 @@ def plot_fig4_02_compiler_and_linker_flag_architecture(output_path: Path | str) 
     plt.close()
     return output_path
 
+
+
+# ==============================================================================
+# Chapter 4.2: FrameBufferConfig, WritePixel Mathematics & ABI Calling Convention
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class FrameBufferConfigSim:
+    """Simulates MikanOS FrameBufferConfig struct memory layout and coordinate mapping."""
+
+    frame_buffer_base: int
+    pixels_per_scan_line: int
+    horizontal_resolution: int
+    vertical_resolution: int
+    pixel_format: PixelFormat
+
+    # Struct layout specifications for x86-64
+    STRUCT_SIZE: int = 24  # 8 + 4 + 4 + 4 + 4 = 24 bytes (multiple of 8)
+    FIELD_OFFSETS: Dict[str, Tuple[int, int, str]] = field(
+        default_factory=lambda: {
+            "frame_buffer": (0, 8, "uint8_t*"),
+            "pixels_per_scan_line": (8, 4, "uint32_t"),
+            "horizontal_resolution": (12, 4, "uint32_t"),
+            "vertical_resolution": (16, 4, "uint32_t"),
+            "pixel_format": (20, 4, "enum PixelFormat"),
+        }
+    )
+
+    def __post_init__(self) -> None:
+        if self.horizontal_resolution <= 0 or self.vertical_resolution <= 0:
+            raise ValueError("Resolutions must be strictly positive integers")
+        if self.pixels_per_scan_line < self.horizontal_resolution:
+            raise ValueError(
+                f"pixels_per_scan_line ({self.pixels_per_scan_line}) cannot be less than "
+                f"horizontal_resolution ({self.horizontal_resolution})"
+            )
+
+    def calc_pixel_index(self, x: int, y: int) -> int:
+        """Calculate linear pixel index from 2D coordinates: y * pixels_per_scan_line + x."""
+        return y * self.pixels_per_scan_line + x
+
+    def calc_byte_offset(self, x: int, y: int) -> int:
+        """Calculate byte offset from framebuffer base: 4 * (y * pixels_per_scan_line + x)."""
+        return 4 * self.calc_pixel_index(x, y)
+
+    def calc_physical_address(self, x: int, y: int) -> int:
+        """Calculate physical VRAM address for pixel (x, y)."""
+        return self.frame_buffer_base + self.calc_byte_offset(x, y)
+
+    def is_in_bounds(self, x: int, y: int) -> bool:
+        """Check if 2D coordinate is within active display resolution."""
+        return 0 <= x < self.horizontal_resolution and 0 <= y < self.vertical_resolution
+
+    def get_stride_padding_pixels(self) -> int:
+        """Calculate invisible padding pixels per scanline: pixels_per_scan_line - horizontal_resolution."""
+        return self.pixels_per_scan_line - self.horizontal_resolution
+
+    def total_buffer_size_bytes(self) -> int:
+        """Calculate total VRAM buffer size required in bytes: pixels_per_scan_line * vertical_resolution * 4."""
+        return self.pixels_per_scan_line * self.vertical_resolution * 4
+
+
+@dataclass(frozen=True)
+class PixelColorSim:
+    """Represents an 8-bit RGB color."""
+
+    r: int
+    g: int
+    b: int
+
+    def __post_init__(self) -> None:
+        for val, name in [(self.r, "r"), (self.g, "g"), (self.b, "b")]:
+            if not (0 <= val <= 255):
+                raise ValueError(f"Color component {name}={val} out of 8-bit range [0, 255]")
+
+    def to_bytes(self, fmt: PixelFormat) -> bytes:
+        """Convert color to 4-byte pixel quadword according to GOP PixelFormat."""
+        if fmt == PixelFormat.RGB_RESV_8BIT_PER_COLOR:
+            return bytes([self.r, self.g, self.b, 0])
+        elif fmt == PixelFormat.BGR_RESV_8BIT_PER_COLOR:
+            return bytes([self.b, self.g, self.r, 0])
+        else:
+            raise ValueError(f"Unsupported PixelFormat: {fmt}")
+
+
+class WritePixelSimulator:
+    """Simulates MikanOS WritePixel and frame buffer operations matching osbook_day04b."""
+
+    def __init__(self, config: FrameBufferConfigSim) -> None:
+        self.config = config
+        self.buffer_size = config.total_buffer_size_bytes()
+        self.raw_memory = bytearray(self.buffer_size)
+
+    def write_pixel(self, x: int, y: int, color: PixelColorSim) -> int:
+        """Write single pixel at (x, y). Returns 0 on success, -1 on out-of-bounds."""
+        if not self.config.is_in_bounds(x, y):
+            return -1
+        offset = self.config.calc_byte_offset(x, y)
+        pixel_bytes = color.to_bytes(self.config.pixel_format)
+        self.raw_memory[offset : offset + 4] = pixel_bytes
+        return 0
+
+    def fill_rectangle(self, x: int, y: int, width: int, height: int, color: PixelColorSim) -> int:
+        """Draw filled rectangle at (x, y) with size (width x height). Returns count of written pixels."""
+        written = 0
+        for dy in range(height):
+            for dx in range(width):
+                if self.write_pixel(x + dx, y + dy, color) == 0:
+                    written += 1
+        return written
+
+    def read_pixel_color(self, x: int, y: int) -> Optional[PixelColorSim]:
+        """Read back pixel color at (x, y). Returns None if out of bounds."""
+        if not self.config.is_in_bounds(x, y):
+            return None
+        offset = self.config.calc_byte_offset(x, y)
+        raw = self.raw_memory[offset : offset + 4]
+        if self.config.pixel_format == PixelFormat.RGB_RESV_8BIT_PER_COLOR:
+            return PixelColorSim(r=raw[0], g=raw[1], b=raw[2])
+        elif self.config.pixel_format == PixelFormat.BGR_RESV_8BIT_PER_COLOR:
+            return PixelColorSim(r=raw[2], g=raw[1], b=raw[0])
+        return None
+
+    def execute_day04b_demo(self) -> None:
+        """Execute the exact drawing logic of MikanOS day04b main.cpp.
+
+        1. Clear full screen white (255, 255, 255)
+        2. Draw green rectangle (0, 255, 0) of size 200x100 at (100, 100).
+        """
+        # Full screen white
+        for x in range(self.config.horizontal_resolution):
+            for y in range(self.config.vertical_resolution):
+                self.write_pixel(x, y, PixelColorSim(255, 255, 255))
+
+        # Green rectangle at (100, 100) size 200x100
+        for x in range(200):
+            for y in range(100):
+                self.write_pixel(100 + x, 100 + y, PixelColorSim(0, 255, 0))
+
+    def to_rgb_numpy(self) -> np.ndarray:
+        """Extract visible framebuffer region as (height, width, 3) RGB uint8 numpy array."""
+        h = self.config.vertical_resolution
+        w = self.config.horizontal_resolution
+        arr = np.zeros((h, w, 3), dtype=np.uint8)
+
+        for y in range(h):
+            for x in range(w):
+                c = self.read_pixel_color(x, y)
+                if c is not None:
+                    arr[y, x] = [c.r, c.g, c.b]
+        return arr
+
+
+class AbiKind(Enum):
+    """x86-64 Application Binary Interface Calling Conventions."""
+
+    SYSTEM_V_AMD64 = "System V AMD64 ABI"
+    MICROSOFT_X64 = "Microsoft x64 ABI"
+
+
+@dataclass(frozen=True)
+class AbiSpec:
+    """Specification details for an x86-64 calling convention."""
+
+    name: str
+    kind: AbiKind
+    integer_arg_registers: List[str]
+    float_arg_registers: List[str]
+    return_registers: List[str]
+    callee_saved_registers: List[str]
+    caller_saved_registers: List[str]
+    shadow_space_bytes: int
+    red_zone_bytes: int
+    stack_alignment_bytes: int
+    os_usage: str
+
+
+class AbiComparisonAnalyzer:
+    """Compares System V AMD64 ABI and Microsoft x64 ABI calling conventions."""
+
+    SYSTEM_V_SPEC = AbiSpec(
+        name="System V AMD64 ABI",
+        kind=AbiKind.SYSTEM_V_AMD64,
+        integer_arg_registers=["RDI", "RSI", "RDX", "RCX", "R8", "R9"],
+        float_arg_registers=["XMM0", "XMM1", "XMM2", "XMM3", "XMM4", "XMM5", "XMM6", "XMM7"],
+        return_registers=["RAX", "RDX"],
+        callee_saved_registers=["RBX", "RSP", "RBP", "R12", "R13", "R14", "R15"],
+        caller_saved_registers=["RAX", "RCX", "RDX", "RSI", "RDI", "R8", "R9", "R10", "R11"],
+        shadow_space_bytes=0,
+        red_zone_bytes=128,
+        stack_alignment_bytes=16,
+        os_usage="Linux, BSD, macOS, MikanOS Kernel",
+    )
+
+    MICROSOFT_X64_SPEC = AbiSpec(
+        name="Microsoft x64 ABI",
+        kind=AbiKind.MICROSOFT_X64,
+        integer_arg_registers=["RCX", "RDX", "R8", "R9"],
+        float_arg_registers=["XMM0", "XMM1", "XMM2", "XMM3"],
+        return_registers=["RAX"],
+        callee_saved_registers=["RBX", "RBP", "RDI", "RSI", "RSP", "R12", "R13", "R14", "R15"],
+        caller_saved_registers=["RAX", "RCX", "RDX", "R8", "R9", "R10", "R11"],
+        shadow_space_bytes=32,
+        red_zone_bytes=0,
+        stack_alignment_bytes=16,
+        os_usage="Windows, UEFI Firmware (EDK II)",
+    )
+
+    @classmethod
+    def get_spec(cls, abi: AbiKind) -> AbiSpec:
+        if abi == AbiKind.SYSTEM_V_AMD64:
+            return cls.SYSTEM_V_SPEC
+        return cls.MICROSOFT_X64_SPEC
+
+    @classmethod
+    def map_arguments(cls, abi: AbiKind, num_args: int) -> List[Dict[str, Any]]:
+        """Map argument indices to registers or stack locations."""
+        spec = cls.get_spec(abi)
+        mapping = []
+        reg_count = len(spec.integer_arg_registers)
+        for i in range(num_args):
+            if i < reg_count:
+                mapping.append({"arg_index": i, "location": "register", "register": spec.integer_arg_registers[i]})
+            else:
+                stack_idx = i - reg_count
+                offset = (
+                    spec.shadow_space_bytes + 8 + stack_idx * 8
+                    if abi == AbiKind.MICROSOFT_X64
+                    else 8 + stack_idx * 8
+                )
+                mapping.append({"arg_index": i, "location": "stack", "offset": offset})
+        return mapping
+
+    @classmethod
+    def analyze_uefi_kernel_bridge(cls, use_efiapi: bool) -> Dict[str, Any]:
+        """Analyze the ABI transition when UEFI bootloader calls KernelMain.
+
+        If `use_efiapi` is False (MikanOS choice):
+          Caller compiles call with System V ABI -> passes config pointer in RDI.
+          Kernel receives config pointer in RDI -> MATCH! Success.
+        If `use_efiapi` is True:
+          Caller compiles call with MS x64 ABI -> passes config pointer in RCX.
+          Kernel expects config pointer in RDI -> MISMATCH! Kernel reads uninitialized RDI -> Crash!
+        """
+        if not use_efiapi:
+            return {
+                "caller_convention": "System V AMD64 ABI (by omitting EFIAPI)",
+                "callee_convention": "System V AMD64 ABI (Kernel default)",
+                "passed_in_register": "RDI",
+                "expected_in_register": "RDI",
+                "is_compatible": True,
+                "consequence": "KernelMain correctly reads FrameBufferConfig pointer from RDI. OS boots successfully.",
+            }
+        else:
+            return {
+                "caller_convention": "Microsoft x64 ABI (due to EFIAPI / ms_abi)",
+                "callee_convention": "System V AMD64 ABI (Kernel default)",
+                "passed_in_register": "RCX",
+                "expected_in_register": "RDI",
+                "is_compatible": False,
+                "consequence": "KernelMain reads uninitialized RDI register, causing Page Fault (#PF) or General Protection (#GP) crash!",
+            }
+
+
+def plot_fig4_03_framebuffer_config_and_coordinate_addressing(output_path: Path | str) -> Path:
+    """Generate high-DPI diagram illustrating FrameBufferConfig memory layout,
+
+    stride padding math, RGB/BGR format, and day04b rendered screen.
+    """
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(16, 10), facecolor="#FAFAFA")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.1, 1.0], hspace=0.32, wspace=0.25)
+
+    # Subplot 1: FrameBufferConfig Struct Memory Layout
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. struct FrameBufferConfig メモリレイアウト (24 Bytes, 64-bit ABI)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    fields = [
+        (0x00, 8, "uint8_t* frame_buffer", "VRAM先頭物理アドレスポインタ (64bit)", "#E1F5FE", "#0288D1"),
+        (0x08, 4, "uint32_t pixels_per_scan_line", "1水平行の総ピクセル数 (Stride)", "#E8F5E9", "#388E3C"),
+        (0x0C, 4, "uint32_t horizontal_resolution", "有効描画横解像度 (Width)", "#FFF3E0", "#F57C00"),
+        (0x10, 4, "uint32_t vertical_resolution", "有効描画縦解像度 (Height)", "#F3E5F5", "#7B1FA2"),
+        (0x14, 4, "enum PixelFormat pixel_format", "画素配列順 (RGB / BGR 判定用)", "#FCE4EC", "#C2185B"),
+    ]
+
+    y_pos = 0.85
+    for offset, size, name, desc, bg, border in fields:
+        # Offset box
+        off_box = FancyBboxPatch((0.03, y_pos - 0.12), 0.16, 0.11,
+                                 boxstyle="round,pad=0.015", facecolor="#ECEFF1", edgecolor="#607D8B", lw=1.2)
+        ax1.add_patch(off_box)
+        ax1.text(0.11, y_pos - 0.065, f"+0x{offset:02X} ({size}B)", ha="center", va="center",
+                 fontsize=8.5, fontweight="bold", color="#37474F")
+
+        # Field box
+        field_box = FancyBboxPatch((0.21, y_pos - 0.12), 0.76, 0.11,
+                                   boxstyle="round,pad=0.015", facecolor=bg, edgecolor=border, lw=1.5)
+        ax1.add_patch(field_box)
+        ax1.text(0.24, y_pos - 0.045, name, ha="left", va="center",
+                 fontsize=9.2, fontweight="bold", color=border)
+        ax1.text(0.24, y_pos - 0.088, desc, ha="left", va="center",
+                 fontsize=7.8, color="#555555")
+
+        y_pos -= 0.16
+
+    ax1.text(0.5, 0.05, "★アライメント規則: 最長メンバ(ポインタ: 8B)に揃えられ、sizeof = 24B (24 % 8 == 0)",
+             ha="center", va="center", fontsize=8.8, fontweight="bold", color="#1B5E20")
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
+    ax1.axis("off")
+
+    # Subplot 2: 2D Coordinates to Linear VRAM Mapping & Stride Padding
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 2次元座標 (x, y) から VRAM 物理アドレスへの写像数理",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Diagram showing visible screen and padding
+    screen_rect = patches.Rectangle((0.1, 0.45), 0.55, 0.45, linewidth=2, edgecolor="#1976D2",
+                                    facecolor="#E3F2FD", label="有効画面領域 (H_res × V_res)")
+    padding_rect = patches.Rectangle((0.65, 0.45), 0.25, 0.45, linewidth=1.5, linestyle="--",
+                                     edgecolor="#D32F2F", facecolor="#FFEBEE", label="不可視パディング領域")
+    ax2.add_patch(screen_rect)
+    ax2.add_patch(padding_rect)
+
+    ax2.text(0.375, 0.675, "有効表示画面\n(horizontal_resolution)", ha="center", va="center",
+             fontsize=9, fontweight="bold", color="#0D47A1")
+    ax2.text(0.775, 0.675, "パディング\n(未表示VRAM)", ha="center", va="center",
+             fontsize=8.5, color="#C62828")
+
+    # Arrows for dimensions
+    ax2.annotate("", xy=(0.90, 0.94), xytext=(0.10, 0.94),
+                 arrowprops=dict(arrowstyle="<->", color="#388E3C", lw=2))
+    ax2.text(0.50, 0.97, "pixels_per_scan_line (Stride, 例: 1024 px)", ha="center", va="bottom",
+             fontsize=8.5, fontweight="bold", color="#2E7D32")
+
+    ax2.annotate("", xy=(0.65, 0.40), xytext=(0.10, 0.40),
+                 arrowprops=dict(arrowstyle="<->", color="#1976D2", lw=1.5))
+    ax2.text(0.375, 0.36, "horizontal_resolution (例: 800 px)", ha="center", va="top",
+             fontsize=8, color="#1565C0")
+
+    # Pixel coordinate formula
+    formula_text = (
+        "【座標変換数学公式】\n"
+        "• ピクセルインデックス:  Index(x, y) = y × pixels_per_scan_line + x\n"
+        "• バイトオフセット:      ByteOffset(x, y) = 4 × Index(x, y)\n"
+        "• 物理アドレス:          Address(x, y) = frame_buffer + ByteOffset(x, y)\n\n"
+        "※注意: y × horizontal_resolution で計算すると行末パディングを跨げず画面が斜めに歪む！"
+    )
+    fbox = FancyBboxPatch((0.05, 0.04), 0.90, 0.28, boxstyle="round,pad=0.02",
+                          facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.5)
+    ax2.add_patch(fbox)
+    ax2.text(0.08, 0.18, formula_text, ha="left", va="center", fontsize=8.2,
+             color="#5D4037", linespacing=1.3)
+
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.axis("off")
+
+    # Subplot 3: RGB vs BGR Pixel Format 4-Byte Layout
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 画素フォーマット (RGB vs BGR) 4バイトクアッドワード構成",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # RGB Format
+    ax3.text(0.05, 0.88, "kPixelRGBResv8BitPerColor:", fontsize=9.5, fontweight="bold", color="#1565C0")
+    rgb_boxes = [
+        (0.05, "+0: Red", "#FFCDD2", "#C62828"),
+        (0.27, "+1: Green", "#C8E6C9", "#2E7D32"),
+        (0.49, "+2: Blue", "#BBDEFB", "#1565C0"),
+        (0.71, "+3: Reserved (0)", "#CFD8DC", "#455A64"),
+    ]
+    for x, label, bg, border in rgb_boxes:
+        b = FancyBboxPatch((x, 0.68), 0.20, 0.16, boxstyle="round,pad=0.015", facecolor=bg, edgecolor=border, lw=1.5)
+        ax3.add_patch(b)
+        ax3.text(x + 0.10, 0.76, label, ha="center", va="center", fontsize=8.5, fontweight="bold", color=border)
+
+    # BGR Format
+    ax3.text(0.05, 0.52, "kPixelBGRResv8BitPerColor:", fontsize=9.5, fontweight="bold", color="#2E7D32")
+    bgr_boxes = [
+        (0.05, "+0: Blue", "#BBDEFB", "#1565C0"),
+        (0.27, "+1: Green", "#C8E6C9", "#2E7D32"),
+        (0.49, "+2: Red", "#FFCDD2", "#C62828"),
+        (0.71, "+3: Reserved (0)", "#CFD8DC", "#455A64"),
+    ]
+    for x, label, bg, border in bgr_boxes:
+        b = FancyBboxPatch((x, 0.32), 0.20, 0.16, boxstyle="round,pad=0.015", facecolor=bg, edgecolor=border, lw=1.5)
+        ax3.add_patch(b)
+        ax3.text(x + 0.10, 0.40, label, ha="center", va="center", fontsize=8.5, fontweight="bold", color=border)
+
+    ax3.text(0.50, 0.12, "WritePixel() は config.pixel_format に応じて分岐し、\n適切なメモリ位置に R/G/B バイトを格納する",
+             ha="center", va="center", fontsize=8.5, color="#37474F", linespacing=1.3)
+
+    ax3.set_xlim(0, 1)
+    ax3.set_ylim(0, 1)
+    ax3.axis("off")
+
+    # Subplot 4: day04b Screen Drawing Simulation
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. osbook_day04b 画面描画結果シミュレーション",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Simulate drawing
+    sim_config = FrameBufferConfigSim(
+        frame_buffer_base=0x8000_0000,
+        pixels_per_scan_line=400,
+        horizontal_resolution=400,
+        vertical_resolution=300,
+        pixel_format=PixelFormat.RGB_RESV_8BIT_PER_COLOR,
+    )
+    sim = WritePixelSimulator(sim_config)
+    sim.execute_day04b_demo()
+    img_data = sim.to_rgb_numpy()
+
+    ax4.imshow(img_data, origin="upper")
+    ax4.set_xlim(0, 400)
+    ax4.set_ylim(300, 0)
+    ax4.set_xlabel("X coordinate (pixels)", fontsize=8)
+    ax4.set_ylabel("Y coordinate (pixels)", fontsize=8)
+
+    # Annotate rectangle
+    ax4.annotate("長方形 (100, 100)\n200 × 100 px (Green)", xy=(200, 150), xytext=(220, 70),
+                 arrowprops=dict(arrowstyle="->", color="#1B5E20", lw=1.5),
+                 fontsize=8.5, fontweight="bold", color="#1B5E20",
+                 bbox=dict(boxstyle="round,pad=0.3", facecolor="#E8F5E9", edgecolor="#388E3C"))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig4_04_abi_calling_convention_comparison(output_path: Path | str) -> Path:
+    """Generate high-DPI architecture diagram comparing System V AMD64 ABI
+
+    vs Microsoft x64 ABI and the UEFI-to-Kernel handoff.
+    """
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(16, 9.5), facecolor="#FAFAFA")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.1, 1.0], hspace=0.32, wspace=0.25)
+
+    # Subplot 1: Argument Passing Registers Comparison
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 引数引き渡しレジスタ順序 (Integer / Pointer Arguments)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    arg_rows = [
+        ("第1引数", "RDI", "RCX (※食い違い！)", "#FFCDD2"),
+        ("第2引数", "RSI", "RDX (※食い違い！)", "#FFCDD2"),
+        ("第3引数", "RDX", "R8", "#E8F5E9"),
+        ("第4引数", "RCX", "R9", "#E8F5E9"),
+        ("第5引数", "R8", "スタック [RSP + 0x28]", "#FFF3E0"),
+        ("第6引数", "R9", "スタック [RSP + 0x30]", "#FFF3E0"),
+    ]
+
+    y = 0.86
+    ax1.text(0.08, y, "引数", fontweight="bold", fontsize=9, color="#37474F")
+    ax1.text(0.32, y, "System V AMD64 (Kernel)", fontweight="bold", fontsize=9, color="#1565C0")
+    ax1.text(0.70, y, "Microsoft x64 (UEFI)", fontweight="bold", fontsize=9, color="#D84315")
+
+    for arg_name, sysv, ms, bg in arg_rows:
+        y -= 0.115
+        row_box = FancyBboxPatch((0.04, y - 0.035), 0.92, 0.095, boxstyle="round,pad=0.01",
+                                 facecolor=bg, edgecolor="#B0BEC5", lw=0.8)
+        ax1.add_patch(row_box)
+        ax1.text(0.08, y + 0.012, arg_name, fontsize=8.5, color="#263238")
+        ax1.text(0.35, y + 0.012, sysv, fontsize=8.8, fontweight="bold", color="#0D47A1")
+        ax1.text(0.70, y + 0.012, ms, fontsize=8.8, fontweight="bold", color="#BF360C")
+
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
+    ax1.axis("off")
+
+    # Subplot 2: Stack Frame & Special Spaces (Shadow Space vs Red Zone)
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. スタックフレーム構造 (シャドウスペース vs レッドゾーン)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # MS Shadow Space box
+    ms_box = FancyBboxPatch((0.05, 0.52), 0.42, 0.42, boxstyle="round,pad=0.02",
+                            facecolor="#FBE9E7", edgecolor="#FF5722", lw=1.5)
+    ax2.add_patch(ms_box)
+    ms_text = (
+        "【Microsoft x64 ABI】\n\n"
+        "• シャドウスペース (Home Space):\n"
+        "  呼出側 (Caller) がスタック上に\n"
+        "  必ず 32バイト (4×8B) を確保！\n"
+        "  (引数レジスタ RCX, RDX, R8, R9 を\n"
+        "   関数側が即座に退避できる領域)\n\n"
+        "• レッドゾーン: なし (存在しない)"
+    )
+    ax2.text(0.08, 0.73, ms_text, fontsize=8.2, color="#BF360C", linespacing=1.25)
+
+    # System V Red Zone box
+    sysv_box = FancyBboxPatch((0.53, 0.52), 0.42, 0.42, boxstyle="round,pad=0.02",
+                             facecolor="#E3F2FD", edgecolor="#2196F3", lw=1.5)
+    ax2.add_patch(sysv_box)
+    sysv_text = (
+        "【System V AMD64 ABI】\n\n"
+        "• シャドウスペース: なし\n\n"
+        "• レッドゾーン (Red Zone):\n"
+        "  RSP の下 128バイトの一時領域。\n"
+        "  リーフ関数でスタック確保命令を\n"
+        "  省略して超高速化を図る仕組み。\n"
+        "  ★カーネルでは -mno-red-zone 必須"
+    )
+    ax2.text(0.56, 0.73, sysv_text, fontsize=8.2, color="#0D47A1", linespacing=1.25)
+
+    # Shared Stack Alignment rule
+    align_box = FancyBboxPatch((0.05, 0.08), 0.90, 0.36, boxstyle="round,pad=0.02",
+                               facecolor="#E8F5E9", edgecolor="#4CAF50", lw=1.5)
+    ax2.add_patch(align_box)
+    align_text = (
+        "【共通規則: 16バイト・スタックアライメント (16-Byte Stack Alignment)】\n"
+        "• CALL 命令発行直前の RSP は必ず 16の倍数 (RSP % 16 == 0) でなければならない。\n"
+        "• CALL 命令で 8バイトの戻りアドレスが PUSH されるため、関数エントリ時点では\n"
+        "  必ず (RSP % 16 == 8) となる！\n"
+        "• SSE / AVX 命令（MOVAPS 等）は 16バイト整列スタックを要求し、違反すると #GP 例外で爆死する。"
+    )
+    ax2.text(0.08, 0.26, align_text, fontsize=8.2, color="#1B5E20", linespacing=1.3)
+
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.axis("off")
+
+    # Subplot 3: Register Preservation Rules (Callee-saved vs Scratch)
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. レジスタ保護責任 (Callee-saved vs Caller-saved)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    reg_text = (
+        "【保存義務の比較 (誰がレジスタの値を守るか？)】\n\n"
+        "1. カリーセーブレジスタ (Callee-saved / Preserved / Non-volatile):\n"
+        "   呼び出された関数が復帰前に値を元通り復元する責任を負う。\n"
+        "   • System V ABI:  RBX, RSP, RBP, R12, R13, R14, R15 (計 7本)\n"
+        "   • Microsoft ABI: RBX, RBP, RDI, RSI, RSP, R12, R13, R14, R15 (計 9本)\n"
+        "   ★★★ 極めて重要な違い: RDI と RSI ★★★\n"
+        "   - MS ABI では RDI, RSI は『保護必須 (Callee-saved)』！\n"
+        "   - System V では RDI, RSI は『使い捨て引数 (Caller-saved)』！\n\n"
+        "2. スクラッチレジスタ (Caller-saved / Volatile):\n"
+        "   関数呼び出しによって値が自由に破壊されてよいレジスタ。\n"
+        "   • System V: RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11\n"
+        "   • MS ABI:   RAX, RCX, RDX, R8, R9, R10, R11"
+    )
+    rbox = FancyBboxPatch((0.04, 0.06), 0.92, 0.88, boxstyle="round,pad=0.02",
+                          facecolor="#FFF8E1", edgecolor="#FFA000", lw=1.5)
+    ax3.add_patch(rbox)
+    ax3.text(0.07, 0.50, reg_text, fontsize=8.2, color="#4E342E", linespacing=1.3)
+
+    ax3.set_xlim(0, 1)
+    ax3.set_ylim(0, 1)
+    ax3.axis("off")
+
+    # Subplot 4: UEFI Bootloader -> KernelMain Transition Analysis
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. MikanLoader から KernelMain への移行と EFIAPI 欠落の真相",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    bridge_text = (
+        "【なぜ Main.c で EFIAPI を付けないのか？】\n\n"
+        "■ 正しい実装 (MikanOS 公式):\n"
+        "  typedef void EntryPointType(const struct FrameBufferConfig*);\n"
+        "  -> EFIAPI なし！\n"
+        "  -> Linux 上の Clang はホスト規定の『System V AMD64 ABI』コードを生成！\n"
+        "  -> 呼出元 (Main.c) は &config を 【RDI】 に格納して CALL 実行！\n"
+        "  -> カーネル側 KernelMain も RDI から第1引数を読取！ -> 完全一致！起動成功！\n\n"
+        "■ 誤った実装 (もし EFIAPI を付けたら？):\n"
+        "  typedef void EFIAPI EntryPointType(const struct FrameBufferConfig*);\n"
+        "  -> EFIAPI は __attribute__((ms_abi)) に展開される！\n"
+        "  -> 呼出元 (Main.c) は &config を 【RCX】 に格納して CALL 実行！\n"
+        "  -> カーネル側は System V なので 【RDI】 から第1引数を読取！\n"
+        "  -> RDI は未初期化のゴミ値！ -> config.frame_buffer アクセスで即座に #PF クラッシュ！"
+    )
+    bbox = FancyBboxPatch((0.04, 0.06), 0.92, 0.88, boxstyle="round,pad=0.02",
+                          facecolor="#EDE7F6", edgecolor="#7E57C2", lw=1.5)
+    ax4.add_patch(bbox)
+    ax4.text(0.07, 0.50, bridge_text, fontsize=8.0, color="#311B92", linespacing=1.28)
+
+    ax4.set_xlim(0, 1)
+    ax4.set_ylim(0, 1)
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

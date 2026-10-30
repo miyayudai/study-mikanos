@@ -247,6 +247,14 @@ from common.os_sim import (
     CompilerFlagAnalyzer,
     plot_fig4_01_make_dag_and_timestamp_evaluation,
     plot_fig4_02_compiler_and_linker_flag_architecture,
+    FrameBufferConfigSim,
+    PixelColorSim,
+    WritePixelSimulator,
+    AbiKind,
+    AbiSpec,
+    AbiComparisonAnalyzer,
+    plot_fig4_03_framebuffer_config_and_coordinate_addressing,
+    plot_fig4_04_abi_calling_convention_comparison,
 )
 
 __all__ = [
@@ -496,4 +504,12 @@ __all__ = [
     "CompilerFlagAnalyzer",
     "plot_fig4_01_make_dag_and_timestamp_evaluation",
     "plot_fig4_02_compiler_and_linker_flag_architecture",
+    "FrameBufferConfigSim",
+    "PixelColorSim",
+    "WritePixelSimulator",
+    "AbiKind",
+    "AbiSpec",
+    "AbiComparisonAnalyzer",
+    "plot_fig4_03_framebuffer_config_and_coordinate_addressing",
+    "plot_fig4_04_abi_calling_convention_comparison",
 ]

@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-269%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-15.4%25%20(35%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-278%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-15.8%25%20(36%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -91,7 +91,7 @@ cmake --build build
 | **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | [`1_Exercises.ipynb`](1/1_Exercises.ipynb) | `[x]` 完了 (10/10) |
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | [`2_Exercises.ipynb`](2/2_Exercises.ipynb) | `[x]` 完了 (10/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | `[x]` 完了 (8/8) |
-| **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[-]` 進行中 (1/6) |
+| **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[-]` 進行中 (2/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[ ]` 未着手 (0/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 未着手 (0/11) |
@@ -183,6 +183,7 @@ cmake --build build
 | ノートブック | 内容 | Colab で開く |
 |---|---|:---:|
 | [`4.1_Introduction_to_Make.ipynb`](4/4.1_Introduction_to_Make.ipynb) | 4.1 make入門（`osbook_day04a`・kernel/Makefile・依存関係DAGとトポロジカルソート数理・タイムスタンプ比較則・自動変数・.PHONY保護・ベアメタルC++ビルドフラグ完全解読） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.1_Introduction_to_Make.ipynb) |
+| [`4.2_Drawing_Pixels_Freely_and_ABI.ipynb`](4/4.2_Drawing_Pixels_Freely_and_ABI.ipynb) | 4.2 ピクセルを自在に描く（`osbook_day04b`・`FrameBufferConfig`構造体・VRAM2次元座標写像数理・スキャンラインストライド・RGB/BGR画素構成・白クリア＆矩形描画・コラム4.1 ABI徹底解剖・System V vs MS x64・EFIAPI省略の真相） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.2_Drawing_Pixels_Freely_and_ABI.ipynb) |
 
 
 

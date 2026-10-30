@@ -120,6 +120,9 @@ add_test(NAME test_ch03_os_chapter3_exercises COMMAND ch03_os_chapter3_exercises
 add_executable(ch04_make_sim src/ch04/make_sim.cpp)
 add_test(NAME test_ch04_make_sim COMMAND ch04_make_sim)
 
+add_executable(ch04_drawing_pixels_sim src/ch04/drawing_pixels_sim.cpp)
+add_test(NAME test_ch04_drawing_pixels_sim COMMAND ch04_drawing_pixels_sim)
+
 
 
 
