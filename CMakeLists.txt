@@ -101,6 +101,9 @@ add_test(NAME test_ch03_registers_sim COMMAND ch03_registers_sim --test)
 add_executable(ch03_first_kernel_sim src/ch03/first_kernel_sim.cpp)
 add_test(NAME test_ch03_first_kernel_sim COMMAND ch03_first_kernel_sim --test)
 
+add_executable(ch03_gop_sim src/ch03/gop_sim.cpp)
+add_test(NAME test_ch03_gop_sim COMMAND ch03_gop_sim --test)
+
 
 
 

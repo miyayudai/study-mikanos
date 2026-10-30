@@ -11937,3 +11937,702 @@ def plot_red_zone_mechanism_and_trap(output_path: str = "3/result/fig3_06_red_zo
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 3.4: UEFI GOP (Graphics Output Protocol) & Framebuffer Simulation
+# ==============================================================================
+
+class UefiGraphicsPixelFormat(Enum):
+    """UEFI GOP Graphics Pixel Formats according to UEFI Specification 2.9+."""
+
+    PixelRedGreenBlueReserved8BitPerColor = 0
+    PixelBlueGreenRedReserved8BitPerColor = 1
+    PixelBitMask = 2
+    PixelBltOnly = 3
+    PixelFormatMax = 4
+
+
+@dataclass
+class EfiPixelBitmask:
+    """Bitmask for PixelBitMask format in UEFI GOP."""
+
+    red_mask: int = 0x000000FF
+    green_mask: int = 0x0000FF00
+    blue_mask: int = 0x00FF0000
+    reserved_mask: int = 0xFF000000
+
+
+@dataclass
+class EfiGraphicsOutputModeInformation:
+    """EFI_GRAPHICS_OUTPUT_MODE_INFORMATION structure."""
+
+    version: int = 0
+    horizontal_resolution: int = 800
+    vertical_resolution: int = 600
+    pixel_format: UefiGraphicsPixelFormat = (
+        UefiGraphicsPixelFormat.PixelRedGreenBlueReserved8BitPerColor
+    )
+    pixel_information: EfiPixelBitmask = field(default_factory=EfiPixelBitmask)
+    pixels_per_scan_line: int = 800
+
+
+@dataclass
+class EfiGraphicsOutputProtocolMode:
+    """EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE structure."""
+
+    max_mode: int = 1
+    mode: int = 0
+    info: EfiGraphicsOutputModeInformation = field(
+        default_factory=EfiGraphicsOutputModeInformation
+    )
+    size_of_info: int = 36  # sizeof(EFI_GRAPHICS_OUTPUT_MODE_INFORMATION)
+    frame_buffer_base: int = 0x80000000  # Default simulated VRAM base in QEMU MMIO
+    frame_buffer_size: int = 0
+
+    def __post_init__(self) -> None:
+        if self.frame_buffer_size == 0:
+            self.frame_buffer_size = (
+                self.info.pixels_per_scan_line * self.info.vertical_resolution * 4
+            )
+
+
+EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID = "9042a9de-23dc-4a38-96fb-7aded080516a"
+
+
+class UefiGopSimulator:
+    """Simulates UEFI GOP protocol discovery, mode query, and VRAM memory buffer operations."""
+
+    def __init__(
+        self,
+        horizontal_resolution: int = 800,
+        vertical_resolution: int = 600,
+        pixels_per_scan_line: int | None = None,
+        pixel_format: UefiGraphicsPixelFormat = UefiGraphicsPixelFormat.PixelRedGreenBlueReserved8BitPerColor,
+        frame_buffer_base: int = 0x80000000,
+    ) -> None:
+        if horizontal_resolution <= 0 or vertical_resolution <= 0:
+            raise ValueError("Resolution dimensions must be positive integers")
+        stride = (
+            pixels_per_scan_line
+            if pixels_per_scan_line is not None
+            else horizontal_resolution
+        )
+        if stride < horizontal_resolution:
+            raise ValueError(
+                "pixels_per_scan_line cannot be smaller than horizontal_resolution"
+            )
+
+        self.info = EfiGraphicsOutputModeInformation(
+            version=0,
+            horizontal_resolution=horizontal_resolution,
+            vertical_resolution=vertical_resolution,
+            pixel_format=pixel_format,
+            pixels_per_scan_line=stride,
+        )
+        total_size = stride * vertical_resolution * 4
+        self.mode = EfiGraphicsOutputProtocolMode(
+            max_mode=1,
+            mode=0,
+            info=self.info,
+            size_of_info=36,
+            frame_buffer_base=frame_buffer_base,
+            frame_buffer_size=total_size,
+        )
+        # Raw VRAM byte buffer emulating physical memory
+        self.vram = bytearray(total_size)
+        self.handles = ["GopHandle0"]
+        self.opened = False
+
+    def open_gop(self, handle: str = "GopHandle0") -> bool:
+        """Simulate gBS->OpenProtocol on EFI_GRAPHICS_OUTPUT_PROTOCOL."""
+        if handle in self.handles:
+            self.opened = True
+            return True
+        return False
+
+    def get_pixel_format_unicode(self) -> str:
+        """Return Unicode format name string matching MikanOS GetPixelFormatUnicode."""
+        fmt = self.info.pixel_format
+        if fmt == UefiGraphicsPixelFormat.PixelRedGreenBlueReserved8BitPerColor:
+            return "PixelRedGreenBlueReserved8BitPerColor"
+        elif fmt == UefiGraphicsPixelFormat.PixelBlueGreenRedReserved8BitPerColor:
+            return "PixelBlueGreenRedReserved8BitPerColor"
+        elif fmt == UefiGraphicsPixelFormat.PixelBitMask:
+            return "PixelBitMask"
+        elif fmt == UefiGraphicsPixelFormat.PixelBltOnly:
+            return "PixelBltOnly"
+        elif fmt == UefiGraphicsPixelFormat.PixelFormatMax:
+            return "PixelFormatMax"
+        return "InvalidPixelFormat"
+
+    def calculate_byte_offset(self, x: int, y: int) -> int:
+        """Calculate physical VRAM byte offset using pixels_per_scan_line (stride)."""
+        if not (
+            0 <= x < self.info.pixels_per_scan_line
+            and 0 <= y < self.info.vertical_resolution
+        ):
+            raise IndexError(f"Coordinates ({x}, {y}) out of buffer bounds")
+        return (y * self.info.pixels_per_scan_line + x) * 4
+
+    def fill_all(self, byte_val: int = 255) -> None:
+        """Fill entire frame buffer with byte_val (MikanOS day03b white clear)."""
+        val = byte_val & 0xFF
+        for i in range(len(self.vram)):
+            self.vram[i] = val
+
+    def write_pixel(self, x: int, y: int, r: int, g: int, b: int) -> None:
+        """Write single pixel at (x, y) taking pixel_format into account."""
+        if not (
+            0 <= x < self.info.horizontal_resolution
+            and 0 <= y < self.info.vertical_resolution
+        ):
+            return
+        offset = self.calculate_byte_offset(x, y)
+        fmt = self.info.pixel_format
+        if fmt == UefiGraphicsPixelFormat.PixelRedGreenBlueReserved8BitPerColor:
+            self.vram[offset + 0] = r & 0xFF
+            self.vram[offset + 1] = g & 0xFF
+            self.vram[offset + 2] = b & 0xFF
+            self.vram[offset + 3] = 0
+        elif fmt == UefiGraphicsPixelFormat.PixelBlueGreenRedReserved8BitPerColor:
+            self.vram[offset + 0] = b & 0xFF
+            self.vram[offset + 1] = g & 0xFF
+            self.vram[offset + 2] = r & 0xFF
+            self.vram[offset + 3] = 0
+
+    def get_pixel_rgb(self, x: int, y: int) -> tuple[int, int, int]:
+        """Read back pixel color as (R, G, B) tuple."""
+        offset = self.calculate_byte_offset(x, y)
+        fmt = self.info.pixel_format
+        if fmt == UefiGraphicsPixelFormat.PixelRedGreenBlueReserved8BitPerColor:
+            return (self.vram[offset], self.vram[offset + 1], self.vram[offset + 2])
+        elif fmt == UefiGraphicsPixelFormat.PixelBlueGreenRedReserved8BitPerColor:
+            return (self.vram[offset + 2], self.vram[offset + 1], self.vram[offset])
+        return (0, 0, 0)
+
+    def to_rgb_matrix(self, include_stride_padding: bool = False) -> np.ndarray:
+        """Convert raw VRAM bytes to (H, W, 3) RGB numpy matrix for visualization."""
+        w = (
+            self.info.pixels_per_scan_line
+            if include_stride_padding
+            else self.info.horizontal_resolution
+        )
+        h = self.info.vertical_resolution
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        for y in range(h):
+            for x in range(w):
+                offset = (y * self.info.pixels_per_scan_line + x) * 4
+                fmt = self.info.pixel_format
+                if (
+                    fmt
+                    == UefiGraphicsPixelFormat.PixelRedGreenBlueReserved8BitPerColor
+                ):
+                    r, g, b = (
+                        self.vram[offset],
+                        self.vram[offset + 1],
+                        self.vram[offset + 2],
+                    )
+                elif (
+                    fmt
+                    == UefiGraphicsPixelFormat.PixelBlueGreenRedReserved8BitPerColor
+                ):
+                    b, g, r = (
+                        self.vram[offset],
+                        self.vram[offset + 1],
+                        self.vram[offset + 2],
+                    )
+                else:
+                    r = g = b = self.vram[offset]
+                img[y, x] = [r, g, b]
+        return img
+
+
+def plot_uefi_gop_framebuffer_architecture(output_path: Path | str) -> Path:
+    """Generate high-resolution diagram of UEFI GOP interface and VRAM memory layout (fig3_07)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    setup_plot_style()
+
+    fig = plt.figure(figsize=(15, 9.5), facecolor="#F8FAFC")
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.1, 1.2], wspace=0.18)
+
+    # Left: UEFI GOP Protocol Chain & Discovery
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title(
+        "1. UEFI Graphics Output Protocol (GOP) Hierarchy & Pointer Chain",
+        fontsize=12,
+        fontweight="bold",
+        color="#1E293B",
+        pad=12,
+    )
+
+    proto_boxes = [
+        (
+            0.88,
+            "EFI_BOOT_SERVICES::LocateHandleBuffer()",
+            "Discovers all devices supporting gEfiGraphicsOutputProtocolGuid\nReturns handle buffer (e.g. gop_handles[0])",
+            "#EFF6FF",
+            "#3B82F6",
+            "1. Discovery",
+        ),
+        (
+            0.71,
+            "EFI_BOOT_SERVICES::OpenProtocol()",
+            "Opens EFI_GRAPHICS_OUTPUT_PROTOCOL interface pointer on handle\nReturns: EFI_GRAPHICS_OUTPUT_PROTOCOL* gop",
+            "#EEF2FF",
+            "#6366F1",
+            "2. Open Protocol",
+        ),
+        (
+            0.52,
+            "EFI_GRAPHICS_OUTPUT_PROTOCOL",
+            "├── QueryMode: EFI_GRAPHICS_OUTPUT_PROTOCOL_QUERY_MODE\n├── SetMode:   EFI_GRAPHICS_OUTPUT_PROTOCOL_SET_MODE\n├── Blt:       EFI_GRAPHICS_OUTPUT_PROTOCOL_BLT\n└── Mode:      EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE*",
+            "#F0FDF4",
+            "#22C55E",
+            "Protocol Struct",
+        ),
+        (
+            0.30,
+            "EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE",
+            "├── MaxMode:           UINT32\n├── Mode:              UINT32 (Current Mode Index)\n├── Info:              EFI_GRAPHICS_OUTPUT_MODE_INFORMATION*\n├── SizeOfInfo:        UINTN (36 Bytes)\n├── FrameBufferBase:   EFI_PHYSICAL_ADDRESS (e.g. 0x80000000)\n└── FrameBufferSize:   UINTN (e.g. 800 * 600 * 4 = 1,920,000)",
+            "#FEF3C7",
+            "#F59E0B",
+            "Mode Struct",
+        ),
+        (
+            0.08,
+            "EFI_GRAPHICS_OUTPUT_MODE_INFORMATION",
+            "├── HorizontalResolution: 800 pixels\n├── VerticalResolution:   600 pixels\n├── PixelFormat:          PixelRedGreenBlueReserved8BitPerColor\n└── PixelsPerScanLine:    800 (or >800 if stride padded)",
+            "#FDF2F8",
+            "#EC4899",
+            "Info Struct",
+        ),
+    ]
+
+    for y, title, desc, fc, ec, badge in proto_boxes:
+        h = 0.14 if "\n" in desc and desc.count("\n") > 2 else 0.12
+        box = patches.FancyBboxPatch(
+            (0.04, y - h / 2),
+            0.92,
+            h,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor=fc,
+            edgecolor=ec,
+            linewidth=1.8,
+            zorder=2,
+        )
+        ax1.add_patch(box)
+        ax1.text(
+            0.07,
+            y + h / 2 - 0.035,
+            title,
+            fontsize=9.5,
+            fontweight="bold",
+            color="#0F172A",
+            family="monospace",
+        )
+        ax1.text(
+            0.07,
+            y - 0.01,
+            desc,
+            fontsize=8.0,
+            color="#334155",
+            family="monospace",
+            linespacing=1.3,
+        )
+        ax1.text(
+            0.82,
+            y + h / 2 - 0.035,
+            f"[{badge}]",
+            fontsize=7.8,
+            fontweight="bold",
+            color=ec,
+        )
+
+    # Arrows connecting the pointer chains
+    arrow_props = dict(
+        arrowstyle="-|>",
+        color="#64748B",
+        lw=2.0,
+        mutation_scale=15,
+        connectionstyle="arc3,rad=0",
+    )
+    ax1.annotate("", xy=(0.50, 0.77), xytext=(0.50, 0.81), arrowprops=arrow_props)
+    ax1.annotate("", xy=(0.50, 0.59), xytext=(0.50, 0.65), arrowprops=arrow_props)
+    ax1.annotate("", xy=(0.50, 0.37), xytext=(0.50, 0.45), arrowprops=arrow_props)
+    ax1.annotate("", xy=(0.50, 0.15), xytext=(0.50, 0.23), arrowprops=arrow_props)
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # Right: Physical Memory Space & VRAM MMIO Mapping
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title(
+        "2. Physical Memory Space & Direct FrameBuffer (VRAM) Access",
+        fontsize=12,
+        fontweight="bold",
+        color="#1E293B",
+        pad=12,
+    )
+
+    mem_regions = [
+        (
+            0.86,
+            0.10,
+            "0x00000000 - 0x0009FFFF",
+            "Conventional Low Memory (RAM, 640 KiB)",
+            "#E2E8F0",
+            "#64748B",
+        ),
+        (
+            0.74,
+            0.09,
+            "0x000A0000 - 0x000BFFFF",
+            "Legacy VGA Framebuffer (128 KiB, Text/Mode13h)",
+            "#FEE2E2",
+            "#EF4444",
+        ),
+        (
+            0.62,
+            0.10,
+            "0x00100000 (1 MiB) ~",
+            "Extended RAM (Kernel loaded here at 1 MiB)",
+            "#DCFCE7",
+            "#10B981",
+        ),
+        (
+            0.45,
+            0.20,
+            "0x80000000 (2 GiB) ~",
+            "PCI MMIO Window / VRAM (FrameBufferBase)\nDirectly mapped to GPU Video RAM!\nSize = PixelsPerScanLine * H * 4 bytes (e.g. 1.92 MiB)\nUINT8* fb = (UINT8*)gop->Mode->FrameBufferBase;\nfor(i=0; i<Size; ++i) fb[i] = 255;  // Entire Screen -> White!",
+            "#FEF9C3",
+            "#CA8A04",
+        ),
+        (
+            0.20,
+            0.18,
+            "Display Controller (GPU Scanning)",
+            "Hardware CRT/LCD Controller reads VRAM cyclically\nRAMDAC / Digital Encoder converts byte stream to video signal\nPixel byte = 0xFF 0xFF 0xFF 0xFF\n---> Red=255, Green=255, Blue=255 (Pure White Screen!)",
+            "#E0E7FF",
+            "#4F46E5",
+        ),
+    ]
+
+    for y, h, title, desc, fc, ec in mem_regions:
+        box = patches.FancyBboxPatch(
+            (0.04, y - h / 2),
+            0.92,
+            h,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor=fc,
+            edgecolor=ec,
+            linewidth=1.8,
+            zorder=2,
+        )
+        ax2.add_patch(box)
+        ax2.text(
+            0.07,
+            y + h / 2 - 0.035,
+            title,
+            fontsize=9.5,
+            fontweight="bold",
+            color="#0F172A",
+            family="monospace",
+        )
+        ax2.text(
+            0.07,
+            y - 0.01,
+            desc,
+            fontsize=8.0,
+            color="#334155",
+            family="monospace",
+            linespacing=1.3,
+        )
+
+    # Hardware connection arrow from VRAM to GPU Display Controller
+    ax2.annotate(
+        "",
+        xy=(0.50, 0.29),
+        xytext=(0.50, 0.35),
+        arrowprops=dict(
+            arrowstyle="-|>",
+            color="#CA8A04",
+            lw=3.0,
+            mutation_scale=20,
+            connectionstyle="arc3,rad=0",
+        ),
+    )
+    ax2.text(
+        0.53,
+        0.315,
+        "Cyclic Video Scan (60Hz)",
+        fontsize=8.5,
+        fontweight="bold",
+        color="#B45309",
+    )
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_pixel_format_and_scanline_stride(output_path: Path | str) -> Path:
+    """Generate high-resolution diagram of PixelFormat bytes and PixelsPerScanLine stride padding (fig3_08)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    setup_plot_style()
+
+    fig = plt.figure(figsize=(15, 9.5), facecolor="#F8FAFC")
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.3], hspace=0.28)
+
+    # Top: Pixel Format Byte Order Comparison (RGBR vs BGRR)
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title(
+        "1. GOP Pixel Format Byte Order & Memory Representation (4 Bytes per Pixel)",
+        fontsize=12,
+        fontweight="bold",
+        color="#1E293B",
+        pad=10,
+    )
+
+    # Pixel format 1: PixelRedGreenBlueReserved8BitPerColor
+    ax1.text(
+        0.04,
+        0.82,
+        "Format A: PixelRedGreenBlueReserved8BitPerColor (Standard RGBA order)",
+        fontsize=10.5,
+        fontweight="bold",
+        color="#0F172A",
+    )
+    bytes_a = [
+        (0.04, "Byte +0: Red (8-bit)", "#FEE2E2", "#EF4444"),
+        (0.24, "Byte +1: Green (8-bit)", "#DCFCE7", "#10B981"),
+        (0.44, "Byte +2: Blue (8-bit)", "#DBEAFE", "#3B82F6"),
+        (0.64, "Byte +3: Reserved (8-bit)", "#F1F5F9", "#94A3B8"),
+    ]
+    for x, label, fc, ec in bytes_a:
+        box = patches.FancyBboxPatch(
+            (x, 0.62),
+            0.18,
+            0.16,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor=fc,
+            edgecolor=ec,
+            linewidth=1.8,
+        )
+        ax1.add_patch(box)
+        ax1.text(
+            x + 0.02,
+            0.70,
+            label,
+            fontsize=8.5,
+            fontweight="bold",
+            color="#0F172A",
+            family="monospace",
+        )
+    ax1.text(
+        0.84,
+        0.70,
+        "32-bit uint:\n0xXXBBGGRR\n(Little-Endian)",
+        fontsize=8.5,
+        fontweight="bold",
+        color="#475569",
+        family="monospace",
+    )
+
+    # Pixel format 2: PixelBlueGreenRedReserved8BitPerColor
+    ax1.text(
+        0.04,
+        0.42,
+        "Format B: PixelBlueGreenRedReserved8BitPerColor (Standard BGRA order)",
+        fontsize=10.5,
+        fontweight="bold",
+        color="#0F172A",
+    )
+    bytes_b = [
+        (0.04, "Byte +0: Blue (8-bit)", "#DBEAFE", "#3B82F6"),
+        (0.24, "Byte +1: Green (8-bit)", "#DCFCE7", "#10B981"),
+        (0.44, "Byte +2: Red (8-bit)", "#FEE2E2", "#EF4444"),
+        (0.64, "Byte +3: Reserved (8-bit)", "#F1F5F9", "#94A3B8"),
+    ]
+    for x, label, fc, ec in bytes_b:
+        box = patches.FancyBboxPatch(
+            (x, 0.22),
+            0.18,
+            0.16,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor=fc,
+            edgecolor=ec,
+            linewidth=1.8,
+        )
+        ax1.add_patch(box)
+        ax1.text(
+            x + 0.02,
+            0.30,
+            label,
+            fontsize=8.5,
+            fontweight="bold",
+            color="#0F172A",
+            family="monospace",
+        )
+    ax1.text(
+        0.84,
+        0.30,
+        "32-bit uint:\n0xXXRRGGBB\n(Little-Endian)",
+        fontsize=8.5,
+        fontweight="bold",
+        color="#475569",
+        family="monospace",
+    )
+
+    ax1.text(
+        0.04,
+        0.06,
+        "[*] Note: When frame_buffer[i] = 255 (0xFF) is executed for all bytes, R=255, G=255, B=255 regardless of format,\n    rendering pure white (0xFFFFFF) across all GOP implementations!",
+        fontsize=8.5,
+        fontweight="bold",
+        color="#B45309",
+        family="monospace",
+    )
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # Bottom: Stride (PixelsPerScanLine) vs HorizontalResolution
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title(
+        "2. The Scanline Stride Trap: PixelsPerScanLine vs HorizontalResolution",
+        fontsize=12,
+        fontweight="bold",
+        color="#1E293B",
+        pad=10,
+    )
+
+    # Draw 3 scanlines illustrating stride padding
+    scanlines = [
+        (0.72, "Scanline Y = 0"),
+        (0.50, "Scanline Y = 1"),
+        (0.28, "Scanline Y = 2"),
+    ]
+    for y, label in scanlines:
+        ax2.text(
+            0.04,
+            y + 0.09,
+            label,
+            fontsize=9.0,
+            fontweight="bold",
+            color="#334155",
+            family="monospace",
+        )
+        # Visible width
+        box_vis = patches.FancyBboxPatch(
+            (0.04, y),
+            0.62,
+            0.07,
+            boxstyle="square,pad=0.0",
+            facecolor="#C7D2FE",
+            edgecolor="#4F46E5",
+            linewidth=1.5,
+        )
+        ax2.add_patch(box_vis)
+        ax2.text(
+            0.06,
+            y + 0.02,
+            "Visible Pixels [X = 0 .. HorizontalResolution - 1] (e.g. 800 pixels)",
+            fontsize=8.2,
+            fontweight="bold",
+            color="#1E1B4B",
+        )
+
+        # Padding stride
+        box_pad = patches.FancyBboxPatch(
+            (0.66, y),
+            0.20,
+            0.07,
+            boxstyle="square,pad=0.0",
+            facecolor="#FEE2E2",
+            edgecolor="#EF4444",
+            linewidth=1.5,
+            hatch="//",
+        )
+        ax2.add_patch(box_pad)
+        ax2.text(
+            0.67,
+            y + 0.02,
+            "Padding (Stride - HRes)",
+            fontsize=8.0,
+            fontweight="bold",
+            color="#991B1B",
+        )
+
+    # Brackets & Annotations
+    ax2.annotate(
+        "",
+        xy=(0.04, 0.88),
+        xytext=(0.66, 0.88),
+        arrowprops=dict(arrowstyle="<->", color="#4F46E5", lw=2.0),
+    )
+    ax2.text(
+        0.24,
+        0.91,
+        "HorizontalResolution (Visible Width: W)",
+        fontsize=9.0,
+        fontweight="bold",
+        color="#4F46E5",
+    )
+
+    ax2.annotate(
+        "",
+        xy=(0.04, 0.20),
+        xytext=(0.86, 0.20),
+        arrowprops=dict(arrowstyle="<->", color="#059669", lw=2.0),
+    )
+    ax2.text(
+        0.32,
+        0.14,
+        "PixelsPerScanLine (Total Scanline Stride: S >= W)",
+        fontsize=9.0,
+        fontweight="bold",
+        color="#059669",
+    )
+
+    formula_box = patches.FancyBboxPatch(
+        (0.04, 0.01),
+        0.92,
+        0.09,
+        boxstyle="round,pad=0.015,rounding_size=0.02",
+        facecolor="#F0FDF4",
+        edgecolor="#22C55E",
+        linewidth=1.5,
+    )
+    ax2.add_patch(formula_box)
+    ax2.text(
+        0.06,
+        0.045,
+        "[CORRECT FORMULA]: offset = (y * PixelsPerScanLine + x) * 4\n[FATAL TRAP]: If you use (y * HorizontalResolution + x) * 4, graphics will slant / tear diagonally on real hardware!",
+        fontsize=8.5,
+        fontweight="bold",
+        color="#15803D",
+        family="monospace",
+    )
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path

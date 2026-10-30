@@ -206,6 +206,14 @@ from common.os_sim import (
     RedZoneSimulator,
     plot_kernel_loading_and_entry_flow,
     plot_red_zone_mechanism_and_trap,
+    UefiGraphicsPixelFormat,
+    EfiPixelBitmask,
+    EfiGraphicsOutputModeInformation,
+    EfiGraphicsOutputProtocolMode,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+    UefiGopSimulator,
+    plot_uefi_gop_framebuffer_architecture,
+    plot_pixel_format_and_scanline_stride,
 )
 
 __all__ = [
@@ -414,4 +422,12 @@ __all__ = [
     "RedZoneSimulator",
     "plot_kernel_loading_and_entry_flow",
     "plot_red_zone_mechanism_and_trap",
+    "UefiGraphicsPixelFormat",
+    "EfiPixelBitmask",
+    "EfiGraphicsOutputModeInformation",
+    "EfiGraphicsOutputProtocolMode",
+    "EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID",
+    "UefiGopSimulator",
+    "plot_uefi_gop_framebuffer_architecture",
+    "plot_pixel_format_and_scanline_stride",
 ]
