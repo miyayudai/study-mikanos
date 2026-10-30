@@ -13165,3 +13165,618 @@ def plot_kernel_pixel_stripe_pattern(
     plt.close()
     return output_path
 
+
+
+# ==============================================================================
+# Chapter 3 Section 3.6: Error Handling and Pointer Casts (osbook_day03d)
+# ==============================================================================
+
+EFI_ERROR_MASK: int = 1 << 63
+
+EFI_STATUS_NAMES: dict[int, str] = {
+    0: "EFI_SUCCESS",
+    1: "EFI_WARN_UNKNOWN_GLYPH",
+    2: "EFI_WARN_DELETE_FAILURE",
+    3: "EFI_WARN_WRITE_FAILURE",
+    4: "EFI_WARN_BUFFER_TOO_SMALL",
+    5: "EFI_WARN_STALE_DATA",
+    6: "EFI_WARN_FILE_SYSTEM",
+    7: "EFI_WARN_RESET_REQUIRED",
+    1 | EFI_ERROR_MASK: "EFI_LOAD_ERROR",
+    2 | EFI_ERROR_MASK: "EFI_INVALID_PARAMETER",
+    3 | EFI_ERROR_MASK: "EFI_UNSUPPORTED",
+    4 | EFI_ERROR_MASK: "EFI_BAD_BUFFER_SIZE",
+    5 | EFI_ERROR_MASK: "EFI_BUFFER_TOO_SMALL",
+    6 | EFI_ERROR_MASK: "EFI_NOT_READY",
+    7 | EFI_ERROR_MASK: "EFI_DEVICE_ERROR",
+    8 | EFI_ERROR_MASK: "EFI_WRITE_PROTECTED",
+    9 | EFI_ERROR_MASK: "EFI_OUT_OF_RESOURCES",
+    10 | EFI_ERROR_MASK: "EFI_VOLUME_CORRUPTED",
+    11 | EFI_ERROR_MASK: "EFI_VOLUME_FULL",
+    12 | EFI_ERROR_MASK: "EFI_NO_MEDIA",
+    13 | EFI_ERROR_MASK: "EFI_MEDIA_CHANGED",
+    14 | EFI_ERROR_MASK: "EFI_NOT_FOUND",
+    15 | EFI_ERROR_MASK: "EFI_ACCESS_DENIED",
+    16 | EFI_ERROR_MASK: "EFI_NO_RESPONSE",
+    17 | EFI_ERROR_MASK: "EFI_NO_MAPPING",
+    18 | EFI_ERROR_MASK: "EFI_TIMEOUT",
+    19 | EFI_ERROR_MASK: "EFI_NOT_STARTED",
+    20 | EFI_ERROR_MASK: "EFI_ALREADY_STARTED",
+    21 | EFI_ERROR_MASK: "EFI_ABORTED",
+    22 | EFI_ERROR_MASK: "EFI_ICMP_ERROR",
+    23 | EFI_ERROR_MASK: "EFI_TFTP_ERROR",
+    24 | EFI_ERROR_MASK: "EFI_PROTOCOL_ERROR",
+    25 | EFI_ERROR_MASK: "EFI_INCOMPATIBLE_VERSION",
+    26 | EFI_ERROR_MASK: "EFI_SECURITY_VIOLATION",
+    27 | EFI_ERROR_MASK: "EFI_CRC_ERROR",
+    28 | EFI_ERROR_MASK: "EFI_END_OF_MEDIA",
+    31 | EFI_ERROR_MASK: "EFI_END_OF_FILE",
+}
+
+
+@dataclass(frozen=True)
+class EFIStatus:
+    """UEFI Specification 準拠の EFI_STATUS 表現クラス
+
+    64-bit 整数値 (UINTN) で表現され、最上位ビット (Bit 63) が 1 の場合に
+    エラー (EFI_ERROR) と判定される。
+    """
+    raw_value: int
+
+    @property
+    def is_error(self) -> bool:
+        """EFI_ERROR マクロの数理再現: 最上位ビット (MSB, Bit 63) が 1 か判定"""
+        return bool(self.raw_value & EFI_ERROR_MASK)
+
+    @property
+    def is_success(self) -> bool:
+        """正常終了 (EFI_SUCCESS == 0) か判定"""
+        return self.raw_value == 0
+
+    @property
+    def is_warning(self) -> bool:
+        """警告ステータス (最上位ビットが 0 かつ 0 以外) か判定"""
+        return not self.is_error and self.raw_value != 0
+
+    @property
+    def code_number(self) -> int:
+        """エラー番号 / 状態番号 (下位 63 ビット) を抽出"""
+        return self.raw_value & (~EFI_ERROR_MASK)
+
+    @property
+    def name(self) -> str:
+        """EDK II Print(L"%r") に相当する文字列名を取得"""
+        if self.raw_value in EFI_STATUS_NAMES:
+            return EFI_STATUS_NAMES[self.raw_value]
+        if self.is_error:
+            return f"EFI_ERROR_{self.code_number}"
+        return f"EFI_WARNING_{self.code_number}"
+
+    def __repr__(self) -> str:
+        return f"EFIStatus({self.name}, raw=0x{self.raw_value:016X})"
+
+    @classmethod
+    def success(cls) -> "EFIStatus":
+        return cls(0)
+
+    @classmethod
+    def error(cls, code: int) -> "EFIStatus":
+        return cls(code | EFI_ERROR_MASK)
+
+
+class BootStepAction(Enum):
+    """ブートシーケンスにおけるエラー発生時の対処方針"""
+    HALT_FATAL = "Fatal Error: Print error and Halt CPU"
+    IGNORE_GRACEFUL = "Non-Fatal: Print warning and continue boot"
+    RETRY_THEN_HALT = "Retry: Attempt recovery (e.g. GetMemoryMap) then Halt if failed"
+
+
+@dataclass
+class BootStepConfig:
+    name: str
+    description: str
+    action_on_error: BootStepAction
+    uefi_function: str
+
+
+@dataclass
+class BootloaderStepResult:
+    step_name: str
+    status: EFIStatus
+    passed: bool
+    action_taken: str
+    output_message: str
+
+
+class BootloaderErrorSimulator:
+    """MikanLoaderPkg (day03d) のエラーハンドリングシミュレータ
+
+    各ブートステップにおける EFI_STATUS を追跡し、
+    致命的エラーによる Halt() や、\\memmap オープン失敗時の無視継続
+    (Graceful Degradation) をシミュレートする。
+    """
+
+    STEPS: list[BootStepConfig] = [
+        BootStepConfig("GetMemoryMap", "メモリマップの取得", BootStepAction.HALT_FATAL, "gBS->GetMemoryMap"),
+        BootStepConfig("OpenRootDir", "ルートディレクトリのオープン", BootStepAction.HALT_FATAL, "gBS->OpenProtocol(LoadedImage & SimpleFileSystem)"),
+        BootStepConfig("OpenMemmapFile", "デバッグ用 \\memmap ファイルのオープン", BootStepAction.IGNORE_GRACEFUL, "root_dir->Open"),
+        BootStepConfig("SaveMemoryMap", "メモリマップのファイル書き込み", BootStepAction.HALT_FATAL, "file->Write"),
+        BootStepConfig("CloseMemmapFile", "\\memmap ファイルのクローズ", BootStepAction.HALT_FATAL, "file->Close"),
+        BootStepConfig("OpenGOP", "UEFI Graphics Output Protocol の取得", BootStepAction.HALT_FATAL, "gBS->LocateHandleBuffer & OpenProtocol"),
+        BootStepConfig("OpenKernelFile", "カーネル ELF (\\kernel.elf) のオープン", BootStepAction.HALT_FATAL, "root_dir->Open"),
+        BootStepConfig("GetKernelFileInfo", "カーネルファイルサイズ情報の取得", BootStepAction.HALT_FATAL, "kernel_file->GetInfo"),
+        BootStepConfig("AllocatePages", "カーネル配置用物理メモリ (0x100000) 確保", BootStepAction.HALT_FATAL, "gBS->AllocatePages"),
+        BootStepConfig("ReadKernel", "カーネル ELF バイナリのメモリ読み込み", BootStepAction.HALT_FATAL, "kernel_file->Read"),
+        BootStepConfig("ExitBootServices", "UEFI ブートサービス停止と制御移譲準備", BootStepAction.RETRY_THEN_HALT, "gBS->ExitBootServices"),
+    ]
+
+    def __init__(self) -> None:
+        self.step_results: list[BootloaderStepResult] = []
+        self.is_halted: bool = False
+        self.boot_completed: bool = False
+
+    def run_simulation(self, injected_errors: Optional[dict[str, EFIStatus]] = None) -> list[BootloaderStepResult]:
+        """指定されたステップにエラーを注入してブートシーケンスを実行する"""
+        if injected_errors is None:
+            injected_errors = {}
+
+        self.step_results.clear()
+        self.is_halted = False
+        self.boot_completed = False
+
+        memmap_file_opened = True
+
+        for cfg in self.STEPS:
+            # \memmap がオープン失敗していた場合、Save/Close はスキップされる
+            if cfg.name in ("SaveMemoryMap", "CloseMemmapFile") and not memmap_file_opened:
+                self.step_results.append(
+                    BootloaderStepResult(
+                        step_name=cfg.name,
+                        status=EFIStatus.success(),
+                        passed=True,
+                        action_taken="Skipped because \\memmap open was failed and ignored.",
+                        output_message="[SKIPPED]",
+                    )
+                )
+                continue
+
+            status = injected_errors.get(cfg.name, EFIStatus.success())
+
+            if status.is_error:
+                if cfg.action_on_error == BootStepAction.IGNORE_GRACEFUL:
+                    if cfg.name == "OpenMemmapFile":
+                        memmap_file_opened = False
+                    msg = f"failed to open file '\\memmap': {status.name}\nIgnored."
+                    self.step_results.append(
+                        BootloaderStepResult(
+                            step_name=cfg.name,
+                            status=status,
+                            passed=False,
+                            action_taken="Ignored and continued boot process (Graceful degradation)",
+                            output_message=msg,
+                        )
+                    )
+                elif cfg.action_on_error == BootStepAction.RETRY_THEN_HALT:
+                    msg = f"failed to exit boot services: {status.name} -> Retrying GetMemoryMap..."
+                    self.step_results.append(
+                        BootloaderStepResult(
+                            step_name=cfg.name,
+                            status=status,
+                            passed=False,
+                            action_taken="Retried GetMemoryMap & ExitBootServices -> Failed -> Halt()",
+                            output_message=msg,
+                        )
+                    )
+                    self.is_halted = True
+                    break
+                else:
+                    msg = f"failed at {cfg.name}: {status.name}\nHalt."
+                    self.step_results.append(
+                        BootloaderStepResult(
+                            step_name=cfg.name,
+                            status=status,
+                            passed=False,
+                            action_taken="Halt() executed (while(1) __asm__('hlt');)",
+                            output_message=msg,
+                        )
+                    )
+                    self.is_halted = True
+                    break
+            else:
+                self.step_results.append(
+                    BootloaderStepResult(
+                        step_name=cfg.name,
+                        status=status,
+                        passed=True,
+                        action_taken="Success: Proceeding to next step",
+                        output_message="OK",
+                    )
+                )
+
+        if not self.is_halted:
+            self.boot_completed = True
+
+        return self.step_results
+
+
+class CppCastKind(Enum):
+    """C++ のキャスト種別および C スタイルキャスト"""
+    C_STYLE_CAST = "(Type)expression"
+    STATIC_CAST = "static_cast<Type>(expression)"
+    REINTERPRET_CAST = "reinterpret_cast<Type>(expression)"
+    CONST_CAST = "const_cast<Type>(expression)"
+    DYNAMIC_CAST = "dynamic_cast<Type>(expression)"
+
+
+@dataclass
+class CastAnalysisResult:
+    cast_kind: CppCastKind
+    source_type: str
+    target_type: str
+    is_legal: bool
+    is_safe: bool
+    compile_error_reason: Optional[str]
+    low_level_usage: str
+
+
+class PointerCastSimulator:
+    """C++ における型変換・ポインタキャストの安全性と低レイヤ挙動の解析器
+
+    コラム 3.2 で論じられる C スタイルキャストの危険性と、
+    C++ 4大キャストの静的チェック機構・OS開発における使い分けを検証する。
+    """
+
+    @staticmethod
+    def analyze(source_type: str, target_type: str, cast_kind: CppCastKind) -> CastAnalysisResult:
+        s = source_type.strip()
+        t = target_type.strip()
+
+        # 1. 整数 (uint64_t / UINT64) から 関数ポインタ (void (*)(uint64_t, uint64_t) 等) への変換
+        if ("uint64_t" in s or "UINT64" in s) and ("*" in t and "(" in t):
+            if cast_kind == CppCastKind.STATIC_CAST:
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=False,
+                    is_safe=False,
+                    compile_error_reason="error: invalid 'static_cast' from integer type to function pointer type",
+                    low_level_usage="static_cast は整数とポインタ間の直接変換を禁止し、型の安全性を守る。",
+                )
+            elif cast_kind == CppCastKind.REINTERPRET_CAST:
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=True,
+                    is_safe=True,
+                    compile_error_reason=None,
+                    low_level_usage="カーネルエントリポイント呼び出し (entry_point = reinterpret_cast<EntryPointType*>(entry_addr)) の絶対標準。",
+                )
+            elif cast_kind == CppCastKind.C_STYLE_CAST:
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=True,
+                    is_safe=False,
+                    compile_error_reason=None,
+                    low_level_usage="コンパイルは通るが、const性の誤消失や危険な型変換を静的に警告しないため非推奨。",
+                )
+            elif cast_kind in (CppCastKind.CONST_CAST, CppCastKind.DYNAMIC_CAST):
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=False,
+                    is_safe=False,
+                    compile_error_reason="error: invalid cast kind for integer to function pointer conversion",
+                    low_level_usage="const_cast/dynamic_cast では整数・ポインタ間の変換は文法上不可。",
+                )
+
+        # 2. void* / VOID* から 構造体ポインタ (EFI_FILE_INFO* 等)
+        if "void*" in s.lower() and "*" in t and "(" not in t:
+            if cast_kind in (CppCastKind.STATIC_CAST, CppCastKind.REINTERPRET_CAST, CppCastKind.C_STYLE_CAST):
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=True,
+                    is_safe=True,
+                    compile_error_reason=None,
+                    low_level_usage="void* バッファから具象構造体ポインタへの復元 (static_cast 推奨)。",
+                )
+            else:
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=False,
+                    is_safe=False,
+                    compile_error_reason="error: invalid cast kind for void* to object pointer",
+                    low_level_usage="const_cast / dynamic_cast では void* からの具象型キャストは不可。",
+                )
+
+        # 3. const char* から char* へのキャスト
+        if "const" in s and "const" not in t:
+            if cast_kind == CppCastKind.CONST_CAST:
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=True,
+                    is_safe=False,
+                    compile_error_reason=None,
+                    low_level_usage="レガシーC API等に渡すために const 修飾を一時的に外す用途。",
+                )
+            elif cast_kind == CppCastKind.C_STYLE_CAST:
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=True,
+                    is_safe=False,
+                    compile_error_reason=None,
+                    low_level_usage="Cスタイルキャストは const を暗黙に剥奪してしまう危険性がある。",
+                )
+            else:
+                return CastAnalysisResult(
+                    cast_kind=cast_kind,
+                    source_type=source_type,
+                    target_type=target_type,
+                    is_legal=False,
+                    is_safe=False,
+                    compile_error_reason="error: cast casts away const qualifier",
+                    low_level_usage="static_cast / reinterpret_cast は const 剥奪を拒否して安全を守る。",
+                )
+
+        return CastAnalysisResult(
+            cast_kind=cast_kind,
+            source_type=source_type,
+            target_type=target_type,
+            is_legal=True,
+            is_safe=False,
+            compile_error_reason=None,
+            low_level_usage="一般的な型変換",
+        )
+
+
+def plot_uefi_status_and_error_handling_flow(output_path: Path | str) -> Path:
+    """Figure 3-11: EFI_STATUS 64-bit ビット構造と MikanLoaderPkg 多層エラー制御フローの描画"""
+    fig = plt.figure(figsize=(15, 10), facecolor="#F8FAFC")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.1, 1.4], hspace=0.35, wspace=0.25)
+
+    # 1. EFI_STATUS 64ビットのビットレイアウト
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("Figure 3-11 (A): UEFI 64-bit EFI_STATUS Bit Layout & Severity Flag", fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    # MSB (Bit 63: Severity)
+    box_msb = patches.FancyBboxPatch((0.05, 0.55), 0.22, 0.28, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#FEE2E2", edgecolor="#EF4444", linewidth=1.8)
+    ax1.add_patch(box_msb)
+    ax1.text(0.16, 0.73, "Bit 63 (MSB)\nERROR BIT", ha="center", va="center", fontsize=9.5, fontweight="bold", color="#991B1B")
+    ax1.text(0.16, 0.61, "1 = Error (EFI_ERROR=True)\n0 = Success / Warning", ha="center", va="center", fontsize=8, color="#B91C1C")
+
+    # Bits 62..0 (Status Code)
+    box_code = patches.FancyBboxPatch((0.31, 0.55), 0.64, 0.28, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#E0E7FF", edgecolor="#6366F1", linewidth=1.8)
+    ax1.add_patch(box_code)
+    ax1.text(0.63, 0.73, "Bits 62 .. 0\nStatus Code (0 .. 2^63 - 1)", ha="center", va="center", fontsize=9.5, fontweight="bold", color="#3730A3")
+    ax1.text(0.63, 0.61, "0 = EFI_SUCCESS\n1 = EFI_LOAD_ERROR, 5 = BUFFER_TOO_SMALL, 14 = NOT_FOUND, etc.", ha="center", va="center", fontsize=8, color="#4338CA")
+
+    # 数理・判定式解説
+    formula_box = patches.FancyBboxPatch((0.05, 0.08), 0.90, 0.38, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#F1F5F9", edgecolor="#64748B", linewidth=1.2)
+    ax1.add_patch(formula_box)
+    formula_text = (
+        "[Mathematical & C Implementation of EFI_ERROR(status)]\n"
+        "  #define EFI_ERROR(Status)  (((INTN)(Status)) < 0)\n"
+        "  - In 64-bit architecture (x86-64), INTN is signed 64-bit integer (int64_t).\n"
+        "  - If Bit 63 (Sign Bit) is 1, the value is negative (< 0) in two's complement.\n"
+        "  - Bitwise Mask Check:\n"
+        "      is_error = (status & 0x8000000000000000ULL) != 0\n"
+        "  - Extremely fast single-cycle instruction check: TEST RAX, RAX; JS error_handler"
+    )
+    ax1.text(0.08, 0.27, formula_text, ha="left", va="center", fontsize=8.5, family="monospace", color="#1E293B")
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. 代表的 UEFI Status コード一覧表
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("Figure 3-11 (B): Typical UEFI Status Codes & Human-readable (%r)", fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    table_data = [
+        ["EFI_STATUS Constant", "Hex Code (64-bit)", "Type", "EDK II %r Format"],
+        ["EFI_SUCCESS", "0x0000000000000000", "Success", "Success"],
+        ["EFI_LOAD_ERROR", "0x8000000000000001", "Error", "Load Error"],
+        ["EFI_INVALID_PARAMETER", "0x8000000000000002", "Error", "Invalid Parameter"],
+        ["EFI_BUFFER_TOO_SMALL", "0x8000000000000005", "Error", "Buffer Too Small"],
+        ["EFI_OUT_OF_RESOURCES", "0x8000000000000009", "Error", "Out of Resources"],
+        ["EFI_NOT_FOUND", "0x800000000000000E", "Error", "Not Found"],
+        ["EFI_WARN_UNKNOWN_GLYPH", "0x0000000000000001", "Warning", "Unknown Glyph"],
+    ]
+    table = ax2.table(cellText=table_data, loc="center", cellLoc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.5)
+    table.scale(1.0, 1.5)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#334155")
+            cell.get_text().set_color("#FFFFFF")
+            cell.get_text().set_fontweight("bold")
+        elif "Error" in table_data[row][2]:
+            cell.set_facecolor("#FEF2F2" if row % 2 == 1 else "#FFFFFF")
+        elif "Success" in table_data[row][2]:
+            cell.set_facecolor("#F0FDF4")
+        else:
+            cell.set_facecolor("#FFFBEB")
+    ax2.axis("off")
+
+    # 3. ブートローダ多層エラーハンドリング制御フロー
+    ax3 = fig.add_subplot(gs[1, :])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("Figure 3-11 (C): Multi-Layer Defense Error Handling Flow in MikanLoaderPkg (day03d)", fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    flow_steps = [
+        ("1. GetMemoryMap()", "Critical", 0.08, 0.65, "#EFF6FF", "#3B82F6"),
+        ("2. OpenRootDir()", "Critical", 0.24, 0.65, "#EFF6FF", "#3B82F6"),
+        ("3. Open(\\memmap)", "Non-Critical", 0.40, 0.65, "#FEF3C7", "#D97706"),
+        ("4. OpenGOP()", "Critical", 0.56, 0.65, "#EFF6FF", "#3B82F6"),
+        ("5. Load kernel.elf", "Critical", 0.72, 0.65, "#EFF6FF", "#3B82F6"),
+        ("6. ExitBootServices()", "Retry & Exit", 0.88, 0.65, "#EFF6FF", "#3B82F6"),
+    ]
+
+    for title, role, x, y, bg, border in flow_steps:
+        box = patches.FancyBboxPatch((x - 0.06, y - 0.12), 0.12, 0.24, boxstyle="round,pad=0.01,rounding_size=0.02", facecolor=bg, edgecolor=border, linewidth=1.5)
+        ax3.add_patch(box)
+        ax3.text(x, y + 0.04, title, ha="center", va="center", fontsize=8.5, fontweight="bold", color="#0F172A")
+        ax3.text(x, y - 0.04, f"[{role}]", ha="center", va="center", fontsize=7.5, color=border, fontweight="bold")
+
+    # 矢印 (OK)
+    for i in range(len(flow_steps) - 1):
+        x1 = flow_steps[i][2] + 0.06
+        x2 = flow_steps[i+1][2] - 0.06
+        ax3.annotate("", xy=(x2, 0.65), xytext=(x1, 0.65), arrowprops=dict(arrowstyle="->", color="#10B981", lw=2))
+        ax3.text((x1 + x2)/2, 0.68, "OK", ha="center", va="bottom", fontsize=7.5, fontweight="bold", color="#10B981")
+
+    # 致命的エラー -> Halt
+    halt_box = patches.FancyBboxPatch((0.40, 0.12), 0.20, 0.18, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#FEE2E2", edgecolor="#EF4444", linewidth=2.0)
+    ax3.add_patch(halt_box)
+    ax3.text(0.50, 0.23, "Halt() Function", ha="center", va="center", fontsize=9.5, fontweight="bold", color="#991B1B")
+    ax3.text(0.50, 0.16, "while(1) __asm__(\"hlt\");\n(Low-power CPU pause)", ha="center", va="center", fontsize=7.5, color="#B91C1C", family="monospace")
+
+    # エラー矢印
+    for idx in (0, 1, 3, 4, 5):
+        x_src = flow_steps[idx][2]
+        ax3.annotate("", xy=(0.40 if x_src < 0.5 else 0.60, 0.25), xytext=(x_src, 0.53), arrowprops=dict(arrowstyle="->", color="#EF4444", lw=1.5, ls="--"))
+        ax3.text(x_src + 0.02, 0.44, "EFI_ERROR", fontsize=7, color="#EF4444", fontweight="bold")
+
+    # 特例: \memmap のエラー無視矢印 (Graceful Continuation)
+    ax3.annotate("", xy=(flow_steps[3][2] - 0.06, 0.60), xytext=(flow_steps[2][2] + 0.06, 0.60), arrowprops=dict(arrowstyle="->", color="#D97706", lw=2, ls=":"))
+    ax3.text(0.48, 0.56, "Error Ignored\n(Log: 'Ignored.')", ha="center", va="center", fontsize=7.5, fontweight="bold", color="#D97706")
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    dirname = os.path.dirname(output_path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return Path(output_path)
+
+
+def plot_pointer_casts_type_safety_memory(output_path: Path | str) -> Path:
+    """Figure 3-12: C++ 4大キャストの型安全性マトリクスとメモリ再解釈モデルの描画"""
+    fig = plt.figure(figsize=(15, 10), facecolor="#F8FAFC")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.1, 1.3], hspace=0.35, wspace=0.25)
+
+    # 1. キャストの型安全性比較マトリクス
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("Figure 3-12 (A): Type Safety Matrix: C-Style Cast vs Modern C++ Casts", fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    cast_matrix = [
+        ["Cast Mechanism", "Static Check", "Memory Reinterpretation", "Const Stripping", "Low-Level / OS Usage", "Safety Level"],
+        ["(Type)expr\n(C-style)", "None (Brute-force)", "Supported (Unchecked)", "Silently Drops const", "Permissive but highly bug-prone", "Low (Dangerous)"],
+        ["static_cast<T>", "Strict Compile-time", "Prohibited for int<->ptr", "Prohibited (Compiler Error)", "Numeric conversion, void* to T*", "High (Type-Safe)"],
+        ["reinterpret_cast<T>", "Size/Category only", "Supported (Bit reinterpretation)", "Prohibited (Compiler Error)", "int<->ptr, Function ptr, Hardware MMIO", "Medium (Explicit Hazard)"],
+        ["const_cast<T>", "CV-qualifier only", "Prohibited (Compiler Error)", "Allowed (Exclusively)", "Legacy C API interop", "Low/Restricted"],
+        ["dynamic_cast<T>", "Runtime (RTTI)", "Prohibited", "Prohibited", "Requires RTTI (Unavailable in Freestanding OS)", "High (Runtime cost)"],
+    ]
+
+    table = ax1.table(cellText=cast_matrix, loc="center", cellLoc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.5)
+    table.scale(1.0, 1.7)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#1E293B")
+            cell.get_text().set_color("#FFFFFF")
+            cell.get_text().set_fontweight("bold")
+        elif row == 1:
+            cell.set_facecolor("#FEF2F2")
+        elif row == 3:
+            cell.set_facecolor("#EFF6FF")
+        else:
+            cell.set_facecolor("#F8FAFC" if row % 2 == 1 else "#FFFFFF")
+    ax1.axis("off")
+
+    # 2. メモリ空間における reinterpret_cast の再解釈モデル
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("Figure 3-12 (B): Memory Reinterpretation in Kernel Invocation", fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    # 物理アドレス 0x100000 のボックス
+    mem_box = patches.FancyBboxPatch((0.08, 0.45), 0.35, 0.45, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#F1F5F9", edgecolor="#475569", linewidth=1.5)
+    ax2.add_patch(mem_box)
+    ax2.text(0.255, 0.83, "Physical Memory @ 0x100000\n(Loaded ELF Image)", ha="center", va="center", fontsize=9, fontweight="bold", color="#0F172A")
+    ax2.text(0.255, 0.70, "Offset +0x00: e_ident (ELF Magic)\nOffset +0x18: e_entry (24 bytes)\n  [Value = 0x101000]", ha="center", va="center", fontsize=8, family="monospace", color="#334155")
+    ax2.text(0.255, 0.52, "Raw 64-bit Address Value:\nuint64_t entry_addr = 0x101000", ha="center", va="center", fontsize=8, family="monospace", color="#1D4ED8", fontweight="bold")
+
+    # キャスト矢印
+    ax2.annotate("", xy=(0.60, 0.67), xytext=(0.45, 0.67), arrowprops=dict(arrowstyle="->", color="#3B82F6", lw=2))
+    ax2.text(0.525, 0.72, "reinterpret_cast\n<EntryPointType*>", ha="center", va="center", fontsize=8, fontweight="bold", color="#3B82F6")
+
+    # 関数ポインタとしての解釈
+    func_box = patches.FancyBboxPatch((0.62, 0.45), 0.32, 0.45, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#EFF6FF", edgecolor="#3B82F6", linewidth=1.8)
+    ax2.add_patch(func_box)
+    ax2.text(0.78, 0.83, "Callable Function Pointer\n(EntryPointType*)", ha="center", va="center", fontsize=9, fontweight="bold", color="#1E3A8A")
+    ax2.text(0.78, 0.68, "void (*entry_point)(\n  UINT64 fb_base,\n  UINT64 fb_size\n);", ha="center", va="center", fontsize=8, family="monospace", color="#1D4ED8")
+    ax2.text(0.78, 0.52, "CPU: CALL 0x101000\n(RDI=fb_base, RSI=fb_size)", ha="center", va="center", fontsize=8, family="monospace", color="#0F172A")
+
+    # 静的キャスト不可の注記
+    warn_box = patches.FancyBboxPatch((0.08, 0.08), 0.86, 0.28, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#FEF2F2", edgecolor="#EF4444", linewidth=1.2)
+    ax2.add_patch(warn_box)
+    warn_text = (
+        "[Why static_cast Fails Here]\n"
+        "  - static_cast<EntryPointType*>(entry_addr) -> COMPILER ERROR!\n"
+        "  - C++ standard forbids static_cast between integers and pointers.\n"
+        "  - reinterpret_cast explicitly tells compiler: 'Treat this 64-bit integer\n"
+        "    as a callable code address without generating conversion instructions'."
+    )
+    ax2.text(0.12, 0.22, warn_text, ha="left", va="center", fontsize=8, family="monospace", color="#991B1B")
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    # 3. CPU Halt (HLT 命令) vs ビジーループの電力・パイプライン比較
+    ax3 = fig.add_subplot(gs[1, 1])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("Figure 3-12 (C): CPU Energy & Pipeline: HLT Instruction vs Busy-Loop", fontsize=11, fontweight="bold", pad=12, color="#0F172A")
+
+    # Busy Loop
+    busy_box = patches.FancyBboxPatch((0.08, 0.55), 0.84, 0.38, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#FFF1F2", edgecolor="#F43F5E", linewidth=1.5)
+    ax3.add_patch(busy_box)
+    ax3.text(0.12, 0.86, "[Pattern A] Busy Loop: while(1);", fontsize=9, fontweight="bold", color="#BE123C")
+    busy_desc = (
+        "- Assembly: loop: JMP loop\n"
+        "- CPU Core Utilization: 100% (Full load on one thread)\n"
+        "- Instruction Pipeline: Decoder, ALU, Branch Predictor active continuously\n"
+        "- Power Consumption: Max TDP / High heat generation"
+    )
+    ax3.text(0.12, 0.68, busy_desc, fontsize=8, family="monospace", color="#9F1239")
+
+    # HLT Function
+    hlt_box = patches.FancyBboxPatch((0.08, 0.08), 0.84, 0.40, boxstyle="round,pad=0.02,rounding_size=0.03", facecolor="#F0FDF4", edgecolor="#22C55E", linewidth=1.8)
+    ax3.add_patch(hlt_box)
+    ax3.text(0.12, 0.41, "[Pattern B] Halt(): while(1) __asm__(\"hlt\");", fontsize=9, fontweight="bold", color="#15803D")
+    hlt_desc = (
+        "- Assembly: loop: HLT; JMP loop\n"
+        "- CPU Core State: Enters HALT state (C1 power state)\n"
+        "- Instruction Pipeline: Clock gating stops CPU clock until external interrupt\n"
+        "- Power Consumption: Drastically reduced / Prevents thermal throttling"
+    )
+    ax3.text(0.12, 0.22, hlt_desc, fontsize=8, family="monospace", color="#166534")
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    dirname = os.path.dirname(output_path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return Path(output_path)

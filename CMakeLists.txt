@@ -107,6 +107,10 @@ add_test(NAME test_ch03_gop_sim COMMAND ch03_gop_sim --test)
 add_executable(ch03_kernel_pixel_sim src/ch03/kernel_pixel_sim.cpp)
 add_test(NAME test_ch03_kernel_pixel_sim COMMAND ch03_kernel_pixel_sim)
 
+add_executable(ch03_error_handling_sim src/ch03/error_handling_sim.cpp)
+add_test(NAME test_ch03_error_handling_sim COMMAND ch03_error_handling_sim)
+
+
 
 
 

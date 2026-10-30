@@ -8,6 +8,7 @@ build/
 generate_nb_*.py
 create_nb_*.py
 append_*.py
+scratch_*.py
 develop-eggs/
 dist/
 downloads/
