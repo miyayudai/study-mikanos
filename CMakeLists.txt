@@ -126,6 +126,10 @@ add_test(NAME test_ch04_drawing_pixels_sim COMMAND ch04_drawing_pixels_sim)
 add_executable(ch04_pixel_writer_oop_sim src/ch04/pixel_writer_oop_sim.cpp)
 add_test(NAME test_ch04_pixel_writer_oop_sim COMMAND ch04_pixel_writer_oop_sim)
 
+add_executable(ch04_vtable_sim src/ch04/vtable_sim.cpp)
+add_test(NAME test_ch04_vtable_sim COMMAND ch04_vtable_sim)
+
+
 
 
 

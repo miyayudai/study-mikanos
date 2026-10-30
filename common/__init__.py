@@ -263,6 +263,14 @@ from common.os_sim import (
     PolymorphismCostMetrics,
     plot_fig4_05_pixel_writer_class_hierarchy_and_memory,
     plot_fig4_06_placement_new_and_runtime_cost,
+    PureVirtualCallError,
+    VTableEntry,
+    VirtualMethodTable,
+    PolymorphicObjectLayout,
+    ItaniumAbiVTableSimulator,
+    VPtrInspector,
+    plot_fig4_07_vtable_memory_layout_and_dispatch,
+    plot_fig4_08_cxa_pure_virtual_and_abi,
 )
 
 __all__ = [
@@ -528,4 +536,12 @@ __all__ = [
     "PolymorphismCostMetrics",
     "plot_fig4_05_pixel_writer_class_hierarchy_and_memory",
     "plot_fig4_06_placement_new_and_runtime_cost",
+    "PureVirtualCallError",
+    "VTableEntry",
+    "VirtualMethodTable",
+    "PolymorphicObjectLayout",
+    "ItaniumAbiVTableSimulator",
+    "VPtrInspector",
+    "plot_fig4_07_vtable_memory_layout_and_dispatch",
+    "plot_fig4_08_cxa_pure_virtual_and_abi",
 ]

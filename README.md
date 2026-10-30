@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-287%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-16.2%25%20(37%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-295%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-16.7%25%20(38%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -185,6 +185,8 @@ cmake --build build
 | [`4.1_Introduction_to_Make.ipynb`](4/4.1_Introduction_to_Make.ipynb) | 4.1 make入門（`osbook_day04a`・kernel/Makefile・依存関係DAGとトポロジカルソート数理・タイムスタンプ比較則・自動変数・.PHONY保護・ベアメタルC++ビルドフラグ完全解読） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.1_Introduction_to_Make.ipynb) |
 | [`4.2_Drawing_Pixels_Freely_and_ABI.ipynb`](4/4.2_Drawing_Pixels_Freely_and_ABI.ipynb) | 4.2 ピクセルを自在に描く（`osbook_day04b`・`FrameBufferConfig`構造体・VRAM2次元座標写像数理・スキャンラインストライド・RGB/BGR画素構成・白クリア＆矩形描画・コラム4.1 ABI徹底解剖・System V vs MS x64・EFIAPI省略の真相） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.2_Drawing_Pixels_Freely_and_ABI.ipynb) |
 | [`4.3_Refactoring_with_Cpp_OOP.ipynb`](4/4.3_Refactoring_with_Cpp_OOP.ipynb) | 4.3 C++の機能を使って書き直す（`osbook_day04c`・`PixelWriter`抽象基底クラス・純粋仮想関数・継承コンストラクタ・配置new・フリースタンディング静的バッファ配置・コラム4.2 コンパイルエラーはお友達・vtable分岐予測・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.3_Refactoring_with_Cpp_OOP.ipynb) |
+| [`4.4_Virtual_Method_Table_vtable.ipynb`](4/4.4_Virtual_Method_Table_vtable.ipynb) | 4.4 vtable（仮想関数テーブル・`_vptr`とItanium C++ ABIメモリレイアウト・`mov rax, [rdi]; call [rax+16]`逆アセンブル・純粋仮想関数トラップ・`__cxa_pure_virtual`リンカ解決・ベアメタルHLT保護・ゼロオーバーヘッド原則） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.4_Virtual_Method_Table_vtable.ipynb) |
+
 
 
 

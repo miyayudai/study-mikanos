@@ -16374,3 +16374,527 @@ def plot_fig4_06_placement_new_and_runtime_cost(output_path: str) -> str:
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 4.4: vtable (Virtual Method Table & __cxa_pure_virtual)
+# ==============================================================================
+
+class PureVirtualCallError(RuntimeError):
+    """Exception raised when a pure virtual function slot is invoked (__cxa_pure_virtual trap)."""
+    pass
+
+
+@dataclass
+class VTableEntry:
+    """Represents a single slot in an Itanium C++ ABI virtual method table."""
+    name: str
+    offset_bytes: int  # Offset from vptr (e.g., -16, -8, 0, 8, 16)
+    target_address: int  # Virtual address of function or metadata
+    symbol_name: str  # Mangled or readable symbol name
+    is_pure_virtual: bool = False
+    description: str = ""
+
+
+@dataclass
+class VirtualMethodTable:
+    """Simulates an Itanium C++ ABI virtual table for a C++ polymorphic class."""
+    class_name: str
+    vtable_base_address: int  # Address where the vptr points (slot 0)
+    entries: list[VTableEntry] = field(default_factory=list)
+
+    def get_entry_by_offset(self, offset: int) -> Optional[VTableEntry]:
+        for entry in self.entries:
+            if entry.offset_bytes == offset:
+                return entry
+        return None
+
+    def lookup_function(self, func_name: str) -> Optional[VTableEntry]:
+        for entry in self.entries:
+            if entry.name == func_name:
+                return entry
+        return None
+
+
+class PolymorphicObjectLayout:
+    """Simulates the in-memory object layout of a C++ polymorphic class instance."""
+
+    def __init__(self, class_name: str, instance_address: int = 0x100000) -> None:
+        self.class_name = class_name
+        self.instance_address = instance_address
+        self.members: list[dict[str, Any]] = []
+        self.total_size = 0
+        self.alignment = 8
+        self.vptr_value: int = 0
+
+    def add_vptr(self, vtable_address: int) -> None:
+        """Add the hidden _vptr at offset 0 (8 bytes on x86-64)."""
+        self.vptr_value = vtable_address
+        self.members.append({
+            "name": "_vptr",
+            "offset": 0,
+            "size": 8,
+            "type": "void** (vptr)",
+            "value": f"0x{vtable_address:016x}",
+            "description": f"Pointer to vtable for {self.class_name}",
+        })
+        self.total_size = max(self.total_size, 8)
+
+    def add_member(self, name: str, size: int, type_str: str, value: Any, description: str = "") -> None:
+        """Add a member variable with natural alignment."""
+        align = min(size, self.alignment)
+        offset = (self.total_size + align - 1) & ~(align - 1)
+        self.members.append({
+            "name": name,
+            "offset": offset,
+            "size": size,
+            "type": type_str,
+            "value": value,
+            "description": description,
+        })
+        self.total_size = offset + size
+
+    def format_memory_map(self) -> str:
+        """Return an ASCII visualization of the object memory layout."""
+        lines = [
+            f"+-----------------------------------------------------------------------------+",
+            f"| Object Memory Layout: {self.class_name:<46} |",
+            f"| Base Address: 0x{self.instance_address:016x} | Size: {self.total_size:>2} Bytes | Align: {self.alignment}B  |",
+            f"+--------+------+---------------------+--------------------+------------------+",
+            f"| Offset | Size | Field Name          | Type               | Value / Target   |",
+            f"+--------+------+---------------------+--------------------+------------------+",
+        ]
+        for m in self.members:
+            lines.append(
+                f"| +0x{m['offset']:02x}  | {m['size']:>2}B  | {m['name']:<19} | {m['type']:<18} | {str(m['value']):<16} |"
+            )
+        lines.append(f"+--------+------+---------------------+--------------------+------------------+")
+        return "\n".join(lines)
+
+
+class ItaniumAbiVTableSimulator:
+    """Simulates the compiler's generation of vtables and dynamic dispatch under Itanium C++ ABI."""
+
+    def __init__(self) -> None:
+        self.vtables: dict[str, VirtualMethodTable] = {}
+        self.objects: dict[str, PolymorphicObjectLayout] = {}
+        self.pure_virtual_call_count = 0
+        self.dispatch_log: list[str] = []
+        self._setup_mikanos_classes()
+
+    def _setup_mikanos_classes(self) -> None:
+        # Vtable for PixelWriter (Abstract Base Class)
+        # In Itanium ABI:
+        # offset -16: offset-to-top (0 for single inheritance)
+        # offset  -8: RTTI typeinfo pointer (&_ZTI11PixelWriter)
+        # offset   0: complete object destructor (&PixelWriter::~PixelWriter)
+        # offset  +8: deleting destructor (&PixelWriter::~PixelWriter)
+        # offset +16: Write slot -> __cxa_pure_virtual!
+        pw_vtable_addr = 0x403000
+        pw_entries = [
+            VTableEntry("offset_to_top", -16, 0x0, "offset-to-top", False, "Offset to complete object (0)"),
+            VTableEntry("typeinfo", -8, 0x403F00, "_ZTI11PixelWriter", False, "std::type_info for PixelWriter"),
+            VTableEntry("complete_dtor", 0, 0x401050, "_ZN11PixelWriterD1Ev", False, "Complete object destructor"),
+            VTableEntry("deleting_dtor", 8, 0x401070, "_ZN11PixelWriterD0Ev", False, "Deleting destructor"),
+            VTableEntry("Write", 16, 0x401FF0, "__cxa_pure_virtual", True, "Pure virtual function trap!"),
+        ]
+        self.vtables["PixelWriter"] = VirtualMethodTable("PixelWriter", pw_vtable_addr, pw_entries)
+
+        # Vtable for RGBResv8BitPerColorPixelWriter (Concrete Derived Class)
+        rgb_vtable_addr = 0x403100
+        rgb_entries = [
+            VTableEntry("offset_to_top", -16, 0x0, "offset-to-top", False, "Offset to complete object (0)"),
+            VTableEntry("typeinfo", -8, 0x403F20, "_ZTI30RGBResv8BitPerColorPixelWriter", False, "typeinfo for RGB writer"),
+            VTableEntry("complete_dtor", 0, 0x401100, "_ZN30RGBResv8BitPerColorPixelWriterD1Ev", False, "Complete object destructor"),
+            VTableEntry("deleting_dtor", 8, 0x401120, "_ZN30RGBResv8BitPerColorPixelWriterD0Ev", False, "Deleting destructor"),
+            VTableEntry("Write", 16, 0x401200, "_ZN30RGBResv8BitPerColorPixelWriter5WriteEiiRK10PixelColor", False, "RGB pixel writer override"),
+        ]
+        self.vtables["RGBResv8BitPerColorPixelWriter"] = VirtualMethodTable(
+            "RGBResv8BitPerColorPixelWriter", rgb_vtable_addr, rgb_entries
+        )
+
+        # Vtable for BGRResv8BitPerColorPixelWriter (Concrete Derived Class)
+        bgr_vtable_addr = 0x403200
+        bgr_entries = [
+            VTableEntry("offset_to_top", -16, 0x0, "offset-to-top", False, "Offset to complete object (0)"),
+            VTableEntry("typeinfo", -8, 0x403F40, "_ZTI30BGRResv8BitPerColorPixelWriter", False, "typeinfo for BGR writer"),
+            VTableEntry("complete_dtor", 0, 0x401150, "_ZN30BGRResv8BitPerColorPixelWriterD1Ev", False, "Complete object destructor"),
+            VTableEntry("deleting_dtor", 8, 0x401170, "_ZN30BGRResv8BitPerColorPixelWriterD0Ev", False, "Deleting destructor"),
+            VTableEntry("Write", 16, 0x401300, "_ZN30BGRResv8BitPerColorPixelWriter5WriteEiiRK10PixelColor", False, "BGR pixel writer override"),
+        ]
+        self.vtables["BGRResv8BitPerColorPixelWriter"] = VirtualMethodTable(
+            "BGRResv8BitPerColorPixelWriter", bgr_vtable_addr, bgr_entries
+        )
+
+    def create_instance(self, class_name: str, instance_address: int = 0x100000) -> PolymorphicObjectLayout:
+        """Create simulated object instance layout with vptr initialized."""
+        if class_name not in self.vtables:
+            raise ValueError(f"Unknown class '{class_name}'. Available: {list(self.vtables.keys())}")
+
+        obj = PolymorphicObjectLayout(class_name, instance_address)
+        vtable = self.vtables[class_name]
+        obj.add_vptr(vtable.vtable_base_address)
+        obj.add_member("config_", 8, "const FrameBufferConfig&", "0x00007fffffffe000", "Reference pointer to config")
+        self.objects[class_name] = obj
+        return obj
+
+    def dispatch(self, obj: PolymorphicObjectLayout, method_name: str, *args) -> tuple[int, str]:
+        """
+        Simulate dynamic dispatch:
+        1. Read vptr at obj.instance_address (+0)
+        2. Resolve vtable
+        3. Lookup method slot
+        4. Check for pure virtual trap (__cxa_pure_virtual)
+        5. Invoke target function
+        """
+        vptr = obj.vptr_value
+        # Find vtable matching vptr
+        matching_vtable = None
+        for vt in self.vtables.values():
+            if vt.vtable_base_address == vptr:
+                matching_vtable = vt
+                break
+
+        if not matching_vtable:
+            raise RuntimeError(f"Corrupted vptr 0x{vptr:016x}: no matching vtable found!")
+
+        entry = matching_vtable.lookup_function(method_name)
+        if not entry:
+            raise AttributeError(f"Method '{method_name}' not found in vtable for {matching_vtable.class_name}")
+
+        self.dispatch_log.append(
+            f"Dispatch: obj({obj.class_name}) -> vptr(0x{vptr:x}) -> slot(+{entry.offset_bytes}) "
+            f"-> target(0x{entry.target_address:x}: {entry.symbol_name})"
+        )
+
+        if entry.is_pure_virtual or entry.symbol_name == "__cxa_pure_virtual":
+            self.pure_virtual_call_count += 1
+            raise PureVirtualCallError(
+                f"FATAL: Pure virtual function call trap! Invoked slot '+{entry.offset_bytes}' "
+                f"({entry.name}) on abstract class '{matching_vtable.class_name}' -> __cxa_pure_virtual()"
+            )
+
+        return (entry.target_address, entry.symbol_name)
+
+
+class VPtrInspector:
+    """Extracts and verifies raw binary pointers and vtable entries from emulated memory."""
+
+    @staticmethod
+    def inspect_vptr(raw_bytes: bytes) -> int:
+        """Read 8-byte little-endian vptr from the head of an object buffer."""
+        if len(raw_bytes) < 8:
+            raise ValueError("Buffer must be at least 8 bytes to contain a 64-bit vptr.")
+        return struct.unpack("<Q", raw_bytes[:8])[0]
+
+    @staticmethod
+    def disassemble_indirect_call(method_offset: int = 16) -> list[str]:
+        """Generate annotated x86-64 assembly instructions for dynamic dispatch."""
+        return [
+            f"mov   rax, [rdi]        ; Step 1: Dereference this pointer (RDI) -> load vptr into RAX",
+            f"mov   rax, [rax + {method_offset}]   ; Step 2: Index vtable at offset +{method_offset} -> load function address",
+            f"call  rax               ; Step 3: Indirect call to resolved virtual method",
+        ]
+
+
+# ==============================================================================
+# Chapter 4.4 Figures Generation
+# ==============================================================================
+
+def plot_fig4_07_vtable_memory_layout_and_dispatch(output_path: str) -> str:
+    """
+    Generate Fig 4.7: Vtable memory layout, vptr embedding, and x86-64 indirect call pipeline.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    fig = plt.figure(figsize=(15, 11), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 2, hspace=0.32, wspace=0.25)
+
+    # 1. Object In-Memory Structure (vptr + config_)
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. オブジェクトメモリ構造と不可視メンバ `_vptr` (16 Bytes)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Diagram of Object
+    obj_box = FancyBboxPatch((0.15, 0.48), 0.70, 0.42, boxstyle="round,pad=0.03",
+                             facecolor="#E3F2FD", edgecolor="#1976D2", lw=2)
+    ax1.add_patch(obj_box)
+    ax1.text(0.50, 0.84, "RGBResv8BitPerColorPixelWriter インスタンス (16 Bytes)",
+             ha="center", fontsize=9.5, fontweight="bold", color="#0D47A1")
+
+    # Slot 1: vptr
+    vptr_box = FancyBboxPatch((0.18, 0.65), 0.64, 0.14, boxstyle="round,pad=0.01",
+                              facecolor="#BBDEFB", edgecolor="#1565C0", lw=1.5)
+    ax1.add_patch(vptr_box)
+    ax1.text(0.50, 0.72, "[+0x00] `_vptr` (8 Bytes ポインタ)\n-> 指向先: vtable for RGBWriter (+0x00)",
+             ha="center", va="center", fontsize=8.5, fontweight="bold", color="#0D47A1")
+
+    # Slot 2: config_
+    cfg_box = FancyBboxPatch((0.18, 0.48), 0.64, 0.14, boxstyle="round,pad=0.01",
+                              facecolor="#C8E6C9", edgecolor="#2E7D32", lw=1.5)
+    ax1.add_patch(cfg_box)
+    ax1.text(0.50, 0.55, "[+0x08] `config_` 参照ポインタ (8 Bytes)\n-> 指向先: FrameBufferConfig 実体",
+             ha="center", va="center", fontsize=8.5, fontweight="bold", color="#1B5E20")
+
+    # Note
+    note1 = (
+        "【重要ポイント】\n"
+        "・仮想関数を1つでも宣言すると、コンパイラが先頭8バイトに `_vptr` を自動挿入\n"
+        "・`sizeof(PixelWriter)` は参照(8B)だけでなく `_vptr`(8B) を含めて 16B に拡張\n"
+        "・コンストラクタ実行時に `_vptr` が対応クラスの `vtable` アドレスで自動初期化"
+    )
+    ax1.text(0.08, 0.10, note1, fontsize=8.2, color="#37474F", linespacing=1.35,
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#ECEFF1", edgecolor="#90A4AE"))
+
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
+    ax1.axis("off")
+
+    # 2. Itanium C++ ABI Vtable Structure
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. Itanium C++ ABI 準拠の vtable 内部構造 (.rodata)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # VTable Layout
+    slots = [
+        ("-0x10", "Offset-to-Top", "0x0000000000000000", "#FFF9C4", "#FBC02D"),
+        ("-0x08", "RTTI Pointer", "&_ZTI...PixelWriter", "#FFE0B2", "#FB8C00"),
+        ("+0x00 [vptr]", "Complete Destructor", "&RGBWriter::~RGBWriter()", "#D1C4E9", "#5E35B1"),
+        ("+0x08", "Deleting Destructor", "&RGBWriter::~RGBWriter()", "#D1C4E9", "#5E35B1"),
+        ("+0x10", "Write() エントリ", "&RGBWriter::Write(x, y, c)", "#C8E6C9", "#2E7D32"),
+    ]
+
+    y_pos = 0.85
+    for offset_str, slot_name, symbol_str, fcolor, ecolor in slots:
+        sbox = FancyBboxPatch((0.08, y_pos - 0.08), 0.84, 0.09, boxstyle="round,pad=0.01",
+                              facecolor=fcolor, edgecolor=ecolor, lw=1.5)
+        ax2.add_patch(sbox)
+        ax2.text(0.12, y_pos - 0.035, offset_str, fontsize=8.0, fontweight="bold", color="#212121")
+        ax2.text(0.35, y_pos - 0.035, slot_name, fontsize=8.5, fontweight="bold", color="#0D47A1")
+        ax2.text(0.68, y_pos - 0.035, symbol_str, fontsize=7.8, family="monospace", color="#37474F")
+        y_pos -= 0.12
+
+    note2 = (
+        "※ `vptr` は `Complete Destructor` (+0x00) を指し、\n"
+        "   負のオフセット (-0x08, -0x10) にメタデータ（RTTI・オフセット）を配置する構造"
+    )
+    ax2.text(0.08, 0.12, note2, fontsize=8.2, color="#B71C1C",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFEBEE", edgecolor="#EF5350"))
+
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.axis("off")
+
+    # 3. x86-64 Indirect Call Disassembly Pipeline
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. `pixel_writer->Write()` の逆アセンブル命令列 (3段階)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    asm_steps = [
+        ("Step 1: vptr 読出", "mov  rax, [rdi]", "RDI (thisポインタ) の先頭8バイト (*_vptr) を RAX にロード"),
+        ("Step 2: 関数アドレス読出", "mov  rax, [rax + 16]", "vtable の +16 バイト目 (Writeスロット) の関数ポインタを RAX にロード"),
+        ("Step 3: 間接関数呼出", "call rax", "RAX が指す具象クラスの Write() 実装へジャンプ (間接呼出)"),
+    ]
+
+    ay = 0.80
+    for title, code, desc in asm_steps:
+        abox = FancyBboxPatch((0.06, ay - 0.11), 0.88, 0.13, boxstyle="round,pad=0.01",
+                              facecolor="#E8EAF6", edgecolor="#3F51B5", lw=1.5)
+        ax3.add_patch(abox)
+        ax3.text(0.10, ay - 0.03, title, fontsize=8.2, fontweight="bold", color="#1A237E")
+        ax3.text(0.38, ay - 0.03, code, fontsize=8.8, fontweight="bold", family="monospace", color="#B71C1C")
+        ax3.text(0.10, ay - 0.08, desc, fontsize=7.8, color="#37474F")
+        ay -= 0.18
+
+    note3 = (
+        "【System V AMD64 ABI レジスタ引数】\n"
+        "・RDI: this (オブジェクト先頭アドレス)\n"
+        "・ESI: x (描画X座標) | EDX: y (描画Y座標) | RCX: c (PixelColor)"
+    )
+    ax3.text(0.06, 0.10, note3, fontsize=8.0, color="#1B5E20",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#E8F5E9", edgecolor="#81C784"))
+
+    ax3.set_xlim(0, 1)
+    ax3.set_ylim(0, 1)
+    ax3.axis("off")
+
+    # 4. Dynamic Dispatch Flow Chart
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. 動的ディスパッチ (Dynamic Dispatch) の実行時シーケンス",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    stages = [
+        ("呼び出し側コード", "`pixel_writer->Write(x, y, c);`", "#E1F5FE", "#0288D1"),
+        ("ポインタ解決", "`pixel_writer` の指すオブジェクトメモリを参照", "#E0F2F1", "#00897B"),
+        ("vtable参照", "`_vptr` を経由して `vtable for RGBWriter` を参照", "#FFF8E1", "#FFA000"),
+        ("関数実行", "`RGBResv8BitPerColorPixelWriter::Write()` 実行", "#F1F8E9", "#689F38"),
+    ]
+
+    sy = 0.84
+    for stitle, sdesc, sfcol, secol in stages:
+        sbox = FancyBboxPatch((0.10, sy - 0.08), 0.80, 0.09, boxstyle="round,pad=0.01",
+                              facecolor=sfcol, edgecolor=secol, lw=1.5)
+        ax4.add_patch(sbox)
+        ax4.text(0.14, sy - 0.035, stitle, fontsize=8.2, fontweight="bold", color="#212121")
+        ax4.text(0.40, sy - 0.035, sdesc, fontsize=8.0, color="#0D47A1")
+
+        if sy > 0.35:
+            ax4.annotate("", xy=(0.50, sy - 0.09), xytext=(0.50, sy - 0.13),
+                         arrowprops=dict(arrowstyle="<-", lw=1.5, color="#546E7A"))
+        sy -= 0.15
+
+    note4 = (
+        "◎ メリット: 呼び出し側コードは具象型（RGB/BGR）を一切意識せず共通APIで描画可能\n"
+        "◎ コスト: メモリアクセス2回 + 間接ジャンプ (BTB予測ヒット時はほぼ1サイクル)"
+    )
+    ax4.text(0.06, 0.10, note4, fontsize=8.0, color="#01579B",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#E1F5FE", edgecolor="#81D4FA"))
+
+    ax4.set_xlim(0, 1)
+    ax4.set_ylim(0, 1)
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig4_08_cxa_pure_virtual_and_abi(output_path: str) -> str:
+    """
+    Generate Fig 4.8: Pure virtual function call trap, __cxa_pure_virtual linker resolution,
+    bare-metal vs hosted runtime, and performance trade-offs.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    fig = plt.figure(figsize=(15, 11), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 2, hspace=0.32, wspace=0.25)
+
+    # 1. Pure Virtual Function Trap Flow
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 純粋仮想関数トラップ (`__cxa_pure_virtual`) 発生フロー",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    flow_text = (
+        "【なぜ純粋仮想関数のスロットに実体が必要なのか？】\n\n"
+        "1. 抽象クラス `PixelWriter` の vtable 作成:\n"
+        "   `virtual void Write(...) = 0;` (純粋仮想関数)\n"
+        "   スロットに `nullptr` を入れると、万が一の呼び出し時に NULL ポインタ参照\n"
+        "   （Page Fault / 未定義動作）が発生してクラッシュ原因の特定が困難になる。\n\n"
+        "2. Itanium C++ ABI の安全設計:\n"
+        "   コンパイラは純粋仮想スロットに `&__cxa_pure_virtual` を自動格納する。\n\n"
+        "3. 誤呼び出しのシナリオ（Pure Virtual Function Call Trap）:\n"
+        "   ・基底クラスのコンストラクタ/デストラクタ内から仮想関数を直接/間接呼出\n"
+        "   ・未初期化または破棄途中の派生オブジェクトをポインタ経由で操作\n"
+        "   -> 実行時に `__cxa_pure_virtual()` が発動して安全にプログラムを停止！"
+    )
+    fbox = FancyBboxPatch((0.04, 0.06), 0.92, 0.88, boxstyle="round,pad=0.02",
+                          facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.5)
+    ax1.add_patch(fbox)
+    ax1.text(0.07, 0.50, flow_text, fontsize=8.0, color="#E65100", linespacing=1.35)
+
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
+    ax1.axis("off")
+
+    # 2. Host OS vs Bare-Metal Linker Resolution
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. ホストOS環境 vs ベアメタル (MikanOS) のリンク解決比較",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    link_text = (
+        "【ベアメタル環境でリンクエラーが出る根本原因】\n\n"
+        "■ 一般の Linux / macOS アプリ (Hosted Environment):\n"
+        "  ・コンパイラが `libc++abi.a` や `libsupc++.a` を自動リンク\n"
+        "  ・ランタイム内に `__cxa_pure_virtual` (標準エラーにメッセージ出力後 abort)\n"
+        "    が用意されているため、リンクは正常に通過する。\n\n"
+        "■ MikanOS カーネル (Bare-Metal / Freestanding Environment):\n"
+        "  ・`-nostdlib`, `--freestanding` を指定して標準C++ランタイムを排除\n"
+        "  ・リンカ `ld.lld` が未解決シンボルエラーを発行:\n"
+        "    `undefined reference to '__cxa_pure_virtual'`\n\n"
+        "■ MikanOS での解決策:\n"
+        "  カーネルコード内に自前でスタブ関数を定義する！\n"
+        "  `extern \"C\" void __cxa_pure_virtual() { while (1) __asm__(\"hlt\"); }`\n"
+        "  -> リンクが通り、万一の純粋仮想呼び出し時も安全に CPU が HLT 停止！"
+    )
+    lbox = FancyBboxPatch((0.04, 0.06), 0.92, 0.88, boxstyle="round,pad=0.02",
+                          facecolor="#EDE7F6", edgecolor="#673AB7", lw=1.5)
+    ax2.add_patch(lbox)
+    ax2.text(0.07, 0.50, link_text, fontsize=8.0, color="#311B92", linespacing=1.35)
+
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.axis("off")
+
+    # 3. Direct Call vs Indirect Call Cost Benchmark
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 直接関数呼出 vs 仮想関数間接呼出 (BTBヒット時) コスト",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    categories = [
+        "直接呼び出し\n(Direct call)",
+        "仮想関数 (初回)\n(BTBミス + キャッシュミス)",
+        "仮想関数 (ループ内)\n(BTBヒット + L1Dヒット)",
+        "If-Else 分岐\n(予測失敗時ペナルティ)"
+    ]
+    cycles = [1.0, 18.0, 1.8, 15.0]
+    colors = ["#4CAF50", "#F44336", "#2196F3", "#FF9800"]
+
+    x = np.arange(len(categories))
+    bars = ax3.bar(x, cycles, color=colors, width=0.55, edgecolor="#424242", lw=1)
+    ax3.set_ylabel("典型所要クロックサイクル [Cycles]", fontsize=8.8)
+    ax3.set_xticks(x)
+    ax3.set_xticklabels(categories, fontsize=7.8)
+    ax3.grid(True, linestyle="--", alpha=0.5, axis="y")
+
+    for bar, c in zip(bars, cycles):
+        ax3.text(bar.get_x() + bar.get_width() / 2, c + 0.5, f"~{c}c",
+                 ha="center", fontsize=8.2, fontweight="bold")
+
+    note3 = (
+        "現代の x86-64 CPU (Skylake/Zen) では Branch Target Buffer (BTB) が\n"
+        "間接分岐先を高度に学習するため、同一型へのループ描画ではほぼ直接呼出同等！"
+    )
+    ax3.text(0.05, 0.70, note3, transform=ax3.transAxes, fontsize=7.5,
+             color="#0D47A1", bbox=dict(boxstyle="round,pad=0.3", facecolor="#E3F2FD", edgecolor="#90CAF9"))
+
+    # 4. Summary of Chapter 4 Evolution
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. 第4章 C++ OOP & vtable 導入の総括",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    summary_text = (
+        "【第4章で獲得した OS カーネル設計技術】\n\n"
+        "① 抽象化とポリモーフィズム (Polymorphism):\n"
+        "   `PixelWriter` 基底クラスにより、RGB/BGR/将来のフォーマット差分を\n"
+        "   カーネル描画ロジックから完全隠蔽。\n\n"
+        "② 動的メモリ確保不要のオブジェクト構築 (Placement new):\n"
+        "   ヒープ未初期化のベアメタル環境で静的バッファ上に安全にインスタンス構築。\n\n"
+        "③ vtable と ABI レベルの動作メカニズム理解:\n"
+        "   `_vptr` ポインタ、Itanium C++ ABI の負のオフセット、間接関数呼出命令、\n"
+        "   純粋仮想関数のトラップ `__cxa_pure_virtual` の本質を解明。\n\n"
+        "④ 次なる課題 (4.5節):\n"
+        "   カーネルコードが大きくなると、単一メモリ領域への直配置では限界に直面。\n"
+        "   ELF セグメントの正しい配置とゼロ初期化（.bss）が不可欠となる！"
+    )
+    sbox = FancyBboxPatch((0.04, 0.06), 0.92, 0.88, boxstyle="round,pad=0.02",
+                          facecolor="#E8F5E9", edgecolor="#4CAF50", lw=1.5)
+    ax4.add_patch(sbox)
+    ax4.text(0.07, 0.50, summary_text, fontsize=8.0, color="#1B5E20", linespacing=1.30)
+
+    ax4.set_xlim(0, 1)
+    ax4.set_ylim(0, 1)
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
