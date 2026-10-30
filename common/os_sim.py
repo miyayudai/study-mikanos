@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import abc
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -11,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.patches import Rectangle, FancyBboxPatch, ArrowStyle
+from matplotlib.gridspec import GridSpec
 import numpy as np
 
 
@@ -15908,6 +15910,461 @@ def plot_fig4_04_abi_calling_convention_comparison(output_path: Path | str) -> P
                           facecolor="#EDE7F6", edgecolor="#7E57C2", lw=1.5)
     ax4.add_patch(bbox)
     ax4.text(0.07, 0.50, bridge_text, fontsize=8.0, color="#311B92", linespacing=1.28)
+
+    ax4.set_xlim(0, 1)
+    ax4.set_ylim(0, 1)
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+# ==============================================================================
+# Chapter 4.3: Refactoring with C++ OOP & Placement New Architecture (osbook_day04c)
+# ==============================================================================
+
+class PixelWriterSim(abc.ABC):
+    """Abstract base class for pixel writers (corresponding to MikanOS PixelWriter).
+    
+    Encapsulates FrameBufferConfig reference and provides polymorphic pixel rendering.
+    """
+    def __init__(self, config: FrameBufferConfigSim, buffer: Optional[bytearray] = None) -> None:
+        self.config = config
+        self.buffer = buffer if buffer is not None else bytearray(config.total_buffer_size_bytes())
+
+    def pixel_at(self, x: int, y: int) -> int:
+        """Calculate byte offset within the linear frame buffer."""
+        if not self.config.is_in_bounds(x, y):
+            raise IndexError(f"Pixel coordinates ({x}, {y}) out of screen bounds ({self.config.horizontal_resolution}x{self.config.vertical_resolution})")
+        return self.config.calc_byte_offset(x, y)
+
+    @abc.abstractmethod
+    def write(self, x: int, y: int, color: PixelColorSim) -> None:
+        """Write single pixel at (x, y) with specified color. Pure virtual method."""
+        pass
+
+
+class RGBResv8BitPerColorPixelWriterSim(PixelWriterSim):
+    """Concrete PixelWriter for kPixelRGBResv8BitPerColor format."""
+    def write(self, x: int, y: int, color: PixelColorSim) -> None:
+        offset = self.pixel_at(x, y)
+        self.buffer[offset] = color.r
+        self.buffer[offset + 1] = color.g
+        self.buffer[offset + 2] = color.b
+        self.buffer[offset + 3] = 0
+
+
+class BGRResv8BitPerColorPixelWriterSim(PixelWriterSim):
+    """Concrete PixelWriter for kPixelBGRResv8BitPerColor format."""
+    def write(self, x: int, y: int, color: PixelColorSim) -> None:
+        offset = self.pixel_at(x, y)
+        self.buffer[offset] = color.b
+        self.buffer[offset + 1] = color.g
+        self.buffer[offset + 2] = color.r
+        self.buffer[offset + 3] = 0
+
+
+@dataclass
+class PlacementNewSimulator:
+    """Simulates placement new on pre-allocated static storage without dynamic heap."""
+    buffer_capacity: int
+    alignment: int = 8
+    allocated_object: Optional[Any] = None
+    object_type_name: str = ""
+    is_active: bool = False
+    write_count: int = 0
+
+    def allocate_placement(self, target_cls: type, *args, **kwargs) -> Any:
+        """Construct object directly in static memory without dynamic heap."""
+        obj = target_cls(*args, **kwargs)
+        estimated_size = 16  # 8 bytes vptr + 8 bytes reference pointer
+        if estimated_size > self.buffer_capacity:
+            raise MemoryError(
+                f"Static buffer capacity {self.buffer_capacity} bytes exceeded by object size {estimated_size} bytes"
+            )
+        self.allocated_object = obj
+        self.object_type_name = target_cls.__name__
+        self.is_active = True
+        return obj
+
+    def destroy_placement(self) -> None:
+        """Simulate destructor execution and cleanup of static storage."""
+        self.allocated_object = None
+        self.object_type_name = ""
+        self.is_active = False
+
+
+@dataclass
+class PolymorphismCostMetrics:
+    """Performance and architectural comparison metrics between if-else and vtable."""
+    total_pixels: int
+    branch_instructions_ifelse: int
+    branch_mispredictions_ifelse: int
+    vtable_indirect_calls: int
+    vtable_cache_misses: int
+    estimated_cycles_ifelse: int
+    estimated_cycles_vtable: int
+    code_modularity_score: float  # 0.0 to 10.0 scale
+
+
+class BranchVsVtableBenchmark:
+    """Quantitative performance and software engineering benchmark for pixel drawing."""
+    @staticmethod
+    def evaluate(width: int = 800, height: int = 600) -> PolymorphismCostMetrics:
+        total_pixels = width * height
+        # If-Else branch per pixel:
+        # 1 CMP instruction + 1 JNE per pixel
+        branch_instructions = total_pixels * 2
+        # Once branch predictor warms up (after ~10-20 iterations), mispredict is very low (< 0.01%)
+        branch_mispredictions = 20
+        # Pipeline latency: ~4 cycles per pixel including branch check overhead
+        cycles_ifelse = total_pixels * 4 + branch_mispredictions * 15
+
+        # Vtable indirect call:
+        # Indirect call through vtable pointer (1 vptr lookup + 1 call [rax+0])
+        # Indirect branch target buffer (BTB) has 100% hit rate because target address never changes
+        vtable_calls = total_pixels
+        vtable_misses = 1
+        # Virtual call dispatch latency: ~2-3 cycles with warm BTB and L1i cache
+        cycles_vtable = total_pixels * 3 + vtable_misses * 15
+
+        return PolymorphismCostMetrics(
+            total_pixels=total_pixels,
+            branch_instructions_ifelse=branch_instructions,
+            branch_mispredictions_ifelse=branch_mispredictions,
+            vtable_indirect_calls=vtable_calls,
+            vtable_cache_misses=vtable_misses,
+            estimated_cycles_ifelse=cycles_ifelse,
+            estimated_cycles_vtable=cycles_vtable,
+            code_modularity_score=9.8
+        )
+
+
+def plot_fig4_05_pixel_writer_class_hierarchy_and_memory(output_path: str) -> str:
+    """Generate high-resolution architecture figure for Section 4.3 (Figure 4.5)."""
+    setup_plot_style()
+    fig = plt.figure(figsize=(16, 12), dpi=300)
+    gs = GridSpec(2, 2, figure=fig, hspace=0.30, wspace=0.25)
+
+    # Subplot 1: PixelWriter Class Hierarchy & OOP Abstraction
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. PixelWriter クラス階層構造とポリモーフィズム設計",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Base class box
+    base_box = FancyBboxPatch((0.18, 0.58), 0.64, 0.36, boxstyle="round,pad=0.03",
+                              facecolor="#E3F2FD", edgecolor="#1976D2", lw=2)
+    ax1.add_patch(base_box)
+    base_text = (
+        "【抽象基底クラス】 class PixelWriter (Abstract Base)\n"
+        "───────────────────────────────────────\n"
+        " - private: const FrameBufferConfig& config_ (8 bytes)\n"
+        "───────────────────────────────────────\n"
+        " + public:  PixelWriter(const FrameBufferConfig& config)\n"
+        " + public:  virtual ~PixelWriter() = default;\n"
+        " + public:  virtual void Write(int x, int y, const PixelColor& c) = 0;\n"
+        " # protected: uint8_t* PixelAt(int x, int y) { ... }"
+    )
+    ax1.text(0.20, 0.74, base_text, fontsize=7.8, color="#0D47A1", linespacing=1.28)
+
+    # Derived RGB box
+    rgb_box = FancyBboxPatch((0.04, 0.08), 0.42, 0.34, boxstyle="round,pad=0.02",
+                             facecolor="#E8F5E9", edgecolor="#388E3C", lw=1.8)
+    ax1.add_patch(rgb_box)
+    rgb_text = (
+        "class RGBResv8BitPerColorPixelWriter\n"
+        ": public PixelWriter\n"
+        "─────────────────────────────\n"
+        "using PixelWriter::PixelWriter;\n"
+        "override void Write(x, y, c) {\n"
+        "  auto p = PixelAt(x, y);\n"
+        "  p[0]=c.r; p[1]=c.g; p[2]=c.b;\n"
+        "}"
+    )
+    ax1.text(0.06, 0.23, rgb_text, fontsize=7.5, color="#1B5E20", linespacing=1.25)
+
+    # Derived BGR box
+    bgr_box = FancyBboxPatch((0.54, 0.08), 0.42, 0.34, boxstyle="round,pad=0.02",
+                             facecolor="#FFF3E0", edgecolor="#F57C00", lw=1.8)
+    ax1.add_patch(bgr_box)
+    bgr_text = (
+        "class BGRResv8BitPerColorPixelWriter\n"
+        ": public PixelWriter\n"
+        "─────────────────────────────\n"
+        "using PixelWriter::PixelWriter;\n"
+        "override void Write(x, y, c) {\n"
+        "  auto p = PixelAt(x, y);\n"
+        "  p[0]=c.b; p[1]=c.g; p[2]=c.r;\n"
+        "}"
+    )
+    ax1.text(0.56, 0.23, bgr_text, fontsize=7.5, color="#E65100", linespacing=1.25)
+
+    # Inheritance arrows
+    ax1.annotate("", xy=(0.32, 0.58), xytext=(0.25, 0.42),
+                 arrowprops=dict(arrowstyle="-|>", color="#1976D2", lw=2, mutation_scale=15))
+    ax1.annotate("", xy=(0.68, 0.58), xytext=(0.75, 0.42),
+                 arrowprops=dict(arrowstyle="-|>", color="#1976D2", lw=2, mutation_scale=15))
+
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
+    ax1.axis("off")
+
+    # Subplot 2: Object Memory Layout and vtable Linkage
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. インスタンスのメモリレイアウトと vptr / vtable 結合",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Object layout box
+    obj_box = FancyBboxPatch((0.06, 0.48), 0.42, 0.44, boxstyle="round,pad=0.02",
+                             facecolor="#F3E5F5", edgecolor="#8E24AA", lw=1.8)
+    ax2.add_patch(obj_box)
+    obj_text = (
+        "【インスタンス (sizeof = 16 bytes)】\n"
+        "offset 0x00:  [ vptr (8 bytes) ]\n"
+        "  └──> 仮想関数テーブルへ\n"
+        "offset 0x08:  [ config_ 参照 (8 bytes) ]\n"
+        "  └──> FrameBufferConfig へのポインタ\n"
+        "───────────────────────────\n"
+        "※派生クラスはメンバを追加しないため\n"
+        "  RGB / BGR ともにジャスト 16 バイト！"
+    )
+    ax2.text(0.08, 0.68, obj_text, fontsize=7.6, color="#4A148C", linespacing=1.3)
+
+    # vtable box
+    vt_box = FancyBboxPatch((0.56, 0.48), 0.38, 0.44, boxstyle="round,pad=0.02",
+                            facecolor="#EDE7F6", edgecolor="#5E35B1", lw=1.8)
+    ax2.add_patch(vt_box)
+    vt_text = (
+        "【vtable (仮想関数テーブル)】\n"
+        "[0]: ~PixelWriter() (デストラクタ)\n"
+        "[1]: Write(int, int, Color)\n"
+        "     └──> &RGB...::Write\n"
+        "───────────────────────\n"
+        "純粋仮想関数のままではリンク\n"
+        "エラー (__cxa_pure_virtual)！\n"
+        "派生クラスで完全オーバーライド！"
+    )
+    ax2.text(0.58, 0.68, vt_text, fontsize=7.4, color="#311B92", linespacing=1.3)
+
+    # Arrow from vptr to vtable
+    ax2.annotate("", xy=(0.56, 0.82), xytext=(0.48, 0.82),
+                 arrowprops=dict(arrowstyle="->", color="#8E24AA", lw=2.2))
+
+    # Static buffer placement explanation
+    stat_box = FancyBboxPatch((0.06, 0.08), 0.88, 0.32, boxstyle="round,pad=0.02",
+                              facecolor="#FAFAFA", edgecolor="#757575", lw=1.5)
+    ax2.add_patch(stat_box)
+    stat_text = (
+        "【静的メモリ上の配置】 char pixel_writer_buf[sizeof(RGBResv8BitPerColorPixelWriter)];\n"
+        "• OSブート直後はヒープ（malloc / OSページアロケータ）が一切存在しないフリースタンディング環境。\n"
+        "• 通常の `new Class()` は `malloc()` を要求するため未定義動作・リンクエラーとなる。\n"
+        "• したがって BSS / データセグメントに 16 バイトの静的バッファを確保し、Placement new で構築する！"
+    )
+    ax2.text(0.08, 0.22, stat_text, fontsize=7.8, color="#212121", linespacing=1.32)
+
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.axis("off")
+
+    # Subplot 3: Placement New Execution Sequence
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 配置 new (Placement new) の動作機構とメモリ再利用",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    pnew_text = (
+        "【Placement new の 3 段階実行プロセス】\n\n"
+        "1. 自前 operator new 定義:\n"
+        "   void* operator new(size_t size, void* buf) { return buf; }\n"
+        "   -> メモリ確保は行わず、第2引数で渡されたバッファポインタをそのまま返す！\n\n"
+        "2. 呼び出し側の構文:\n"
+        "   pixel_writer = new(pixel_writer_buf)\n"
+        "       RGBResv8BitPerColorPixelWriter{frame_buffer_config};\n"
+        "   -> コンパイラは上記 operator new を呼んでアドレスを取得し、\n"
+        "      そのメモリ番地に対して直ちにコンストラクタを実行！\n"
+        "   -> vptr が vtable_RGB を指すように初期化され、config_ に参照が格納される！\n\n"
+        "3. ダミー operator delete:\n"
+        "   void operator delete(void* obj) noexcept { }\n"
+        "   -> 静的バッファなのでメモリ解放は不要。リンクエラー回避のために空関数を定義。"
+    )
+    pnbox = FancyBboxPatch((0.04, 0.06), 0.92, 0.88, boxstyle="round,pad=0.02",
+                           facecolor="#E0F2F1", edgecolor="#00897B", lw=1.5)
+    ax3.add_patch(pnbox)
+    ax3.text(0.07, 0.50, pnew_text, fontsize=8.0, color="#004D40", linespacing=1.3)
+
+    ax3.set_xlim(0, 1)
+    ax3.set_ylim(0, 1)
+    ax3.axis("off")
+
+    # Subplot 4: day04c FrameBuffer Output Simulation
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. day04c カーネル画面描画シミュレーション (GOP FrameBuffer)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Simulate drawing
+    cfg = FrameBufferConfigSim(
+        frame_buffer_base=0xFFFF8000000A0000,
+        pixels_per_scan_line=800,
+        horizontal_resolution=800,
+        vertical_resolution=600,
+        pixel_format=PixelFormat.RGB_RESV_8BIT_PER_COLOR
+    )
+    writer = RGBResv8BitPerColorPixelWriterSim(cfg)
+    # Fill white
+    for y in range(600):
+        for x in range(800):
+            writer.write(x, y, PixelColorSim(255, 255, 255))
+    # Draw green rectangle @ (100, 100), 200x100
+    for y in range(100):
+        for x in range(200):
+            writer.write(100 + x, 100 + y, PixelColorSim(0, 255, 0))
+
+    img = np.zeros((600, 800, 3), dtype=np.uint8)
+    for y in range(600):
+        for x in range(800):
+            off = cfg.calc_byte_offset(x, y)
+            img[y, x, 0] = writer.buffer[off]
+            img[y, x, 1] = writer.buffer[off + 1]
+            img[y, x, 2] = writer.buffer[off + 2]
+
+    ax4.imshow(img, aspect="auto")
+    ax4.set_xlabel("X [pixels]", fontsize=8.5)
+    ax4.set_ylabel("Y [pixels]", fontsize=8.5)
+    ax4.annotate("Green Rect: (100, 100) 200x100", xy=(200, 150), xytext=(350, 150),
+                 arrowprops=dict(arrowstyle="->", color="#D32F2F", lw=2),
+                 fontsize=8.5, fontweight="bold", color="#D32F2F")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig4_06_placement_new_and_runtime_cost(output_path: str) -> str:
+    """Generate high-resolution architecture figure for Section 4.3 (Figure 4.6)."""
+    setup_plot_style()
+    fig = plt.figure(figsize=(16, 12), dpi=300)
+    gs = GridSpec(2, 2, figure=fig, hspace=0.30, wspace=0.25)
+
+    # Subplot 1: Regular new vs Placement new comparison
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 通常の new (Heap) vs 配置 new (Placement new) の相違",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    comp_text = (
+        "【メモリ確保メカニズムの決定的違い】\n\n"
+        "■ 通常の `new Type(args)`:\n"
+        "  1. ランタイムの `malloc()` / `sbrk()` / `mmap()` を呼び出してヒープからメモリ確保\n"
+        "  2. 確保失敗時は `std::bad_alloc` 例外を送出 (例外サポートが必要)\n"
+        "  3. 確保されたアドレス上でコンストラクタを実行\n"
+        "  ✕ OSカーネル起動直後はヒープ機構が未初期化のため利用不可！\n\n"
+        "■ 配置 `new(buf) Type(args)`:\n"
+        "  1. メモリ確保を行わず、呼び出し側が用意したバッファアドレスをそのまま使用\n"
+        "  2. 動的アロケーション・システムコール・例外機構への依存度ゼロ！\n"
+        "  3. 指定アドレス上でコンストラクタのみを即座に実行\n"
+        "  ◎ ベアメタル・組み込み・OS自作の初期化フェーズに最適！"
+    )
+    cbox = FancyBboxPatch((0.04, 0.06), 0.92, 0.88, boxstyle="round,pad=0.02",
+                          facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.5)
+    ax1.add_patch(cbox)
+    ax1.text(0.07, 0.50, comp_text, fontsize=8.0, color="#F57F17", linespacing=1.3)
+
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1)
+    ax1.axis("off")
+
+    # Subplot 2: Alignment, Sizeof, and Padding in C++20
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. C++20 におけるメモリ配置・sizeof と alignof",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Memory table
+    categories = ["PixelWriter (基底)", "RGB...PixelWriter", "BGR...PixelWriter", "pixel_writer_buf"]
+    sizes = [16, 16, 16, 16]
+    aligns = [8, 8, 8, 1]
+
+    x = np.arange(len(categories))
+    width = 0.35
+
+    ax2.bar(x - width/2, sizes, width, label="sizeof [Bytes]", color="#1976D2")
+    ax2.bar(x + width/2, aligns, width, label="alignof [Bytes]", color="#388E3C")
+
+    ax2.set_ylabel("Bytes", fontsize=9)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(categories, fontsize=7.5, rotation=10)
+    ax2.legend(loc="upper right", fontsize=8.5)
+    ax2.grid(True, linestyle="--", alpha=0.5, axis="y")
+
+    for i in range(len(categories)):
+        ax2.text(x[i] - width/2, sizes[i] + 0.5, f"{sizes[i]}B", ha="center", fontsize=7.8, fontweight="bold")
+        ax2.text(x[i] + width/2, aligns[i] + 0.5, f"{aligns[i]}B", ha="center", fontsize=7.8, fontweight="bold")
+
+    align_note = (
+        "※注意点: `char buf[]` は `alignof == 1` のため、本来 x86-64 ポインタの\n"
+        "自然アライメント（8バイト）を満たすには `alignas(alignof(Writer)) char buf[...]`\n"
+        "または `alignas(void*) char buf[...]` と指定するのが最も安全。"
+    )
+    ax2.text(0.05, 0.65, align_note, transform=ax2.transAxes, fontsize=7.2,
+             color="#C62828", bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFEBEE", edgecolor="#EF5350"))
+
+    # Subplot 3: If-Else vs Vtable Runtime Cost Benchmark
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 描画ループにおける If-Else 分岐 vs vtable 間接呼出 コスト比較",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    resolutions = ["320x240\n(76.8k)", "640x480\n(307.2k)", "800x600\n(480k)", "1024x768\n(786.4k)"]
+    pixels = [320*240, 640*480, 800*600, 1024*768]
+    cycles_ifelse = [p * 4 / 1e6 for p in pixels]
+    cycles_vtable = [p * 3 / 1e6 for p in pixels]
+
+    rx = np.arange(len(resolutions))
+    rwidth = 0.35
+
+    ax3.bar(rx - rwidth/2, cycles_ifelse, rwidth, label="day04b: If-Else 分岐 (毎ピクセル判定)", color="#E53935")
+    ax3.bar(rx + rwidth/2, cycles_vtable, rwidth, label="day04c: vtable 多態性 (起動時1回解決)", color="#1E88E5")
+
+    ax3.set_ylabel("推定実行サイクル数 [Mega Cycles]", fontsize=8.5)
+    ax3.set_xticks(rx)
+    ax3.set_xticklabels(resolutions, fontsize=8)
+    ax3.legend(loc="upper left", fontsize=8.2)
+    ax3.grid(True, linestyle="--", alpha=0.5, axis="y")
+
+    for i in range(len(resolutions)):
+        ax3.text(rx[i] - rwidth/2, cycles_ifelse[i] + 0.05, f"{cycles_ifelse[i]:.2f}M", ha="center", fontsize=7.5)
+        ax3.text(rx[i] + rwidth/2, cycles_vtable[i] + 0.05, f"{cycles_vtable[i]:.2f}M", ha="center", fontsize=7.5)
+
+    # Subplot 4: Column 4.2 Compile Errors Are Your Friends
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. コラム 4.2「コンパイルエラーはお友達」と型安全性の恩恵",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    column_text = (
+        "【コンパイルエラーが開発者を救う 3 つの場面】\n\n"
+        "1. 純粋仮想関数未実装の即時検知:\n"
+        "   `virtual void Write(...) = 0;`\n"
+        "   もし新しい派生クラスで `Write` の実装を忘れると、コンパイル時に\n"
+        "   『cannot allocate an object of abstract type』と怒られる。\n"
+        "   -> 実行時に未初期化コードを実行してクラッシュするのを完全に防止！\n\n"
+        "2. 仮想デストラクタによる安全な破棄:\n"
+        "   `virtual ~PixelWriter() = default;`\n"
+        "   基底クラスポインタ `delete pixel_writer` された時、派生クラスの\n"
+        "   デストラクタが確実に呼ばれることを保証。\n\n"
+        "3. コンパイラの警告オプション (-Wall -Wextra):\n"
+        "   コンパイラは敵ではなく、バグを未然に防ぐ最強のパートナー！"
+    )
+    colbox = FancyBboxPatch((0.04, 0.06), 0.92, 0.88, boxstyle="round,pad=0.02",
+                            facecolor="#EDE7F6", edgecolor="#673AB7", lw=1.5)
+    ax4.add_patch(colbox)
+    ax4.text(0.07, 0.50, column_text, fontsize=8.0, color="#311B92", linespacing=1.3)
 
     ax4.set_xlim(0, 1)
     ax4.set_ylim(0, 1)

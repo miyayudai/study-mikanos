@@ -255,6 +255,14 @@ from common.os_sim import (
     AbiComparisonAnalyzer,
     plot_fig4_03_framebuffer_config_and_coordinate_addressing,
     plot_fig4_04_abi_calling_convention_comparison,
+    PixelWriterSim,
+    RGBResv8BitPerColorPixelWriterSim,
+    BGRResv8BitPerColorPixelWriterSim,
+    PlacementNewSimulator,
+    BranchVsVtableBenchmark,
+    PolymorphismCostMetrics,
+    plot_fig4_05_pixel_writer_class_hierarchy_and_memory,
+    plot_fig4_06_placement_new_and_runtime_cost,
 )
 
 __all__ = [
@@ -512,4 +520,12 @@ __all__ = [
     "AbiComparisonAnalyzer",
     "plot_fig4_03_framebuffer_config_and_coordinate_addressing",
     "plot_fig4_04_abi_calling_convention_comparison",
+    "PixelWriterSim",
+    "RGBResv8BitPerColorPixelWriterSim",
+    "BGRResv8BitPerColorPixelWriterSim",
+    "PlacementNewSimulator",
+    "BranchVsVtableBenchmark",
+    "PolymorphismCostMetrics",
+    "plot_fig4_05_pixel_writer_class_hierarchy_and_memory",
+    "plot_fig4_06_placement_new_and_runtime_cost",
 ]
