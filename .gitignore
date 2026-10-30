@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+generate_*.py
 generate_nb_*.py
 create_nb*.py
 create_ch*.py

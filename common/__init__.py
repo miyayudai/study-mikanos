@@ -304,6 +304,10 @@ from common.os_sim import (
     ElfLoaderSimulator,
     generate_fig4_09_elf_segment_structure,
     generate_fig4_10_pt_load_and_bss_clearing,
+    Chapter4Quiz,
+    Chapter4TheoryValidator,
+    plot_chapter4_exercises_summary,
+    plot_chapter4_mastery_radar,
 )
 
 __all__ = [
@@ -610,4 +614,8 @@ __all__ = [
     "ElfLoaderSimulator",
     "generate_fig4_09_elf_segment_structure",
     "generate_fig4_10_pt_load_and_bss_clearing",
+    "Chapter4Quiz",
+    "Chapter4TheoryValidator",
+    "plot_chapter4_exercises_summary",
+    "plot_chapter4_mastery_radar",
 ]

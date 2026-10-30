@@ -17576,3 +17576,503 @@ def generate_fig4_10_pt_load_and_bss_clearing(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# =============================================================================
+# Chapter 4 Exercises: Comprehensive Verification & Quiz Engine
+# =============================================================================
+
+class Chapter4Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 4.1 to 4.5."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="4.1",
+                topic="Makefileの自動変数と依存関係解決 ($@, $<, $^)",
+                question="GNU Make における主要な自動変数の役割の組み合わせとして正しいものはどれか？",
+                options=[
+                    "$@ は最初の依存ファイル名、$< はターゲット名、$^ はMakefile自体のパスを表す",
+                    "$@ はターゲット名、$< は最初の依存ファイル名、$^ はすべての依存ファイル名のリストを表す",
+                    "$@ は全オブジェクトファイル名、$< はコンパイルオプション、$^ は出力先ディレクトリを表す",
+                    "$@ はターゲット名、$< はリンカスクリプト名、$^ はC++標準規格バージョンを表す",
+                ],
+                correct_index=1,
+                explanation="Makeの自動変数は、ターゲット名を $@、最初の前提条件（依存ファイル）を $<、すべての前提条件の空白区切りリストを $^ で表します。これらを用いることで汎用的なパターンルール（例: %.o: %.cpp）を簡潔に記述できます。",
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="4.1",
+                topic="ベアメタル C++ コンパイルフラグ (-ffreestanding, -mno-red-zone 等)",
+                question="MikanOS カーネルビルドで指定されるコンパイラフラグとその理由の組み合わせとして正しいものはどれか？",
+                options=[
+                    "-ffreestanding は標準ライブラリの全関数を静的リンクし、-fexceptions はカーネルクラッシュを防ぐ",
+                    "-ffreestanding は標準ライブラリ（main関数や標準C関数）を仮定せず、-mno-red-zone は割り込みによるスタック破壊を防ぎ、-fno-exceptions / -fno-rtti はOS未初期化時の例外機構や型情報によるオーバーヘッドを排除する",
+                    "-mno-red-zone はグラフィックの赤色描画を高速化し、-std=c++11 はレガシーBIOSとの互換性を確保する",
+                    "-fno-rtti はコンパイル速度を10倍にするためのデバッグ専用オプションである",
+                ],
+                correct_index=1,
+                explanation="カーネルなどのベアメタル環境では、ホストOSの標準ランタイムが存在しないため -ffreestanding を指定し、非同期割り込みによるスタック直下（128バイト）の破壊を防ぐため -mno-red-zone が必須です。またランタイムサポートが必要な例外 (-fno-exceptions) や動的型情報 (-fno-rtti) を無効化してバイナリを軽量・自律化します。",
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="4.2",
+                topic="FrameBufferConfig と VRAM 2次元座標オフセット計算数理",
+                question="FrameBufferConfig において、解像度 800x600、走査線幅 pixels_per_scan_line = 832 のとき、ピクセル座標 (x=100, y=50) のバイトオフセット計算式と結果として正しいものはどれか？ (1ピクセル=4バイト)",
+                options=[
+                    "オフセット = 4 * (50 * 800 + 100) = 160,400 バイト",
+                    "オフセット = 4 * (50 * 832 + 100) = 166,800 バイト",
+                    "オフセット = 50 * 832 + 100 = 41,700 バイト",
+                    "オフセット = 4 * (100 * 832 + 50) = 333,000 バイト",
+                ],
+                correct_index=1,
+                explanation="走査線パディングが存在する場合、1行あたりのピクセル数は horizontal_resolution ではなく pixels_per_scan_line (ppsl) を用いる必要があります。バイトオフセットは `4 * (y * ppsl + x)` となり、`4 * (50 * 832 + 100) = 4 * (41600 + 100) = 4 * 41700 = 166,800 バイト` です。",
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="4.2",
+                topic="System V AMD64 ABI と Microsoft x64 ABI の比較",
+                question="カーネル（System V AMD64 ABI）と UEFI（Microsoft x64 ABI）における関数引数引き渡しレジスタの仕様として正しいものはどれか？",
+                options=[
+                    "System V は第1〜第6引数を RDI, RSI, RDX, RCX, R8, R9 で渡し、MS x64 は第1〜第4引数を RCX, RDX, R8, R9 で渡し32バイトのシャドウスペースを要求する",
+                    "System V はすべての引数をスタック経由で渡し、MS x64 は RAX, RBX, RCX, RDX を使用する",
+                    "System V も MS x64 も完全に同一の引数レジスタ順序を採用しており、ABI変換は不要である",
+                    "MS x64 は第1引数を RDI、第2引数を RSI で渡し、シャドウスペースは存在しない",
+                ],
+                correct_index=0,
+                explanation="System V AMD64 ABI では第1引数から順に RDI, RSI, RDX, RCX, R8, R9 を使用します。対して Microsoft x64 ABI（UEFI標準）では RCX, RDX, R8, R9 を使用し、呼び出し側がスタック上に 32バイトのシャドウスペース（Home Space）を確保する規約になっています。",
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="4.2",
+                topic="画面白クリアと矩形描画ループ",
+                question="全画面白クリアおよび矩形描画のVRAM走査アルゴリズムについて正しいものはどれか？",
+                options=[
+                    "白クリアはすべてのピクセルバイトに 0x00 を書き込み、黒クリアは 0xFF を書き込む",
+                    "白クリアは各ピクセルの RGB 各成分に 255 (0xFF) を書き込み、矩形描画は外側 y、内側 x の2重ループで (y * ppsl + x) のピクセルアドレスへ描画色を書き込む",
+                    "矩形描画ではストライド (ppsl) を無視して y * horizontal_resolution でインデックス計算する",
+                    "RGB形式とBGR形式で白 (255, 255, 255) を描く際のバイト列値は全く異なる値になる",
+                ],
+                correct_index=1,
+                explanation="白クリアは光の3原色すべてが最大（R=255, G=255, B=255）となるため、RGB形式でもBGR形式でも色バイトは [255, 255, 255, 0] となります。矩形描画は外側 y ループ・内側 x ループで走査線ストライド ppsl を考慮してアドレスを算出します。",
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="4.3",
+                topic="抽象基底クラス PixelWriter と純粋仮想関数",
+                question="C++における抽象基底クラス PixelWriter の宣言と設計意図として正しいものはどれか？",
+                options=[
+                    "すべてのメンバ変数を private にし、派生クラスからのアクセスを一切禁止する",
+                    "純粋仮想関数 `virtual void Write(int x, int y, const PixelColor& c) = 0;` を持ち、画面描画の共通インターフェースを定義しつつ、直接のインスタンス化を禁止する",
+                    "PixelWriter はテンプレートクラスであり、仮想関数テーブル (vtable) は一切生成されない",
+                    "純粋仮想関数を持つクラスはコンパイルエラーになるため、すべての仮想関数に空の波括弧 `{}` を実装しなければならない",
+                ],
+                correct_index=1,
+                explanation="`virtual void Write(...) = 0;` のように `= 0` を指定した仮想関数を純粋仮想関数（pure virtual function）と呼び、これを持つクラスは抽象クラス（abstract class）となります。具象派生クラス（RGB/BGRPixelWriter）がこれをオーバーライドすることで多態性（ポリモーフィズム）を実現します。",
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="4.3",
+                topic="ベアメタル環境における配置 new (Placement new)",
+                question="MikanOS 第4章で `new (pixel_writer_buf) RGBResv8BitPerColorPixelWriter(config);` のように配置 new を使用した決定的な理由は何ですか？",
+                options=[
+                    "配置 new を使うと、コンパイラがマルチスレッドセーフなヒープメモリを自動生成してくれるから",
+                    "カーネル初期化時点では動的メモリアロケータ（malloc や通常の new）が存在しないため、静的に確保したバッファのアドレス上に直接オブジェクトのコンストラクタを呼び出す必要があるから",
+                    "通常 new は C++20 で非推奨となり、配置 new が言語標準の必須構文になったから",
+                    "配置 new は UEFI BIOS のファームウェアヒープ領域を自動的に借りてくる命令だから",
+                ],
+                correct_index=1,
+                explanation="ベアメタル・フリースタンディング環境では、OSのメモリ管理機能がまだ完成していないため、ヒープを消費する通常の new はリンクエラーまたはクラッシュを引き起こします。配置 new（Placement new）は追加の動的メモリを一切確保せず、指定した既存メモリ領域上に直接コンストラクタを実行するため、初期化フェーズに最適です。",
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="4.4",
+                topic="仮想関数テーブル (vtable) と Itanium C++ ABI メモリレイアウト",
+                question="Itanium C++ ABI における仮想関数呼び出し（vtable と _vptr）のメモリ構造と機械語展開として正しいものはどれか？",
+                options=[
+                    "オブジェクトの先頭 8バイトに vtable へのポインタ (_vptr) が格納され、間接呼び出しは `mov rax, [rdi]; call [rax + offset]` のように展開される",
+                    "vtable は各インスタンスの末尾に埋め込まれ、インスタンスごとに仮想関数ポインタ配列がコピーされる",
+                    "_vptr は 32ビットレジスタ EAX に常駐し、RAM上には一切配置されない",
+                    "仮想関数呼び出しはコンパイル時にすべてインライン展開されるため、vtable というテーブルはメモリ上に存在しない",
+                ],
+                correct_index=0,
+                explanation="Itanium C++ ABI では、仮想関数を持つクラスのインスタンス先頭に暗黙のポインタ `_vptr`（仮想関数テーブルのアドレス）が配置されます。仮想関数呼び出し時は、第1引数 RDI（thisポインタ）から `_vptr` をロードし、テーブル内の特定スロット（関数ポインタ）を間接 call します。",
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="4.4",
+                topic="純粋仮想関数トラップ (__cxa_pure_virtual) の役割",
+                question="`__cxa_pure_virtual` シンボルの役割と、ベアメタルOSにおける推奨実装について正しいものはどれか？",
+                options=[
+                    "未実装の純粋仮想関数が誤って呼び出された際に呼ばれるランタイム関数であり、ベアメタルでは標準出力や例外が使えないため `while (1) __asm__(\"hlt\");` などでCPUを安全に停止させる",
+                    "C++のコンパイラ最適化フラグであり、Makefile 内で定義しなければならないマクロである",
+                    "UEFI ブートローダがカーネルの仮想関数テーブルをリロケーションするためのAPIである",
+                    "このシンボルを定義すると、純粋仮想関数が自動的にデフォルト実装に置き換わる",
+                ],
+                correct_index=0,
+                explanation="C++ ABI では、基底クラスのコンストラクタ/デストラクタから純粋仮想関数が呼ばれた場合などの異常系ハンドラとして `__cxa_pure_virtual` が参照されます。標準 C++ ランタイムがないベアメタル環境ではリンクエラーになるため、自作カーネル側で `extern \"C\" void __cxa_pure_virtual() { while (1) __asm__(\"hlt\"); }` を定義して安全に停止させます。",
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="4.5",
+                topic="ELF64 の PT_LOAD セグメント配置と .bss ゼロクリア",
+                question="ELF64 ローダ (day04d) において、プログラムヘッダの p_memsz と p_filesz の関係と .bss ゼロクリア処理について正しいものはどれか？",
+                options=[
+                    "p_filesz は常に p_memsz より大きく、余分なファイル部分はメモリから切り捨てられる",
+                    "p_memsz > p_filesz のとき、差分 (p_memsz - p_filesz) バイトは未初期化変数領域 (.bss) であり、ファイル中には存在しないため、メモリ配置時に 0 で埋める（ゼロクリアする）必要がある",
+                    ".bss セクションはゼロクリアしてはならず、ガベージデータのまま保持しなければならない",
+                    "ELFファイル内の全セグメントは常に 0x100000 固定でロードされ、p_vaddr は無視される",
+                ],
+                correct_index=1,
+                explanation="ELF実行可能ファイルでは、ファイルサイズ削減のため未初期化大域変数領域（.bss）はディスク上にはデータを持たず `p_memsz > p_filesz` として表現されます。C/C++言語仕様により未初期化変数はゼロ初期化が保証されているため、ローダは `[p_vaddr + p_filesz, p_vaddr + p_memsz)` の領域を明示的にゼロクリアする必要があります。",
+            ),
+        ]
+
+    def evaluate(self, answers: dict[int, int]) -> dict[str, any]:
+        """Evaluate user answers against correct solutions."""
+        correct_count = 0
+        details = []
+        section_correct: dict[str, int] = {f"4.{i}": 0 for i in range(1, 6)}
+        section_total: dict[str, int] = {f"4.{i}": 0 for i in range(1, 6)}
+
+        for q in self.questions:
+            section_total[q.section] += 1
+            user_ans = answers.get(q.question_id)
+            is_correct = (user_ans == q.correct_index)
+            if is_correct:
+                correct_count += 1
+                section_correct[q.section] += 1
+
+            details.append({
+                "question_id": q.question_id,
+                "section": q.section,
+                "topic": q.topic,
+                "is_correct": is_correct,
+                "user_answer": user_ans,
+                "correct_answer": q.correct_index,
+                "explanation": q.explanation,
+            })
+
+        percentage = (correct_count / len(self.questions)) * 100.0
+        passed = (percentage >= 80.0)
+
+        mastery_rates = {}
+        for sec in section_total:
+            total = section_total[sec]
+            corr = section_correct[sec]
+            mastery_rates[sec] = (corr / total * 100.0) if total > 0 else 0.0
+
+        return {
+            "total_questions": len(self.questions),
+            "correct_count": correct_count,
+            "percentage": percentage,
+            "passed": passed,
+            "mastery_rates": mastery_rates,
+            "details": details,
+        }
+
+
+class Chapter4TheoryValidator:
+    """Validation helper for Chapter 4 systems theory, Makefile, ABI, OOP, and ELF loading."""
+
+    @staticmethod
+    def validate_makefile_rules(rules: dict[str, str]) -> tuple[bool, str]:
+        """Validate GNU Makefile automatic variable mappings and .PHONY concept."""
+        target_var = rules.get("target_var", "").strip()
+        first_dep_var = rules.get("first_dep_var", "").strip()
+        all_deps_var = rules.get("all_deps_var", "").strip()
+        phony_purpose = rules.get("phony_purpose", "").lower()
+
+        errors = []
+        if target_var != "$@":
+            errors.append(f"target_var: 期待値 '$@', 入力値 '{target_var}'")
+        if first_dep_var != "$<":
+            errors.append(f"first_dep_var: 期待値 '$<', 入力値 '{first_dep_var}'")
+        if all_deps_var != "$^":
+            errors.append(f"all_deps_var: 期待値 '$^', 入力値 '{all_deps_var}'")
+        if not ("ファイル" in phony_purpose or "同名" in phony_purpose or "衝突" in phony_purpose or "file" in phony_purpose):
+            errors.append("phony_purpose: 同名ファイルとの衝突防止または非ファイルターゲットの保護であるべきです")
+
+        if not errors:
+            return True, "正解！Makefileの自動変数 ($@, $<, $^) および .PHONY の役割を正確に同定しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_baremetal_cxx_flags(flags: list[str]) -> tuple[bool, str]:
+        """Validate essential bare-metal C++ compiler flags."""
+        flag_set = set(flags)
+        required = {"-ffreestanding", "-mno-red-zone", "-fno-exceptions", "-fno-rtti"}
+        missing = required - flag_set
+
+        if not missing:
+            return True, "正解！ベアメタル環境で必須となる4大コンパイラフラグを完全に網羅しています。"
+        return False, f"不正解です。不足しているフラグ: {', '.join(sorted(missing))}"
+
+    @staticmethod
+    def validate_framebuffer_pixel_math(math_dict: dict[str, int]) -> tuple[bool, str]:
+        """Validate FrameBufferConfig coordinate-to-byte-offset math."""
+        x = math_dict.get("x", 100)
+        y = math_dict.get("y", 50)
+        ppsl = math_dict.get("pixels_per_scan_line", 832)
+        bpp = math_dict.get("bytes_per_pixel", 4)
+        byte_offset = math_dict.get("byte_offset")
+
+        expected = bpp * (y * ppsl + x)
+        if byte_offset == expected:
+            return True, "正解！走査線ストライドを考慮した正確なVRAMピクセルオフセットを算出しました。"
+        return False, f"不正解です。期待値 {expected} バイト, 入力値 {byte_offset} バイト"
+
+    @staticmethod
+    def validate_abi_registers(abi_dict: dict[str, list[str]]) -> tuple[bool, str]:
+        """Validate System V AMD64 vs Microsoft x64 ABI argument passing registers."""
+        sys_v = [r.upper() for r in abi_dict.get("system_v", [])]
+        ms_x64 = [r.upper() for r in abi_dict.get("ms_x64", [])]
+
+        expected_sys_v = ["RDI", "RSI", "RDX", "RCX", "R8", "R9"]
+        expected_ms_x64 = ["RCX", "RDX", "R8", "R9"]
+
+        errors = []
+        if sys_v != expected_sys_v:
+            errors.append(f"system_v: 期待値 {expected_sys_v}, 入力値 {sys_v}")
+        if ms_x64 != expected_ms_x64:
+            errors.append(f"ms_x64: 期待値 {expected_ms_x64}, 入力値 {ms_x64}")
+
+        if not errors:
+            return True, "正解！System V AMD64 と Microsoft x64 ABI の引数レジスタ規約を正確に識別しました。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_placement_new_buffer(layout: dict[str, any]) -> tuple[bool, str]:
+        """Validate Placement new buffer alignment and memory safety."""
+        class_size = layout.get("class_size", 16)
+        buffer_size = layout.get("buffer_size", 64)
+        alignment = layout.get("alignment", 8)
+        requires_free = layout.get("requires_free", False)
+
+        errors = []
+        if buffer_size < class_size:
+            errors.append(f"buffer_size: クラスサイズ {class_size} 以上の領域が必要です")
+        if alignment < 8:
+            errors.append("alignment: 64ビットポインタを保持するため最低8バイト整列が必要です")
+        if requires_free is not False:
+            errors.append("requires_free: 静的バッファ上の配置newのためfree/deleteは不要 (False) です")
+
+        if not errors:
+            return True, "正解！配置 new による静的メモリ構築のサイズ・アライメント・ライフサイクルを正しく理解しています。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_vtable_layout(vtable_info: dict[str, any]) -> tuple[bool, str]:
+        """Validate Itanium C++ ABI virtual method table memory layout."""
+        vptr_offset = vtable_info.get("vptr_offset", 0)
+        vptr_size = vtable_info.get("vptr_size", 8)
+        pure_virtual_handler = vtable_info.get("pure_virtual_handler", "")
+
+        errors = []
+        if vptr_offset != 0:
+            errors.append(f"vptr_offset: 単一継承ではインスタンス先頭オフセット 0 に配置されます (入力値: {vptr_offset})")
+        if vptr_size != 8:
+            errors.append(f"vptr_size: 64ビットポインタのため 8 バイトであるべきです (入力値: {vptr_size})")
+        if "__cxa_pure_virtual" not in pure_virtual_handler:
+            errors.append(f"pure_virtual_handler: 純粋仮想関数のトラップハンドラ名は '__cxa_pure_virtual' です")
+
+        if not errors:
+            return True, "正解！Itanium C++ ABI の vtable/_vptr 構造と純粋仮想関数ハンドラを正確に同定しました。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_elf_bss_clear(bss_info: dict[str, int]) -> tuple[bool, str]:
+        """Validate ELF64 PT_LOAD segment .bss zero-clearing math."""
+        p_vaddr = bss_info.get("p_vaddr", 0x100000)
+        p_filesz = bss_info.get("p_filesz", 0x2400)
+        p_memsz = bss_info.get("p_memsz", 0x3000)
+        bss_start = bss_info.get("bss_start")
+        bss_bytes = bss_info.get("bss_bytes")
+
+        expected_start = p_vaddr + p_filesz
+        expected_bytes = p_memsz - p_filesz
+
+        errors = []
+        if bss_start != expected_start:
+            errors.append(f"bss_start: 期待値 {hex(expected_start)}, 入力値 {hex(bss_start) if bss_start else 'None'}")
+        if bss_bytes != expected_bytes:
+            errors.append(f"bss_bytes: 期待値 {expected_bytes} バイト, 入力値 {bss_bytes}")
+
+        if not errors:
+            return True, "正解！ELF PT_LOAD セグメントにおける .bss 領域の開始アドレスとゼロクリアバイト数を正確に計算しました。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+
+def plot_chapter4_exercises_summary(output_path: Path | str) -> Path:
+    """Generate Chapter 4 comprehensive exercises curriculum and evaluation summary chart."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle(
+        "第4章 総合演習問題カリキュラム & 理論・実装評価マップ\n"
+        "(Chapter 4 Comprehensive Exercises & Verification Architecture)",
+        fontsize=14, fontweight="bold", color="#1A237E", y=0.98,
+    )
+
+    # 1. 5大トピック構成 (Top-Left)
+    ax1 = axes[0, 0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 第4章の学習・演習 5大コアトピック", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+    
+    topics = [
+        ("4.1 Make入門", "DAGトポロジカルソート・自動変数 ($@, $<, $^)・ベアメタルフラグ", "#E3F2FD", "#1565C0"),
+        ("4.2 ピクセル描画 & ABI", "FrameBufferConfig・走査線ストライド数理・System V vs MS x64 ABI", "#E8F5E9", "#2E7D32"),
+        ("4.3 PixelWriter 多態性", "抽象基底クラス・純粋仮想関数・ヒープなし配置 new・型安全性", "#FFF3E0", "#E65100"),
+        ("4.4 vtable & Itanium ABI", "_vptr メモリ配置・間接call機械語・__cxa_pure_virtual トラップ", "#F3E5F5", "#6A1B9A"),
+        ("4.5 ELFローダ & BSS", "Elf64_Ehdr/Phdr・PT_LOAD セグメント走査・.bss ゼロクリア数理", "#E0F2F1", "#00695C"),
+    ]
+
+    y_pos = 0.85
+    for title, desc, bg, border in topics:
+        box = FancyBboxPatch((0.03, y_pos - 0.06), 0.94, 0.12, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax1.add_patch(box)
+        ax1.text(0.06, y_pos, title, fontsize=9.2, fontweight="bold", color=border)
+        ax1.text(0.32, y_pos, desc, fontsize=7.6, color="#263238")
+        y_pos -= 0.165
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. 演習問題構成比率 (Top-Right)
+    ax2 = axes[0, 1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 演習問題の配点・カテゴリ比率 (10問)", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+    
+    categories = ["ビルド & フラグ (4.1)", "描画数理 & ABI (4.2)", "C++多態性 & new (4.3)", "vtable & ランタイム (4.4)", "ELF & メモリ展開 (4.5)"]
+    counts = [2, 3, 2, 2, 1]
+    colors = ["#42A5F5", "#66BB6A", "#FFA726", "#AB47BC", "#26A69A"]
+
+    wedges, texts, autotexts = ax2.pie(
+        counts, labels=categories, autopct="%1.0f%%", startangle=140,
+        colors=colors, textprops=dict(fontsize=8.2, color="#263238"),
+        wedgeprops=dict(width=0.45, edgecolor="white", lw=2)
+    )
+    for at in autotexts:
+        at.set_fontsize(8.5)
+        at.set_fontweight("bold")
+        at.set_color("#FFFFFF")
+
+    # 3. 理論検証フロー (Bottom-Left)
+    ax3 = axes[1, 0]
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 自動採点 & 理論検証エンジン (Chapter4TheoryValidator)", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    val_steps = [
+        ("Step 1", "Makefile 自動変数 & .PHONY 判定", "#E1F5FE", "#0288D1"),
+        ("Step 2", "ベアメタル 4大必須 C++ フラグ整合性", "#E8F8F5", "#1ABC9C"),
+        ("Step 3", "VRAM 2次元オフセット数理: 4 * (y * ppsl + x)", "#FEF9E7", "#F39C12"),
+        ("Step 4", "System V vs MS x64 ABI 引数レジスタ照合", "#F4ECF7", "#8E44AD"),
+        ("Step 5", "ELF PT_LOAD .bss ゼロクリア範囲計算", "#FDEDEC", "#E74C3C"),
+    ]
+
+    y_pos = 0.85
+    for step_num, desc, bg, border in val_steps:
+        box = FancyBboxPatch((0.04, y_pos - 0.06), 0.92, 0.12, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax3.add_patch(box)
+        ax3.text(0.08, y_pos, step_num, fontsize=8.2, fontweight="bold", color=border)
+        ax3.text(0.24, y_pos, desc, fontsize=7.8, color="#263238")
+        y_pos -= 0.165
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    # 4. C++20 / Python ハイブリッド検証基盤 (Bottom-Right)
+    ax4 = axes[1, 1]
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. C++20 スタンドアロン検証 & pytest 統合", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    comp_items = [
+        ("C++20 Standalone", "src/ch04/os_chapter4_exercises.cpp\n(CMake: ch04_os_chapter4_exercises)", "#2E7D32"),
+        ("Python Module", "common/os_sim.py\n(Chapter4Quiz, Chapter4TheoryValidator)", "#1565C0"),
+        ("Unit Testing", "tests/test_ch4_exercises.py\n(pytest tests/ -v)", "#C62828"),
+        ("Visual Verification", "4/result/fig4_ex1_exercises_summary.png\n4/result/fig4_ex2_ch4_mastery_radar.png", "#6A1B9A"),
+    ]
+
+    y_pos = 0.82
+    for label, desc, col in comp_items:
+        box = FancyBboxPatch((0.05, y_pos - 0.08), 0.90, 0.15, boxstyle="round,pad=0.015",
+                             facecolor="#F5F5F5", edgecolor=col, lw=1.5)
+        ax4.add_patch(box)
+        ax4.text(0.09, y_pos + 0.02, label, fontsize=8.8, fontweight="bold", color=col)
+        ax4.text(0.09, y_pos - 0.05, desc, fontsize=7.4, color="#37474F")
+        y_pos -= 0.21
+
+    ax4.set_xlim(0, 1.0)
+    ax4.set_ylim(0, 1.0)
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_chapter4_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float]) -> Path:
+    """Generate radar chart showing mastery rates across all 5 sections of Chapter 4."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    sections = ["4.1\nMake入門", "4.2\nピクセル描画&ABI", "4.3\nPixelWriter多態性", "4.4\nvtable&ABI", "4.5\nELFローダ&BSS"]
+    sec_keys = ["4.1", "4.2", "4.3", "4.4", "4.5"]
+    rates = [mastery_rates.get(k, 100.0) for k in sec_keys]
+
+    # Close the radar circle
+    num_vars = len(sections)
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    rates_closed = rates + rates[:1]
+    angles_closed = angles + angles[:1]
+
+    fig = plt.figure(figsize=(8, 8))
+    fig.patch.set_facecolor("#FAFAFA")
+    ax = fig.add_subplot(111, polar=True)
+    ax.set_facecolor("#FFFFFF")
+
+    # Draw grid
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+    ax.set_thetagrids(np.degrees(angles), sections, fontsize=9.5, fontweight="bold", color="#1A237E")
+
+    ax.set_rlabel_position(0)
+    ax.set_ylim(0, 100)
+    ax.set_yticks([20, 40, 60, 80, 100])
+    ax.set_yticklabels(["20%", "40%", "60%", "80%", "100%"], fontsize=8, color="#78909C")
+    ax.grid(color="#CFD8DC", linestyle="--", linewidth=0.8)
+
+    # Plot data
+    ax.plot(angles_closed, rates_closed, color="#1E88E5", linewidth=2.5, linestyle="solid", label="達成度 (Mastery)")
+    ax.fill(angles_closed, rates_closed, color="#42A5F5", alpha=0.35)
+
+    # Scatter points
+    ax.scatter(angles, rates, color="#0D47A1", s=60, zorder=10)
+    for angle, rate in zip(angles, rates):
+        ax.text(angle, rate + 6, f"{rate:.0f}%", ha="center", va="center", fontsize=9, fontweight="bold", color="#0D47A1")
+
+    avg_score = np.mean(rates)
+    status_str = "合格 (Passed)" if avg_score >= 80.0 else "要復習 (Needs Review)"
+    status_color = "#2E7D32" if avg_score >= 80.0 else "#C62828"
+
+    fig.suptitle("第4章 各節マスター率レーダーチャート\n(Chapter 4 Mastery Radar Chart)",
+                 fontsize=13, fontweight="bold", color="#1A237E", y=0.97)
+
+    ax.text(0, -32, f"総合平均スコア: {avg_score:.1f}% [{status_str}]",
+            ha="center", fontsize=10.5, fontweight="bold", color=status_color,
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="#ECEFF1", edgecolor=status_color, lw=1.5))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
