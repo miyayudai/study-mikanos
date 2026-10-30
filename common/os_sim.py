@@ -9815,3 +9815,420 @@ def plot_figure_2_18_double_pointer_and_uefi_interface(output_path: str = "2/res
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# =============================================================================
+# Chapter 2 Exercises: Comprehensive Verification & Quiz Engine
+# =============================================================================
+
+class Chapter2Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 2.1 to 2.9."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="2.1",
+                topic="EDK II パッケージ設定ファイル (.dec, .dsc, .inf)",
+                question="EDK II パッケージにおける .dec, .inf, .dsc の3つの設定ファイルの役割の組み合わせとして正しいものはどれか？",
+                options=[
+                    ".dec: バイナリ実行ファイル, .inf: パッケージ全体ビルド構成, .dsc: 公開インターフェース宣言",
+                    ".dec: 公開プロトコル/GUID等の宣言 (Declaration), .inf: 単一モジュールのソース・依存関係定義 (Information), .dsc: ビルド対象パッケージ全体の構成・ライブラリ解決 (Description)",
+                    ".dec: リンカスクリプト, .inf: Makefile生成ルール, .dsc: ドキュメント定義",
+                    ".dec: 単一コンポーネント定義, .inf: パッケージ全体記述, .dsc: 公開ヘッダ宣言",
+                ],
+                correct_index=1,
+                explanation="EDK IIでは、.dec (Package Declaration) が公開プロトコルやGUID・ヘッダを宣言し、.inf (Module Information) が各モジュールのソースコードや依存ライブラリクラスを定義し、.dsc (Platform Description) が実際にビルドするモジュール群と各ライブラリクラスの実体インスタンスのマッピングを統合管理します。",
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="2.2",
+                topic="UefiMain シグネチャとプリプロセッサ",
+                question="EDK IIブートローダのエントリポイント UefiMain のシグネチャと、プリプロセッサ #include の動作として正しいものはどれか？",
+                options=[
+                    "int main(int argc, char** argv) であり、#include は実行時に共有ライブラリを動的ロードする",
+                    "EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) であり、#include は指定されたヘッダファイルの内容をコンパイル前にその位置へテキスト展開する",
+                    "void UefiMain(void) であり、#include はバイナリオブジェクトをリンクする",
+                    "EFI_STATUS UefiMain(EFI_BOOT_SERVICES *BS) であり、#include は仮想関数テーブルを自動生成する",
+                ],
+                correct_index=1,
+                explanation="EDK IIアプリケーションのエントリポイントは UEFI呼び出し規約修飾子 EFIAPI を持つ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) です。またC言語のプリプロセッサ #include は、指定ヘッダファイルをその場にそのままテキスト展開する単純な文字列置換機構です。",
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="2.3",
+                topic="メインメモリ物理アドレス空間とMMIO",
+                question="現代の x86-64 アーキテクチャにおける物理アドレス空間と MMIO（Memory-Mapped I/O）の特徴として正しいものはどれか？",
+                options=[
+                    "物理アドレス空間の全領域には必ず物理RAM（DRAM）が連続して隙間なく敷き詰められている",
+                    "物理アドレス空間はRAMだけでなく、デバイス制御用レジスタ（MMIO）やPCIホール、ファームウェアROM領域などが割り当てられており、アドレス空間はスパース（非連続）である",
+                    "MMIOレジスタへのアクセスにはIN/OUT命令のみが使用可能で、MOV等のメモリアクセス命令は使用できない",
+                    "32ビット物理アドレス空間では最大16TiBのRAMを直接マッピングできる",
+                ],
+                correct_index=1,
+                explanation="物理アドレス空間は物理RAMだけでなく、GPUやxHCI等のハードウェア制御用レジスタ（MMIO）やPCIデバイス用予約空間（PCIホール）、ROM領域が混在して配置されており、物理RAMは飛び飛び（スパース）に配置されます。MMIO領域はMOV等の通常メモリアクセス命令で直接制御できます。",
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="2.4",
+                topic="EFI_MEMORY_DESCRIPTOR 構造体とアライメント",
+                question="UEFI規格における EFI_MEMORY_DESCRIPTOR 構造体（自然アライメント適用時）のサイズとフィールド構成として正しいものはどれか？",
+                options=[
+                    "サイズは 32バイト（Type: 4B, PhysicalStart: 8B, VirtualStart: 8B, NumberOfPages: 8B, Attribute: 4B）",
+                    "サイズは 40バイト（Type: 4B + Pad: 4B, PhysicalStart: 8B, VirtualStart: 8B, NumberOfPages: 8B, Attribute: 8B）",
+                    "サイズは 48バイト（Type: 8B, PhysicalStart: 8B, VirtualStart: 8B, NumberOfPages: 8B, Attribute: 8B, Reserved: 8B）",
+                    "サイズは 24バイト（Type: 4B, PhysicalStart: 4B, VirtualStart: 4B, NumberOfPages: 4B, Attribute: 8B）",
+                ],
+                correct_index=1,
+                explanation="64ビット環境において EFI_MEMORY_DESCRIPTOR は Type (UINT32: 4バイト) の直後に 8バイトアライメントのための 4バイトパディングが挿入され、続く PhysicalStart (8B), VirtualStart (8B), NumberOfPages (8B), Attribute (8B) と合わせて合計 40バイト（0x28バイト）となります。",
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="2.5",
+                topic="GetMemoryMap() の引数仕様と MapKey",
+                question="gBS->GetMemoryMap() API の呼び出し規則および戻り値・MapKey の役割として正しいものはどれか？",
+                options=[
+                    "バッファサイズが不足している場合は EFI_NOT_FOUND が返り、バッファサイズの再取得はできない",
+                    "バッファサイズが不足している場合は EFI_BUFFER_TOO_SMALL が返り、必要なバイト数が MemoryMapSize に書き戻される。また取得した MapKey は ExitBootServices() に渡してメモリ状態の整合性検証に用いられる",
+                    "MapKey は暗号化キーであり、メモリマップの内容を復号するために使用する",
+                    "GetMemoryMap() は常に静的に確保された固定アドレスのメモリマップを返し、引数でバッファを渡す必要はない",
+                ],
+                correct_index=1,
+                explanation="GetMemoryMap() は提供バッファが不足すると EFI_BUFFER_TOO_SMALL を返し、MemoryMapSize 引数に必要サイズを書き戻します。MapKey はメモリマップ取得時点のファームウェアメモリ状態のスナップショット識別子であり、ExitBootServices() 呼び出し時にメモリマップが変化していないことを検証するために必須です。",
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="2.5",
+                topic="メモリディスクリプタのポインタ走査と DescriptorSize",
+                question="メモリマップのバッファ内にある各ディスクリプタを反復走査する際、(EFI_MEMORY_DESCRIPTOR*)p + 1 ではなく (uintptr_t)p += DescriptorSize のように走査すべき理由はどれか？",
+                options=[
+                    "C言語のポインタ加算はバイト単位で計算されるため、型キャストを省略するため",
+                    "UEFI仕様書において DescriptorSize は将来の拡張のため sizeof(EFI_MEMORY_DESCRIPTOR) より大きい値（例: 48バイト等）が返される可能性があり、固定サイズポインタ加算ではアライメントずれ・不正アクセスが生じるため",
+                    "DescriptorSize は各ディスクリプタごとに異なる値をとる可変長フィールドだから",
+                    "CPUが64ビットポインタのインクリメント命令をサポートしていないため",
+                ],
+                correct_index=1,
+                explanation="UEFI仕様では、ファームウェア実装や将来の規格拡張によって各ディスクリプタに追加フィールドが付与されることを想定し、GetMemoryMap() が実際のディスクリプタサイズ（DescriptorSize）を返します。そのため、sizeof(EFI_MEMORY_DESCRIPTOR) に依存したポインタ加算ではなく、バイトポインタに DescriptorSize を加算して次の要素へ進める必要があります。",
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="2.6",
+                topic="ファイル保存と属性マスク (EFI_FILE_PROTOCOL)",
+                question="メモリマップを FAT ボリュームの memmap ファイルへ CSV 形式で保存する際、Attribute フィールドの出力で Attribute & 0xffffflu のようにビットマスクをかける理由として最も適切なものはどれか？",
+                options=[
+                    "属性値が負数になるのを防ぐため",
+                    "UEFI仕様で定義されているメモリキャッシュ・アクセス属性フラグは下位ビット群（UC, WC, WT, WB, XP, RO, RUNTIME 等）に集約されており、フォーマット文字列 %08lx で下位5桁（または主要フラグ）を簡潔・明瞭に出力するため",
+                    "上位ビットに格納されている暗号化キーをマスクして隠蔽するため",
+                    "ファイルシステムの最大ファイルサイズ制限に引っかからないようにするため",
+                ],
+                correct_index=1,
+                explanation="EFI_MEMORY_DESCRIPTOR の Attribute は 64ビット整数ですが、一般的なキャッシュ属性（UC: 0x1, WC: 0x2, WT: 0x4, WB: 0x8）や実行保護（XP: 0x8000...）、ランタイム属性（RUNTIME: 0x8000...）など、主要な基本属性ビットを簡潔に CSV に 16進数出力するために & 0xffffflu のマスクが書籍のサンプルコードで適用されています。",
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="2.7",
+                topic="ExitBootServices() 後の再利用可能メモリ種別",
+                question="OS カーネルがブートサービスを終了（ExitBootServices 完了）した後に、OS が自由な物理メモリ（ヒープやページフレーム）として再利用できるメモリ種別の組み合わせはどれか？",
+                options=[
+                    "EfiReservedMemoryType, EfiMemoryMappedIO, EfiMemoryMappedIOPortSpace",
+                    "EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiACPIReclaimMemory",
+                    "EfiConventionalMemory（元の空きRAM）に加え、EfiBootServicesCode および EfiBootServicesData",
+                    "EfiUnusableMemory, EfiPalCode, EfiACPIMemoryNVS",
+                ],
+                correct_index=2,
+                explanation="ExitBootServices() が完了すると UEFI ブートローダやブートサービス機能は不要となるため、ブートサービス用に割り当てられていた EfiBootServicesCode と EfiBootServicesData は解放され、通常の空きRAMである EfiConventionalMemory と同様に OS カーネルが完全に再利用可能となります（RuntimeServices 領域や ACPI 領域は解放してはいけません）。",
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="2.8",
+                topic="64-bit ポインタのサイズとポインタ算術スケーリング",
+                question="64ビット（x86-64）環境におけるポインタ変数およびポインタ演算の性質として正しいものはどれか？",
+                options=[
+                    "char* のサイズは 1バイト、int* のサイズは 4バイト、void* のサイズは 8バイトである",
+                    "指す先の型が何であれ、すべてのポインタ変数のサイズは一貫して 8バイト（64ビット）であり、T* 型のポインタ ptr に対する ptr + 1 はアドレス値として sizeof(T) バイト進む",
+                    "ptr + 1 は常にアドレス値が 1バイトだけインクリメントされる",
+                    "ポインタ変数にはメモリのアドレスではなく、変数の値そのもののコピーが格納されている",
+                ],
+                correct_index=1,
+                explanation="64ビットアーキテクチャでは、アドレス空間全体（0〜2^64-1）を指し示すためにすべてのポインタ変数は一律 8バイト（64ビット）のサイズを持ちます。またポインタ算術において ptr + n は、メモリアドレス値として n × sizeof(T) バイト加算されます。",
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="2.9",
+                topic="アロー演算子と二重ポインタ (void** 出力引数)",
+                question="構造体ポインタに対するアロー演算子 -> と、UEFI API で頻出する二重ポインタ（void** や EFI_FILE_PROTOCOL**）の役割として正しいものはどれか？",
+                options=[
+                    "p->member は (&p).member と等価であり、二重ポインタは配列の二次元アクセス専用である",
+                    "p->member は (*p).member と完全等価であり、呼び出し先関数が生成・確保したポインタ変数のアドレス（指す先）を呼び出し元のポインタ変数に書き戻すために、呼び出し元ポインタのアドレス (&ptr) を二重ポインタとして渡す",
+                    "アロー演算子はC++専用の演算子であり、C言語では (*p).member しか使えない",
+                    "二重ポインタを渡すと、関数の引数は値渡し（Pass by value）となり呼び出し元のポインタは変更されない",
+                ],
+                correct_index=1,
+                explanation="p->member は (*p).member（デリファレンスしてメンバ参照）の糖衣構文（完全等価）です。また C言語には参照渡し（Reference）がないため、関数内部で呼び出し元のポインタ変数自体を書き換えて新しいアドレスを返す（出力引数とする）には、ポインタのアドレスを二重ポインタ（T**）として渡す必要があります。",
+            ),
+        ]
+
+    def evaluate(self, answers: dict[int, int]) -> dict[str, any]:
+        """Evaluate user answers and return comprehensive scores, explanations, and mastery breakdown."""
+        details = []
+        correct_count = 0
+        section_scores: dict[str, dict[str, int]] = {
+            "2.1": {"correct": 0, "total": 0},
+            "2.2": {"correct": 0, "total": 0},
+            "2.3": {"correct": 0, "total": 0},
+            "2.4": {"correct": 0, "total": 0},
+            "2.5": {"correct": 0, "total": 0},
+            "2.6": {"correct": 0, "total": 0},
+            "2.7": {"correct": 0, "total": 0},
+            "2.8": {"correct": 0, "total": 0},
+            "2.9": {"correct": 0, "total": 0},
+        }
+
+        for q in self.questions:
+            user_ans = answers.get(q.question_id, -1)
+            is_correct = (user_ans == q.correct_index)
+            if is_correct:
+                correct_count += 1
+                section_scores[q.section]["correct"] += 1
+            section_scores[q.section]["total"] += 1
+
+            details.append({
+                "question_id": q.question_id,
+                "section": q.section,
+                "topic": q.topic,
+                "question": q.question,
+                "user_answer": user_ans,
+                "correct_answer": q.correct_index,
+                "is_correct": is_correct,
+                "explanation": q.explanation,
+            })
+
+        total = len(self.questions)
+        percentage = (correct_count / total) * 100.0 if total > 0 else 0.0
+
+        mastery_rates: dict[str, float] = {}
+        for sec, stat in section_scores.items():
+            rate = (stat["correct"] / stat["total"]) * 100.0 if stat["total"] > 0 else 0.0
+            mastery_rates[sec] = rate
+
+        return {
+            "total_questions": total,
+            "correct_count": correct_count,
+            "percentage": percentage,
+            "details": details,
+            "mastery_rates": mastery_rates,
+            "passed": percentage >= 80.0,
+        }
+
+
+class Chapter2TheoryValidator:
+    """Validation helper for Chapter 2 systems theory, EDK II architecture, and memory math."""
+
+    @staticmethod
+    def validate_edk2_files(file_roles: dict[str, str]) -> tuple[bool, str]:
+        """Validate EDK II package configuration files and their roles."""
+        dec_role = file_roles.get(".dec", "").lower()
+        inf_role = file_roles.get(".inf", "").lower()
+        dsc_role = file_roles.get(".dsc", "").lower()
+
+        errors = []
+        if not ("declaration" in dec_role or "宣言" in dec_role or "プロトコル" in dec_role or "guid" in dec_role):
+            errors.append(".dec: 公開プロトコル/GUID宣言 (Declaration) であるべきです")
+        if not ("module" in inf_role or "information" in inf_role or "モジュール" in inf_role or "情報" in inf_role):
+            errors.append(".inf: モジュール情報・ビルドソース定義 (Module Information) であるべきです")
+        if not ("description" in dsc_role or "パッケージ" in dsc_role or "全体" in dsc_role or "記述" in dsc_role):
+            errors.append(".dsc: パッケージ全体ビルド構成・ライブラリ解決 (Platform Description) であるべきです")
+
+        if not errors:
+            return True, "正解！EDK IIの3大設定ファイル（.dec, .inf, .dsc）の役割を正確に同定しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_memory_descriptor_layout(layout: dict[str, int]) -> tuple[bool, str]:
+        """Validate 64-bit EFI_MEMORY_DESCRIPTOR field offsets and sizes."""
+        struct_size = layout.get("struct_size")
+        type_size = layout.get("type_size")
+        pad_size = layout.get("pad_size")
+        phys_start_size = layout.get("physical_start_size")
+        num_pages_size = layout.get("number_of_pages_size")
+        attr_size = layout.get("attribute_size")
+
+        errors = []
+        if struct_size != 40:
+            errors.append(f"struct_size: 期待値 40バイト (0x28), 入力値 {struct_size}")
+        if type_size != 4:
+            errors.append(f"type_size: 期待値 4バイト (UINT32), 入力値 {type_size}")
+        if pad_size != 4:
+            errors.append(f"pad_size: 期待値 4バイト (アライメントパディング), 入力値 {pad_size}")
+        if phys_start_size != 8:
+            errors.append(f"physical_start_size: 期待値 8バイト (EFI_PHYSICAL_ADDRESS), 入力値 {phys_start_size}")
+        if num_pages_size != 8:
+            errors.append(f"number_of_pages_size: 期待値 8バイト (UINT64), 入力値 {num_pages_size}")
+        if attr_size != 8:
+            errors.append(f"attribute_size: 期待値 8バイト (UINT64), 入力値 {attr_size}")
+
+        if not errors:
+            return True, "正解！EFI_MEMORY_DESCRIPTOR 構造体の40バイトレイアウトおよび自然アライメントパディングを正確に定義しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_exit_boot_services_reclaimable(types: list[str]) -> tuple[bool, str]:
+        """Validate memory types that become usable RAM after ExitBootServices()."""
+        type_set = {t.strip() for t in types}
+        expected_reclaimable = {"EfiConventionalMemory", "EfiBootServicesCode", "EfiBootServicesData"}
+        if type_set == expected_reclaimable:
+            return True, "正解！ExitBootServices完了後にOSが自由に使用できる3大メモリ種別（Conventional, BootServicesCode, BootServicesData）を完璧に特定しました。"
+        missing = expected_reclaimable - type_set
+        extra = type_set - expected_reclaimable
+        msg = []
+        if missing:
+            msg.append(f"不足している種別: {missing}")
+        if extra:
+            msg.append(f"再利用不可（解放禁止）が含まれています: {extra}")
+        return False, f"不正解です。{'; '.join(msg)}"
+
+    @staticmethod
+    def validate_pointer_arithmetic(math_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate 64-bit pointer sizes and pointer arithmetic scaling."""
+        ptr_size = math_dict.get("pointer_size_bytes")
+        scaling_uint32 = math_dict.get("uint32_ptr_add_1_bytes")
+        scaling_uint64 = math_dict.get("uint64_ptr_add_1_bytes")
+
+        errors = []
+        if ptr_size != 8:
+            errors.append(f"pointer_size_bytes: 期待値 8 (64-bit), 入力値 {ptr_size}")
+        if scaling_uint32 != 4:
+            errors.append(f"uint32_ptr_add_1_bytes: 期待値 4 (sizeof(uint32_t)), 入力値 {scaling_uint32}")
+        if scaling_uint64 != 8:
+            errors.append(f"uint64_ptr_add_1_bytes: 期待値 8 (sizeof(uint64_t)), 入力値 {scaling_uint64}")
+
+        if not errors:
+            return True, "正解！64ビットポインタサイズ（8B）と型スケーリング加算の数理を正確に算出しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_struct_alignment(alignment_dict: dict[str, int]) -> tuple[bool, str]:
+        """Validate struct natural alignment and padding computation."""
+        total_size = alignment_dict.get("total_size")
+        pad_after_a = alignment_dict.get("pad_after_a")
+        pad_after_c = alignment_dict.get("pad_after_c")
+
+        errors = []
+        if total_size != 12:
+            errors.append(f"total_size: 期待値 12バイト, 入力値 {total_size}")
+        if pad_after_a != 3:
+            errors.append(f"pad_after_a: 期待値 3バイト, 入力値 {pad_after_a}")
+        if pad_after_c != 2:
+            errors.append(f"pad_after_c: 期待値 2バイト, 入力値 {pad_after_c}")
+
+        if not errors:
+            return True, "正解！自然アライメント規則に基づくパディングと構造体総サイズ（12B）を正確に計算しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+
+def plot_chapter2_exercises_summary(output_path: Path | str) -> Path:
+    """Generate high-DPI summary diagram showing Chapter 2 exercise structure and learning taxonomy."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(12, 7.5))
+    ax.set_facecolor("#FAFAFA")
+
+    exercises = [
+        {"id": "Ex 1", "sec": "2.1 / 2.2", "title": "EDK II & メインメモリ理論検証", "desc": ".dec/.inf/.dsc の3層ビルド体系、UefiMain シグネチャ、物理空間 RAM vs MMIO", "color": "#1E88E5", "y": 0.84},
+        {"id": "Ex 2", "sec": "2.4 / 2.5", "title": "メモリマップ & ディスクリプタ走査", "desc": "EFI_MEMORY_DESCRIPTOR 40B構造体数理、DescriptorSize による安全走査", "color": "#43A047", "y": 0.67},
+        {"id": "Ex 3", "sec": "2.6 / 2.7", "title": "ファイル保存 & 利用可能RAM集計", "desc": "CSV出力・属性マスク、ExitBootServices 後の再利用可能メモリ (Conventional + BS)", "color": "#FB8C00", "y": 0.50},
+        {"id": "Ex 4", "sec": "2.8 / 2.9", "title": "ポインタ算術 & 構造体アライメント", "desc": "64-bit ポインタスケーリング、アロー演算子、二重ポインタ (void** 出力引数)", "color": "#8E24AA", "y": 0.33},
+        {"id": "Ex 5", "sec": "2.1-2.9", "title": "C++20 コア検証 & 総合テスト", "desc": "可変長走査・集計・二重ポインタ C++シミュレータ、全節網羅10問クイズ & レーダー", "color": "#D81B60", "y": 0.16},
+    ]
+
+    import matplotlib.patches as patches
+
+    for ex in exercises:
+        y = ex["y"]
+        rect = patches.FancyBboxPatch(
+            (0.05, y - 0.06), 0.90, 0.12,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor="white", edgecolor=ex["color"], linewidth=2, zorder=2
+        )
+        ax.add_patch(rect)
+
+        badge = patches.FancyBboxPatch(
+            (0.07, y - 0.04), 0.12, 0.08,
+            boxstyle="round,pad=0.01,rounding_size=0.01",
+            facecolor=ex["color"], edgecolor="none", zorder=3
+        )
+        ax.add_patch(badge)
+        ax.text(0.13, y, ex["id"], color="white", fontsize=11, fontweight="bold", ha="center", va="center", zorder=4)
+
+        ax.text(0.22, y + 0.02, f"[{ex['sec']}] {ex['title']}", color="#212121", fontsize=12, fontweight="bold", va="center")
+        ax.text(0.22, y - 0.025, ex["desc"], color="#555555", fontsize=9.5, va="center")
+
+        circle = plt.Circle((0.91, y), 0.025, facecolor="#E8F5E9", edgecolor="#4CAF50", linewidth=1.5, zorder=3)
+        ax.add_patch(circle)
+        ax.text(0.91, y, "✓", color="#2E7D32", fontsize=11, fontweight="bold", ha="center", va="center", zorder=4)
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0.05, 0.97)
+    ax.axis("off")
+    ax.set_title("MikanOS Study — Chapter 2 Exercises Curriculum & Assessment Map",
+                 fontsize=14, fontweight="bold", pad=20, color="#1A237E")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_chapter2_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float] | None = None) -> Path:
+    """Generate high-DPI 9-axis radar chart showing Chapter 2 concept mastery across all 9 sections."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    categories = [
+        "2.1 EDK II 構成\n(DEC/INF/DSC & Build)",
+        "2.2 ハローワールド\n(UefiMain & Include)",
+        "2.3 メインメモリ\n(RAM vs MMIO & Holes)",
+        "2.4 メモリマップ\n(Descriptor & Types)",
+        "2.5 マップ取得\n(GetMemoryMap & MapKey)",
+        "2.6 ファイル保存\n(CSV Export & Mask)",
+        "2.7 マップ確認\n(Analysis & Usable RAM)",
+        "2.8 ポインタ基礎\n(64bit Address & Scaling)",
+        "2.9 アロー & 二重P\n(Alignment & Double Ptr)",
+    ]
+    num_vars = len(categories)
+
+    if mastery_rates is None:
+        mastery_rates = {f"2.{i}": 100.0 for i in range(1, 10)}
+
+    values = [mastery_rates.get(f"2.{i}", 100.0) for i in range(1, 10)]
+    values += values[:1]  # Close loop
+
+    angles = [n / float(num_vars) * 2 * np.pi for n in range(num_vars)]
+    angles += angles[:1]
+
+    fig, ax = plt.subplots(figsize=(9, 9), subplot_kw=dict(polar=True))
+    ax.set_facecolor("#FCFDFD")
+
+    plt.xticks(angles[:-1], categories, color="#1A237E", size=10, weight="bold")
+    ax.set_rlabel_position(0)
+    plt.yticks([20, 40, 60, 80, 100], ["20%", "40%", "60%", "80%", "100%"], color="#757575", size=8.5)
+    plt.ylim(0, 105)
+
+    ax.plot(angles, values, color="#3949AB", linewidth=2.5, linestyle="solid", label="Chapter 2 Concept Mastery")
+    ax.fill(angles, values, color="#5C6BC0", alpha=0.35)
+
+    perfect_values = [100.0] * (num_vars + 1)
+    ax.plot(angles, perfect_values, color="#43A047", linewidth=1.2, linestyle="dashed", label="Target (100% Mastery)")
+
+    plt.title("Chapter 2: EDK II & Memory Map — Comprehensive Mastery Radar",
+              size=13, weight="bold", pad=25, color="#0D47A1")
+    plt.legend(loc="upper right", bbox_to_anchor=(1.25, 1.1), fontsize=9.5)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+

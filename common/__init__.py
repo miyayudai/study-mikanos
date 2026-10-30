@@ -184,6 +184,10 @@ from common.os_sim import (
     DoublePointerSimulator,
     plot_figure_2_17_struct_layout_and_arrow_operator,
     plot_figure_2_18_double_pointer_and_uefi_interface,
+    Chapter2Quiz,
+    Chapter2TheoryValidator,
+    plot_chapter2_exercises_summary,
+    plot_chapter2_mastery_radar,
 )
 
 __all__ = [
@@ -370,4 +374,8 @@ __all__ = [
     "DoublePointerSimulator",
     "plot_figure_2_17_struct_layout_and_arrow_operator",
     "plot_figure_2_18_double_pointer_and_uefi_interface",
+    "Chapter2Quiz",
+    "Chapter2TheoryValidator",
+    "plot_chapter2_exercises_summary",
+    "plot_chapter2_mastery_radar",
 ]

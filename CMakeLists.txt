@@ -88,6 +88,9 @@ add_test(NAME test_ch02_pointer_basics_sim COMMAND ch02_pointer_basics_sim --tes
 add_executable(ch02_arrow_operator_sim src/ch02/arrow_operator_sim.cpp)
 add_test(NAME test_ch02_arrow_operator_sim COMMAND ch02_arrow_operator_sim --test)
 
+add_executable(ch02_os_chapter2_exercises src/ch02/os_chapter2_exercises.cpp)
+add_test(NAME test_ch02_os_chapter2_exercises COMMAND ch02_os_chapter2_exercises --test)
+
 
 
 
