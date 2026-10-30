@@ -8639,4 +8639,522 @@ def plot_physical_memory_layout_map(
     return output_path
 
 
+# =============================================================================
+# Chapter 2.8: Pointers, Memory Addressing, and Pointer Arithmetic
+# =============================================================================
+
+@dataclass
+class MemoryCellModel:
+    """Byte-addressable memory space simulation for low-level pointer modeling."""
+    base_address: int = 0x1000
+    size: int = 4096
+    memory: bytearray = field(default_factory=bytearray)
+
+    def __post_init__(self):
+        if not self.memory:
+            self.memory = bytearray(self.size)
+
+    def _check_bounds(self, addr: int, length: int) -> None:
+        if addr < self.base_address or (addr + length) > (self.base_address + self.size):
+            raise IndexError(
+                f"Address out of bounds: [0x{addr:X}..0x{addr+length:X}) not in "
+                f"[0x{self.base_address:X}..0x{self.base_address+self.size:X})"
+            )
+
+    def write_byte(self, addr: int, val: int) -> None:
+        self._check_bounds(addr, 1)
+        self.memory[addr - self.base_address] = val & 0xFF
+
+    def read_byte(self, addr: int) -> int:
+        self._check_bounds(addr, 1)
+        return self.memory[addr - self.base_address]
+
+    def write_bytes(self, addr: int, data: bytes) -> None:
+        self._check_bounds(addr, len(data))
+        offset = addr - self.base_address
+        self.memory[offset:offset + len(data)] = data
+
+    def read_bytes(self, addr: int, count: int) -> bytes:
+        self._check_bounds(addr, count)
+        offset = addr - self.base_address
+        return bytes(self.memory[offset:offset + count])
+
+    def write_uint16(self, addr: int, val: int) -> None:
+        self.write_bytes(addr, struct.pack("<H", val & 0xFFFF))
+
+    def read_uint16(self, addr: int) -> int:
+        return struct.unpack("<H", self.read_bytes(addr, 2))[0]
+
+    def write_uint32(self, addr: int, val: int) -> None:
+        self.write_bytes(addr, struct.pack("<I", val & 0xFFFFFFFF))
+
+    def read_uint32(self, addr: int) -> int:
+        return struct.unpack("<I", self.read_bytes(addr, 4))[0]
+
+    def write_int32(self, addr: int, val: int) -> None:
+        self.write_bytes(addr, struct.pack("<i", val))
+
+    def read_int32(self, addr: int) -> int:
+        return struct.unpack("<i", self.read_bytes(addr, 4))[0]
+
+    def write_uint64(self, addr: int, val: int) -> None:
+        self.write_bytes(addr, struct.pack("<Q", val & 0xFFFFFFFFFFFFFFFF))
+
+    def read_uint64(self, addr: int) -> int:
+        return struct.unpack("<Q", self.read_bytes(addr, 8))[0]
+
+    def hex_dump(self, start_addr: int, count: int) -> list[str]:
+        lines = []
+        for a in range(start_addr, start_addr + count, 16):
+            chunk_len = min(16, start_addr + count - a)
+            b = self.read_bytes(a, chunk_len)
+            hex_part = " ".join(f"{x:02X}" for x in b)
+            ascii_part = "".join(chr(x) if 32 <= x < 127 else "." for x in b)
+            lines.append(f"0x{a:08X}: {hex_part:<48}  |{ascii_part}|")
+        return lines
+
+
+@dataclass
+class VariableEntry:
+    """Represents a named variable in memory."""
+    name: str
+    type_name: str
+    size: int
+    address: int
+    value: Any
+
+
+@dataclass
+class PointerVariable:
+    """Represents a pointer variable in 64-bit architecture."""
+    name: str
+    target_type: str
+    target_type_size: int
+    pointer_addr: int
+    target_addr: int
+    pointer_size: int = 8  # 64-bit architecture pointers are always 8 bytes
+
+    def dereference(self, memory: MemoryCellModel) -> Any:
+        """Dereferences the pointer and returns the value at the target address."""
+        if self.target_addr == 0:
+            raise ValueError(f"Null pointer dereference on pointer '{self.name}' (0x0)")
+        if self.target_type in ("char", "int8", "int8_t"):
+            return memory.read_byte(self.target_addr)
+        elif self.target_type in ("uint8", "uint8_t", "unsigned char"):
+            return memory.read_byte(self.target_addr)
+        elif self.target_type in ("short", "int16", "int16_t"):
+            b = memory.read_bytes(self.target_addr, 2)
+            return struct.unpack("<h", b)[0]
+        elif self.target_type in ("uint16", "uint16_t", "unsigned short"):
+            return memory.read_uint16(self.target_addr)
+        elif self.target_type in ("int", "int32", "int32_t"):
+            return memory.read_int32(self.target_addr)
+        elif self.target_type in ("uint32", "uint32_t", "unsigned int"):
+            return memory.read_uint32(self.target_addr)
+        elif self.target_type in ("uint64", "uint64_t", "unsigned long long", "uintptr_t"):
+            return memory.read_uint64(self.target_addr)
+        else:
+            return memory.read_bytes(self.target_addr, self.target_type_size)
+
+    def store(self, memory: MemoryCellModel, value: Any) -> None:
+        """Stores a value at the target address through dereferencing (*p = value)."""
+        if self.target_addr == 0:
+            raise ValueError(f"Null pointer write on pointer '{self.name}' (0x0)")
+        if self.target_type in ("char", "int8", "int8_t", "uint8", "uint8_t"):
+            memory.write_byte(self.target_addr, value)
+        elif self.target_type in ("short", "int16", "int16_t"):
+            memory.write_bytes(self.target_addr, struct.pack("<h", value))
+        elif self.target_type in ("uint16", "uint16_t"):
+            memory.write_uint16(self.target_addr, value)
+        elif self.target_type in ("int", "int32", "int32_t"):
+            memory.write_int32(self.target_addr, value)
+        elif self.target_type in ("uint32", "uint32_t"):
+            memory.write_uint32(self.target_addr, value)
+        elif self.target_type in ("uint64", "uint64_t", "uintptr_t"):
+            memory.write_uint64(self.target_addr, value)
+        elif isinstance(value, (bytes, bytearray)):
+            memory.write_bytes(self.target_addr, value)
+        else:
+            raise TypeError(f"Unsupported store type: {type(value)}")
+
+    def advance(self, steps: int) -> int:
+        """Computes pointer arithmetic: target_addr + steps * sizeof(T)."""
+        return self.target_addr + steps * self.target_type_size
+
+
+class PointerModelSimulator:
+    """Simulates pointer variables, memory layout, and pointer arithmetic in 64-bit systems."""
+
+    def __init__(self, base_address: int = 0x1000, size: int = 4096):
+        self.memory = MemoryCellModel(base_address=base_address, size=size)
+        self.variables: dict[str, VariableEntry] = {}
+        self.pointers: dict[str, PointerVariable] = {}
+        self.next_var_addr = base_address
+        self.next_ptr_addr = base_address + 0x800  # Separate pointer stack region
+
+    def allocate_variable(
+        self,
+        name: str,
+        type_name: str,
+        value: Any,
+        address: Optional[int] = None,
+    ) -> VariableEntry:
+        type_sizes = {
+            "char": 1, "uint8": 1, "uint8_t": 1, "int8_t": 1,
+            "short": 2, "uint16": 2, "uint16_t": 2, "int16_t": 2,
+            "int": 4, "uint32": 4, "uint32_t": 4, "int32_t": 4,
+            "uint64": 8, "uint64_t": 8, "int64_t": 8, "uintptr_t": 8,
+            "double": 8, "EFI_MEMORY_DESCRIPTOR": 48,
+        }
+        size = type_sizes.get(type_name, 4)
+        if address is None:
+            # 4 or 8-byte alignment
+            align = min(size, 8)
+            aligned_addr = (self.next_var_addr + (align - 1)) & ~(align - 1)
+            address = aligned_addr
+            self.next_var_addr = address + size
+
+        entry = VariableEntry(name=name, type_name=type_name, size=size, address=address, value=value)
+        self.variables[name] = entry
+
+        # Write initial value into memory
+        if type_name in ("int", "int32", "int32_t"):
+            self.memory.write_int32(address, value)
+        elif type_name in ("uint32", "uint32_t"):
+            self.memory.write_uint32(address, value)
+        elif type_name in ("uint64", "uint64_t", "uintptr_t"):
+            self.memory.write_uint64(address, value)
+        elif type_name in ("char", "uint8", "uint8_t"):
+            self.memory.write_byte(address, value if isinstance(value, int) else ord(value))
+        elif isinstance(value, bytes):
+            self.memory.write_bytes(address, value)
+        return entry
+
+    def create_pointer(
+        self,
+        ptr_name: str,
+        target_name: str,
+        ptr_address: Optional[int] = None,
+    ) -> PointerVariable:
+        if target_name not in self.variables:
+            raise KeyError(f"Variable '{target_name}' not found")
+        target_var = self.variables[target_name]
+        if ptr_address is None:
+            # 8-byte alignment for 64-bit pointer
+            aligned_addr = (self.next_ptr_addr + 7) & ~7
+            ptr_address = aligned_addr
+            self.next_ptr_addr = ptr_address + 8
+
+        ptr = PointerVariable(
+            name=ptr_name,
+            target_type=target_var.type_name,
+            target_type_size=target_var.size,
+            pointer_addr=ptr_address,
+            target_addr=target_var.address,
+            pointer_size=8,
+        )
+        self.pointers[ptr_name] = ptr
+        # Write target address into pointer memory (8 bytes little-endian)
+        self.memory.write_uint64(ptr_address, target_var.address)
+        return ptr
+
+    def dereference(self, ptr_name: str) -> Any:
+        if ptr_name not in self.pointers:
+            raise KeyError(f"Pointer '{ptr_name}' not found")
+        return self.pointers[ptr_name].dereference(self.memory)
+
+    def assign_via_pointer(self, ptr_name: str, value: Any) -> None:
+        if ptr_name not in self.pointers:
+            raise KeyError(f"Pointer '{ptr_name}' not found")
+        ptr = self.pointers[ptr_name]
+        ptr.store(self.memory, value)
+        # Update variable entry if pointing to tracked variable
+        for var in self.variables.values():
+            if var.address == ptr.target_addr:
+                var.value = value
+
+    def pointer_arithmetic(self, ptr_name: str, delta: int) -> int:
+        if ptr_name not in self.pointers:
+            raise KeyError(f"Pointer '{ptr_name}' not found")
+        return self.pointers[ptr_name].advance(delta)
+
+    def cast_pointer(self, ptr_name: str, new_type_name: str, new_type_size: int) -> PointerVariable:
+        if ptr_name not in self.pointers:
+            raise KeyError(f"Pointer '{ptr_name}' not found")
+        old_ptr = self.pointers[ptr_name]
+        new_name = f"{ptr_name}_cast_{new_type_name}"
+        casted = PointerVariable(
+            name=new_name,
+            target_type=new_type_name,
+            target_type_size=new_type_size,
+            pointer_addr=old_ptr.pointer_addr,
+            target_addr=old_ptr.target_addr,
+            pointer_size=8,
+        )
+        self.pointers[new_name] = casted
+        return casted
+
+
+def plot_figure_2_15_pointer_memory_model(output_path: str = "2/result/fig2_15_pointer_memory_model_and_address.png") -> str:
+    """Generates Figure 2.15: Memory byte array, variables, addresses, and pointer memory model."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 9), facecolor="#FAFAFA")
+    fig.suptitle(
+        "Figure 2.15: メモリバイト配列、変数とアドレス、およびポインタ変数の 64-bit メモリモデル\n"
+        "(Memory Byte Array, Variable Addressing, and 64-bit Pointer Architecture Model)",
+        fontsize=13, fontweight="bold", y=0.98, color="#1A237E"
+    )
+
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.2, 1.0], width_ratios=[1.1, 1.0])
+    ax_top = fig.add_subplot(gs[0, :])
+    ax_bottom_left = fig.add_subplot(gs[1, 0])
+    ax_bottom_right = fig.add_subplot(gs[1, 1])
+
+    # -------------------------------------------------------------------------
+    # Panel 1: Top - Linear Byte Array & Memory Cells (0x1000 to 0x100F, 0x2000 to 0x2007)
+    # -------------------------------------------------------------------------
+    ax_top.set_title("【1】物理/論理メモリ上の連続バイト配置とポインタ参照の相互関係 (Pointer-to-Pointee Mapping)", fontsize=11, fontweight="bold", pad=10)
+    ax_top.set_xlim(-0.5, 17.5)
+    ax_top.set_ylim(-0.5, 4.0)
+    ax_top.axis("off")
+
+    # Draw variable 'val' (int, 4 bytes at 0x1000)
+    val_addrs = [0x1000, 0x1001, 0x1002, 0x1003]
+    val_bytes = [0x78, 0x56, 0x34, 0x12]  # Little-endian for 0x12345678
+    val_labels = ["LSB (+0)", "(+1)", "(+2)", "MSB (+3)"]
+
+    ax_top.text(0.0, 3.4, "変数 int val = 0x12345678; (4バイト, 先頭アドレス &val == 0x1000)", fontsize=10.5, fontweight="bold", color="#B71C1C")
+    for i, (addr, b, lbl) in enumerate(zip(val_addrs, val_bytes, val_labels)):
+        rect = plt.Rectangle((i * 1.8 + 0.2, 2.0), 1.6, 1.1, facecolor="#FFCDD2", edgecolor="#B71C1C", linewidth=1.8)
+        ax_top.add_patch(rect)
+        ax_top.text(i * 1.8 + 1.0, 2.7, f"0x{b:02X}", ha="center", va="center", fontsize=11, fontweight="bold", color="#B71C1C")
+        ax_top.text(i * 1.8 + 1.0, 2.3, f"{lbl}", ha="center", va="center", fontsize=8.0, color="#5D4037")
+        ax_top.text(i * 1.8 + 1.0, 1.6, f"0x{addr:04X}", ha="center", va="center", fontsize=9.0, fontweight="bold", color="#263238")
+
+    # Draw pointer 'ptr' (int*, 8 bytes at 0x2000, holds 0x0000000000001000)
+    ptr_addrs = [0x2000 + i for i in range(8)]
+    ptr_bytes = [0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]  # Little-endian for 0x1000
+
+    ax_top.text(7.8, 3.4, "ポインタ変数 int* ptr = &val; (8バイト, 保持値 ptr == 0x0000000000001000)", fontsize=10.5, fontweight="bold", color="#0D47A1")
+    for i, (addr, b) in enumerate(zip(ptr_addrs, ptr_bytes)):
+        rect = plt.Rectangle((7.8 + i * 1.15, 2.0), 1.05, 1.1, facecolor="#BBDEFB", edgecolor="#0D47A1", linewidth=1.6)
+        ax_top.add_patch(rect)
+        ax_top.text(7.8 + i * 1.15 + 0.525, 2.7, f"0x{b:02X}", ha="center", va="center", fontsize=9.5, fontweight="bold", color="#0D47A1")
+        lbl = "LSB" if i == 0 else ("MSB" if i == 7 else f"+{i}")
+        ax_top.text(7.8 + i * 1.15 + 0.525, 2.3, lbl, ha="center", va="center", fontsize=7.5, color="#37474F")
+        ax_top.text(7.8 + i * 1.15 + 0.525, 1.6, f"..{addr & 0xF:X}", ha="center", va="center", fontsize=8.0, color="#455A64")
+
+    ax_top.text(7.8 + 4.6, 1.25, "先頭アドレス &ptr == 0x2000 (x86-64 ではポインタは常に 8 バイト)", ha="center", fontsize=8.5, fontweight="bold", color="#0D47A1")
+
+    # Arrows for & and *
+    # Arrow 1: &val operation (from val to ptr)
+    ax_top.annotate(
+        "アドレス演算子 &val (0x1000 を取得)",
+        xy=(7.7, 2.5), xycoords="data",
+        xytext=(4.0, 0.7), textcoords="data",
+        arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2.2, connectionstyle="arc3,rad=-0.2"),
+        fontsize=9.5, fontweight="bold", color="#2E7D32", ha="center"
+    )
+
+    # Arrow 2: *ptr dereference (from ptr pointing back to val)
+    ax_top.annotate(
+        "間接参照演算子 *ptr (0x1000 番地へアクセスして 4 バイト読み書き)",
+        xy=(3.8, 3.15), xycoords="data",
+        xytext=(8.0, 3.85), textcoords="data",
+        arrowprops=dict(arrowstyle="->", color="#C2185B", lw=2.2, connectionstyle="arc3,rad=-0.15"),
+        fontsize=9.5, fontweight="bold", color="#C2185B", ha="center"
+    )
+
+    # -------------------------------------------------------------------------
+    # Panel 2: Bottom-Left - Little Endian vs Pointer Width
+    # -------------------------------------------------------------------------
+    ax_bottom_left.set_title("【2】データ型別メモリ占有幅とリトルエンディアン (Little-Endian Byte Layout)", fontsize=10.5, fontweight="bold", pad=8)
+    ax_bottom_left.set_xlim(-0.5, 9.0)
+    ax_bottom_left.set_ylim(-0.5, 4.5)
+    ax_bottom_left.axis("off")
+
+    types_info = [
+        ("char c = 'A' (0x41)", 1, ["0x41"], "#C8E6C9", "#2E7D32"),
+        ("short s = 0x1234", 2, ["0x34", "0x12"], "#FFE0B2", "#E65100"),
+        ("int n = 0x12345678", 4, ["0x78", "0x56", "0x34", "0x12"], "#FFCDD2", "#C62828"),
+        ("void* p / uint64_t (64-bit)", 8, ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7"], "#BBDEFB", "#1565C0"),
+    ]
+
+    for y_idx, (name, size, byte_vals, fc, ec) in enumerate(reversed(types_info)):
+        y = y_idx * 1.1 + 0.2
+        ax_bottom_left.text(0.0, y + 0.45, f"{name} : {size} バイト", fontsize=8.8, fontweight="bold", color=ec)
+        for b_idx, val_str in enumerate(byte_vals):
+            rect = plt.Rectangle((b_idx * 0.95, y - 0.25), 0.88, 0.55, facecolor=fc, edgecolor=ec, linewidth=1.2)
+            ax_bottom_left.add_patch(rect)
+            ax_bottom_left.text(b_idx * 0.95 + 0.44, y + 0.02, val_str, ha="center", va="center", fontsize=8.0, fontweight="bold", color=ec)
+
+    ax_bottom_left.text(
+        4.0, -0.3,
+        "※ x86-64 はリトルエンディアン: 最下位バイト (LSB) が最も若いアドレス (+0) に格納される",
+        ha="center", fontsize=8.0, style="italic", color="#424242"
+    )
+
+    # -------------------------------------------------------------------------
+    # Panel 3: Bottom-Right - The Core OS Truth about Pointers
+    # -------------------------------------------------------------------------
+    ax_bottom_right.set_title("【3】OS開発におけるポインタの本質と 3 大原則", fontsize=10.5, fontweight="bold", pad=8)
+    ax_bottom_right.axis("off")
+
+    truth_box = (
+        "【OS自作におけるポインタの 3 大原則】\n\n"
+        "(1) アドレスは単なる 64-bit の数値 (uint64_t / uintptr_t)\n"
+        "   - メモリは 1 バイトごとに番号が付いた巨大なバイト配列。\n"
+        "   - ポインタ自身も「アドレスという数値を記憶する 8 バイトの変数」に過ぎない。\n\n"
+        "(2) 型 (Type) は「読み書き幅」と「加減算の歩進幅」を決める\n"
+        "   - int* なのか char* なのかは、メモリ上の番地そのものではなく、\n"
+        "     コンパイラに『何バイトを 1 単位としてアクセスするか』を教える属性。\n\n"
+        "(3) OS カーネルは『固定された物理アドレス』を直接ポインタ化する\n"
+        "   - 通常アプリ: OS にメモリを割り当ててもらい、そのポインタを受け取る。\n"
+        "   - OS カーネル: VRAM (0xE0000000) や MMIO、カーネル配置 (0x100000) など\n"
+        "     ハードウェア規定の数値を reinterpret_cast してポインタを能動生成する！"
+    )
+    ax_bottom_right.text(
+        0.05, 0.92, truth_box, transform=ax_bottom_right.transAxes,
+        fontsize=8.5, verticalalignment="top",
+        bbox=dict(boxstyle="round,pad=0.8", facecolor="#E8EAF6", edgecolor="#3949AB", linewidth=1.5),
+        color="#1A237E"
+    )
+
+    plt.subplots_adjust(top=0.90, bottom=0.06, left=0.04, right=0.96, hspace=0.35, wspace=0.25)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_figure_2_16_pointer_arithmetic_scaling(output_path: str = "2/result/fig2_16_pointer_arithmetic_and_type_scaling.png") -> str:
+    """Generates Figure 2.16: Pointer arithmetic, type-based stride scaling, and the byte-offset trap."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 9), facecolor="#FAFAFA")
+    fig.suptitle(
+        "Figure 2.16: ポインタの型による算術演算スケーリングとバイト単位走査の数理モデル\n"
+        "(Pointer Arithmetic Scaling by Type Size and the MikanOS Byte-Offset Casting Rule)",
+        fontsize=13, fontweight="bold", y=0.98, color="#1A237E"
+    )
+
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.2, 1.0])
+    ax_scaling = fig.add_subplot(gs[0])
+    ax_uefi_trap = fig.add_subplot(gs[1])
+
+    # -------------------------------------------------------------------------
+    # Panel 1: Scaling Comparison across Types
+    # -------------------------------------------------------------------------
+    ax_scaling.set_title(
+        "【1】型別ポインタ加算 p + n のアドレス変位: Address(p + n) = Address(p) + n × sizeof(*p)",
+        fontsize=11, fontweight="bold", pad=10
+    )
+    ax_scaling.set_xlim(-1, 33)
+    ax_scaling.set_ylim(-0.5, 5.2)
+    ax_scaling.set_xlabel("先頭アドレスからの変位バイト数 (Bytes Offset from Base 0x1000)", fontsize=9.0, fontweight="bold")
+    ax_scaling.set_xticks(range(0, 33, 4))
+    ax_scaling.grid(True, axis="x", linestyle=":", alpha=0.5)
+    ax_scaling.set_yticks([])
+
+    stride_demos = [
+        ("char* (sizeof=1)", 1, "#4CAF50", "#1B5E20"),
+        ("short* (sizeof=2)", 2, "#FF9800", "#E65100"),
+        ("int* (sizeof=4)", 4, "#E91E63", "#880E4F"),
+        ("uint64_t* (sizeof=8)", 8, "#2196F3", "#0D47A1"),
+        ("struct EFI_DESCRIPTOR* (sizeof=48)", 16, "#9C27B0", "#4A148C"),  # Drawn scaled down for visual
+    ]
+
+    for row_idx, (t_name, size, fc, ec) in enumerate(stride_demos):
+        y = row_idx * 1.0 + 0.4
+        ax_scaling.text(-0.8, y, t_name, ha="right", va="center", fontsize=8.8, fontweight="bold", color=ec)
+
+        # Plot base pointer p
+        rect0 = plt.Rectangle((0, y - 0.3), max(0.8, size * 0.9), 0.6, facecolor=fc, edgecolor=ec, linewidth=1.4)
+        ax_scaling.add_patch(rect0)
+        ax_scaling.text(max(0.4, size * 0.45), y, "p (+0)", ha="center", va="center", fontsize=7.5, fontweight="bold", color="#FFFFFF")
+
+        # Plot p + 1, p + 2, p + 3
+        max_steps = 1 if size == 16 else (3 if size <= 8 else 2)
+        for step in range(1, max_steps + 1):
+            offset = step * size
+            if offset + size <= 32:
+                rect = plt.Rectangle((offset, y - 0.3), max(0.8, size * 0.9), 0.6, facecolor=fc, edgecolor=ec, linewidth=1.4, alpha=0.85)
+                ax_scaling.add_patch(rect)
+                label = f"p+{step} (+{offset}B)" if size != 16 else f"p+1 (+48B ※縮尺)"
+                ax_scaling.text(offset + max(0.4, size * 0.45), y, label, ha="center", va="center", fontsize=7.2, fontweight="bold", color="#FFFFFF")
+
+                # Arrow connecting steps
+                prev_offset = (step - 1) * size
+                ax_scaling.annotate(
+                    "", xy=(offset, y), xytext=(prev_offset + max(0.8, size * 0.9), y),
+                    arrowprops=dict(arrowstyle="->", color=ec, lw=1.2)
+                )
+
+    # -------------------------------------------------------------------------
+    # Panel 2: The MikanOS MemoryMap Descriptor Traversal Trap
+    # -------------------------------------------------------------------------
+    ax_uefi_trap.set_title(
+        "【2】MikanOS 第2章の核心: メモリマップ可変長ディスクリプタ走査における『型キャスト』の必然性",
+        fontsize=11, fontweight="bold", pad=10
+    )
+    ax_uefi_trap.set_xlim(-0.5, 10.5)
+    ax_uefi_trap.set_ylim(-0.5, 4.0)
+    ax_uefi_trap.axis("off")
+
+    # Wrong case
+    ax_uefi_trap.text(
+        0.0, 3.3,
+        "[NG] 【落とし穴】ディスクリプタ型ポインタへの直接加算 (desc += descriptor_size)",
+        fontsize=9.8, fontweight="bold", color="#D32F2F"
+    )
+    wrong_box = (
+        "EFI_MEMORY_DESCRIPTOR* desc = buffer;\n"
+        "desc += descriptor_size;  // 大惨事！\n"
+        "// 理由: desc + 48 は 48 バイト進むのではなく、\n"
+        "// 48 * sizeof(EFI_MEMORY_DESCRIPTOR) = 48 * 48 = 2,304 バイト先に飛んでしまう！"
+    )
+    ax_uefi_trap.text(
+        0.0, 2.3, wrong_box, fontsize=8.2,
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#FFEBEE", edgecolor="#EF5350", linewidth=1.4),
+        color="#B71C1C"
+    )
+
+    # Correct case
+    ax_uefi_trap.text(
+        5.5, 3.3,
+        "[OK] 【正解】uintptr_t または uint8_t* へのキャストによるバイト単位加算",
+        fontsize=9.8, fontweight="bold", color="#2E7D32"
+    )
+    correct_box = (
+        "// MikanOS Day02b 実装パターン (uintptr_t 整数加算)\n"
+        "auto desc = reinterpret_cast<EFI_MEMORY_DESCRIPTOR*>(\n"
+        "    reinterpret_cast<uintptr_t>(buffer) + iter\n"
+        ");\n"
+        "// またはバイトポインタ加算: (reinterpret_cast<uint8_t*>(desc) + descriptor_size)\n"
+        "// -> 正確に 48 バイト (1 ディスクリプタ分) だけ次のエントリへ進む！"
+    )
+    ax_uefi_trap.text(
+        5.5, 2.2, correct_box, fontsize=8.2,
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#E8F5E9", edgecolor="#66BB6A", linewidth=1.4),
+        color="#1B5E20"
+    )
+
+    summary_note = (
+        "[Key Point] 教訓: C/C++ のポインタ算術は常に要素サイズ単位でスケーリングされる。\n"
+        "バイト単位の任意オフセットを進める必要がある OS 低レイヤ処理では、必ず uintptr_t または uint8_t* / char* にキャストする。"
+    )
+    ax_uefi_trap.text(
+        0.0, 0.4, summary_note, fontsize=8.8, fontweight="bold", color="#0D47A1",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#E3F2FD", edgecolor="#2196F3", linewidth=1.2)
+    )
+
+    plt.subplots_adjust(top=0.90, bottom=0.08, left=0.06, right=0.96, hspace=0.35)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+
 

@@ -173,6 +173,12 @@ from common.os_sim import (
     MemoryMapAnalyzer,
     plot_memory_map_analysis,
     plot_physical_memory_layout_map,
+    MemoryCellModel,
+    VariableEntry,
+    PointerVariable,
+    PointerModelSimulator,
+    plot_figure_2_15_pointer_memory_model,
+    plot_figure_2_16_pointer_arithmetic_scaling,
 )
 
 __all__ = [
@@ -348,4 +354,10 @@ __all__ = [
     "MemoryMapAnalyzer",
     "plot_memory_map_analysis",
     "plot_physical_memory_layout_map",
+    "MemoryCellModel",
+    "VariableEntry",
+    "PointerVariable",
+    "PointerModelSimulator",
+    "plot_figure_2_15_pointer_memory_model",
+    "plot_figure_2_16_pointer_arithmetic_scaling",
 ]
