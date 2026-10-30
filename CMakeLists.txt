@@ -98,6 +98,9 @@ add_test(NAME test_ch03_qemu_monitor_sim COMMAND ch03_qemu_monitor_sim --test)
 add_executable(ch03_registers_sim src/ch03/registers_sim.cpp)
 add_test(NAME test_ch03_registers_sim COMMAND ch03_registers_sim --test)
 
+add_executable(ch03_first_kernel_sim src/ch03/first_kernel_sim.cpp)
+add_test(NAME test_ch03_first_kernel_sim COMMAND ch03_first_kernel_sim --test)
+
 
 
 

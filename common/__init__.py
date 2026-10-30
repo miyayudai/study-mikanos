@@ -199,6 +199,13 @@ from common.os_sim import (
     CallingConventionSimulator,
     plot_x86_64_register_hierarchy,
     plot_rflags_and_control_registers,
+    Elf64Header,
+    KernelLoaderStep,
+    KernelLoaderSimulator,
+    StackFrameEntry,
+    RedZoneSimulator,
+    plot_kernel_loading_and_entry_flow,
+    plot_red_zone_mechanism_and_trap,
 )
 
 __all__ = [
@@ -400,4 +407,11 @@ __all__ = [
     "CallingConventionSimulator",
     "plot_x86_64_register_hierarchy",
     "plot_rflags_and_control_registers",
+    "Elf64Header",
+    "KernelLoaderStep",
+    "KernelLoaderSimulator",
+    "StackFrameEntry",
+    "RedZoneSimulator",
+    "plot_kernel_loading_and_entry_flow",
+    "plot_red_zone_mechanism_and_trap",
 ]

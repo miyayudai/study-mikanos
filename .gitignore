@@ -58,6 +58,7 @@ osbook/
 # Testing & Coverage
 .pytest_cache/
 .coverage
+3/3/
 htmlcov/
 
 # Jupyter Notebook

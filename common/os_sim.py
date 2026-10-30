@@ -11383,3 +11383,557 @@ def plot_rflags_and_control_registers(output_path: Path) -> Path:
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 3.3: First Kernel Loading, ExitBootServices & Red Zone Architecture
+# ==============================================================================
+
+@dataclass
+class Elf64Header:
+    """Represents the 64-byte ELF64 Header (Elf64_Ehdr) for x86-64 executable binaries."""
+    magic: bytes = b"\x7fELF"
+    elf_class: int = 2          # 2 = 64-bit architecture (ELFCLASS64)
+    endianness: int = 1         # 1 = 2's complement, little endian (ELFDATA2LSB)
+    version: int = 1            # 1 = Original version of ELF (EV_CURRENT)
+    os_abi: int = 0             # 0 = System V AMD64 ABI (ELFOSABI_SYSV)
+    abi_version: int = 0        # 0
+    e_type: int = 2             # 2 = Executable file (ET_EXEC)
+    e_machine: int = 0x3E       # 0x3E (62) = AMD x86-64 architecture (EM_X86_64)
+    e_version: int = 1          # 1 = Current version
+    e_entry: int = 0x100000     # Virtual address to which the system first transfers control (e_entry)
+    e_phoff: int = 64           # Program header table file offset (bytes)
+    e_shoff: int = 0            # Section header table file offset (bytes)
+    e_flags: int = 0            # Processor-specific flags
+    e_ehsize: int = 64          # ELF header size in bytes (always 64 for ELF64)
+    e_phentsize: int = 56       # Size of one program header table entry (56 bytes)
+    e_phnum: int = 1            # Number of entries in program header table
+    e_shentsize: int = 64       # Size of one section header table entry (64 bytes)
+    e_shnum: int = 0            # Number of entries in section header table
+    e_shstrndx: int = 0         # Section header table index of section name string table
+
+    @classmethod
+    def parse(cls, binary_data: bytes) -> "Elf64Header":
+        """Parse ELF64 header from the first 64 bytes of an ELF binary."""
+        if len(binary_data) < 64:
+            raise ValueError(f"Binary data too short for ELF64 header: {len(binary_data)} bytes (minimum 64 bytes required)")
+
+        magic = binary_data[0:4]
+        if magic != b"\x7fELF":
+            raise ValueError(f"Invalid ELF magic: {magic!r}, expected b'\\x7fELF'")
+
+        elf_class = binary_data[4]
+        endianness = binary_data[5]
+        version = binary_data[6]
+        os_abi = binary_data[7]
+        abi_version = binary_data[8]
+
+        fields = struct.unpack("<HHIQQQIHHHHHH", binary_data[16:64])
+
+        return cls(
+            magic=magic,
+            elf_class=elf_class,
+            endianness=endianness,
+            version=version,
+            os_abi=os_abi,
+            abi_version=abi_version,
+            e_type=fields[0],
+            e_machine=fields[1],
+            e_version=fields[2],
+            e_entry=fields[3],
+            e_phoff=fields[4],
+            e_shoff=fields[5],
+            e_flags=fields[6],
+            e_ehsize=fields[7],
+            e_phentsize=fields[8],
+            e_phnum=fields[9],
+            e_shentsize=fields[10],
+            e_shnum=fields[11],
+            e_shstrndx=fields[12]
+        )
+
+    def to_bytes(self) -> bytes:
+        """Serialize Elf64Header to standard 64-byte binary layout."""
+        e_ident = bytearray(16)
+        e_ident[0:4] = self.magic
+        e_ident[4] = self.elf_class
+        e_ident[5] = self.endianness
+        e_ident[6] = self.version
+        e_ident[7] = self.os_abi
+        e_ident[8] = self.abi_version
+
+        body = struct.pack(
+            "<HHIQQQIHHHHHH",
+            self.e_type,
+            self.e_machine,
+            self.e_version,
+            self.e_entry,
+            self.e_phoff,
+            self.e_shoff,
+            self.e_flags,
+            self.e_ehsize,
+            self.e_phentsize,
+            self.e_phnum,
+            self.e_shentsize,
+            self.e_shnum,
+            self.e_shstrndx
+        )
+        return bytes(e_ident) + body
+
+    @staticmethod
+    def get_entry_point_offset() -> int:
+        """Return the exact byte offset of e_entry in ELF64 header: 24 (0x18)."""
+        return 24
+
+    def verify_entry_dereference(self, base_addr: int = 0x100000) -> dict[str, Any]:
+        """Explain the exact C statement: UINT64 entry_addr = *(UINT64*)(kernel_base_addr + 24);"""
+        entry_offset = self.get_entry_point_offset()
+        deref_addr = base_addr + entry_offset
+        return {
+            "kernel_base_addr": hex(base_addr),
+            "offset_bytes": entry_offset,
+            "dereference_target_address": hex(deref_addr),
+            "resolved_entry_point": hex(self.e_entry),
+            "explanation": (
+                f"In 64-bit ELF (Elf64_Ehdr), e_ident occupies 16 bytes (offsets 0-15), "
+                f"e_type is 2 bytes (offsets 16-17), e_machine is 2 bytes (offsets 18-19), "
+                f"and e_version is 4 bytes (offsets 20-23). Therefore, e_entry begins exactly "
+                f"at offset 16 + 2 + 2 + 4 = 24 (0x18) as a 64-bit unsigned integer (UINT64). "
+                f"Reading *(UINT64*)(kernel_base_addr + 24) retrieves {hex(self.e_entry)}."
+            )
+        }
+
+
+class KernelLoaderStep(Enum):
+    INIT = "INIT"
+    OPEN_ROOT_DIR = "OPEN_ROOT_DIR"
+    OPEN_KERNEL_FILE = "OPEN_KERNEL_FILE"
+    GET_KERNEL_INFO = "GET_KERNEL_INFO"
+    ALLOCATE_PAGES = "ALLOCATE_PAGES"
+    READ_KERNEL_DATA = "READ_KERNEL_DATA"
+    EXIT_BOOT_SERVICES = "EXIT_BOOT_SERVICES"
+    JUMP_TO_ENTRY = "JUMP_TO_ENTRY"
+    KERNEL_HALT_LOOP = "KERNEL_HALT_LOOP"
+
+
+class KernelLoaderSimulator:
+    """Simulates the complete MikanOS UEFI bootloader sequence for loading, preparing, and jumping to kernel.elf."""
+
+    def __init__(self, target_base_addr: int = 0x100000) -> None:
+        self.target_base_addr = target_base_addr
+        self.current_step = KernelLoaderStep.INIT
+        self.kernel_file_size: int = 0
+        self.allocated_num_pages: int = 0
+        self.allocated_base_addr: int = 0
+        self.memory_buffer: bytearray = bytearray()
+        self.map_key: int = 42
+        self.boot_services_active: bool = True
+        self.kernel_executed: bool = False
+        self.execution_log: list[str] = []
+
+    def open_kernel(self, filename: str = "\\kernel.elf", fake_binary_size: int = 4096) -> bool:
+        """Simulate root_dir->Open(..., L'\\kernel.elf', EFI_FILE_MODE_READ, 0)."""
+        self.current_step = KernelLoaderStep.OPEN_KERNEL_FILE
+        self.kernel_file_size = fake_binary_size
+        self.execution_log.append(f"Opened file '{filename}' via EFI_SIMPLE_FILE_SYSTEM_PROTOCOL.")
+        return True
+
+    def get_kernel_info(self) -> int:
+        """Simulate kernel_file->GetInfo(&gEfiFileInfoGuid, ...)."""
+        self.current_step = KernelLoaderStep.GET_KERNEL_INFO
+        self.execution_log.append(f"Queried file metadata: kernel_file_size = {self.kernel_file_size} bytes.")
+        return self.kernel_file_size
+
+    def allocate_pages(self) -> tuple[int, int]:
+        """Simulate gBS->AllocatePages(AllocateAddress, EfiLoaderData, num_pages, &kernel_base_addr)."""
+        self.current_step = KernelLoaderStep.ALLOCATE_PAGES
+        # Page calculation: (kernel_file_size + 0xfff) / 0x1000
+        self.allocated_num_pages = (self.kernel_file_size + 0xFFF) // 0x1000
+        self.allocated_base_addr = self.target_base_addr
+        # Memory map key changes due to dynamic memory allocation
+        self.map_key += 7
+        self.execution_log.append(
+            f"Allocated {self.allocated_num_pages} pages ({self.allocated_num_pages * 4096} bytes) "
+            f"at physical address {hex(self.allocated_base_addr)} (MapKey updated to {self.map_key})."
+        )
+        return self.allocated_base_addr, self.allocated_num_pages
+
+    def read_kernel_data(self, elf_binary: bytes | None = None) -> bytes:
+        """Simulate kernel_file->Read(kernel_file, &kernel_file_size, (VOID*)kernel_base_addr)."""
+        self.current_step = KernelLoaderStep.READ_KERNEL_DATA
+        if elf_binary is None:
+            # Generate minimal valid ELF64 header with entry point = 0x100000
+            hdr = Elf64Header(e_entry=self.target_base_addr)
+            elf_binary = hdr.to_bytes() + b"\x90" * (self.kernel_file_size - 64)
+        
+        self.memory_buffer = bytearray(elf_binary)
+        self.execution_log.append(
+            f"Read {len(self.memory_buffer)} bytes into buffer at {hex(self.allocated_base_addr)}."
+        )
+        return bytes(self.memory_buffer)
+
+    def exit_boot_services(self, passed_map_key: int, retry_if_mismatch: bool = True) -> bool:
+        """Simulate gBS->ExitBootServices(image_handle, memmap.map_key)."""
+        self.current_step = KernelLoaderStep.EXIT_BOOT_SERVICES
+        if passed_map_key != self.map_key:
+            self.execution_log.append(
+                f"ExitBootServices failed: MapKey mismatch (passed={passed_map_key}, current={self.map_key})."
+            )
+            if retry_if_mismatch:
+                # Re-fetch memory map to get updated map key
+                passed_map_key = self.map_key
+                self.execution_log.append(f"Re-fetched memory map: renewed MapKey = {passed_map_key}.")
+            else:
+                return False
+
+        self.boot_services_active = False
+        self.execution_log.append(
+            f"ExitBootServices SUCCEEDED with MapKey {passed_map_key}. UEFI Boot Services terminated. OS Kernel is now in full control."
+        )
+        return True
+
+    def call_kernel_entry(self) -> dict[str, Any]:
+        """Simulate UINT64 entry_addr = *(UINT64*)(kernel_base_addr + 24); entry_point();"""
+        if self.boot_services_active:
+            raise RuntimeError("Cannot execute kernel while UEFI Boot Services are still active! Call ExitBootServices first.")
+        
+        if len(self.memory_buffer) < 32:
+            raise RuntimeError("Kernel buffer is empty or too small to extract ELF entry point.")
+
+        entry_addr = struct.unpack("<Q", self.memory_buffer[24:32])[0]
+        self.current_step = KernelLoaderStep.JUMP_TO_ENTRY
+        self.kernel_executed = True
+        self.current_step = KernelLoaderStep.KERNEL_HALT_LOOP
+        self.execution_log.append(
+            f"Jumped to kernel entry point at {hex(entry_addr)}. Entered KernelMain() infinite HLT loop."
+        )
+
+        return {
+            "entry_point": hex(entry_addr),
+            "executed": True,
+            "final_cpu_state": "HLT (Halted / Interrupt Wait)",
+            "log": list(self.execution_log)
+        }
+
+
+@dataclass
+class StackFrameEntry:
+    """Represents a slot on the x86-64 stack."""
+    address: int
+    offset_from_rsp: int
+    name: str
+    value: int
+    is_corrupted: bool = False
+
+
+class RedZoneSimulator:
+    """Simulates the System V AMD64 ABI 128-byte Red Zone behavior and stack corruption upon asynchronous interrupts.
+
+    In the System V AMD64 ABI:
+    - The 128-byte area beyond the current RSP (%rsp - 1 to %rsp - 128) is designated as the 'Red Zone'.
+    - Leaf functions or functions without downstream calls can utilize this zone without modifying RSP.
+    - However, if a hardware interrupt or CPU exception occurs in kernel mode, the CPU hardware
+      immediately pushes SS, RSP, RFLAGS, CS, RIP, (and error code) onto the current RSP,
+      clobbering any data stored in the Red Zone!
+    """
+
+    def __init__(self, initial_rsp: int = 0x7FFFFFFF0000) -> None:
+        self.initial_rsp = initial_rsp
+        self.rsp = initial_rsp
+        self.memory: dict[int, int] = {}
+        self.stack_records: list[StackFrameEntry] = []
+        self.mode_red_zone_enabled: bool = True  # True: compiler uses red zone; False: -mno-red-zone
+
+    def configure_compiler_mode(self, use_red_zone: bool) -> None:
+        """Switch between standard ABI (use_red_zone=True) and kernel ABI (use_red_zone=False, -mno-red-zone)."""
+        self.mode_red_zone_enabled = use_red_zone
+
+    def allocate_leaf_function_vars(self, vars_map: dict[str, int]) -> list[StackFrameEntry]:
+        """Allocate local variables for a leaf function.
+
+        - If red zone is enabled: writes directly to RSP - 8, RSP - 16, ..., WITHOUT adjusting RSP (sub rsp, N omitted).
+        - If red zone is disabled (-mno-red-zone): explicitly executes `sub rsp, N`, shifting RSP below variables.
+        """
+        num_vars = len(vars_map)
+        frame_size = ((num_vars * 8 + 15) // 16) * 16  # 16-byte alignment
+
+        allocated = []
+        if self.mode_red_zone_enabled:
+            # RED ZONE: RSP remains unchanged! Data written into [RSP - 8, RSP - 128]
+            offset = -8
+            for name, val in vars_map.items():
+                target_addr = self.rsp + offset
+                self.memory[target_addr] = val
+                entry = StackFrameEntry(target_addr, offset, name, val, is_corrupted=False)
+                self.stack_records.append(entry)
+                allocated.append(entry)
+                offset -= 8
+        else:
+            # NO RED ZONE (-mno-red-zone): RSP is decremented first!
+            self.rsp -= frame_size
+            offset = 0
+            for name, val in vars_map.items():
+                target_addr = self.rsp + offset
+                self.memory[target_addr] = val
+                entry = StackFrameEntry(target_addr, offset, name, val, is_corrupted=False)
+                self.stack_records.append(entry)
+                allocated.append(entry)
+                offset += 8
+
+        return allocated
+
+    def trigger_hardware_interrupt(self, vector: int = 32) -> list[str]:
+        """Simulate CPU hardware behavior upon receiving an interrupt in Long Mode (x86-64).
+
+        The CPU automatically pushes:
+        1. SS (Stack Segment, 8 bytes)
+        2. RSP (Old Stack Pointer, 8 bytes)
+        3. RFLAGS (Flags register, 8 bytes)
+        4. CS (Code Segment, 8 bytes)
+        5. RIP (Instruction Pointer, 8 bytes)
+        Total 40 bytes pushed directly below the CURRENT RSP!
+        """
+        interrupt_frame = [
+            ("Interrupt_SS", 0x10),
+            ("Interrupt_RSP", self.rsp),
+            ("Interrupt_RFLAGS", 0x202),
+            ("Interrupt_CS", 0x08),
+            ("Interrupt_RIP", 0x100050),
+        ]
+
+        log = []
+        push_addr = self.rsp
+        for name, val in interrupt_frame:
+            push_addr -= 8
+            # Check if this address overwrites any existing stack entry
+            for record in self.stack_records:
+                if record.address == push_addr:
+                    record.is_corrupted = True
+                    log.append(
+                        f"CRITICAL CORRUPTION: Variable '{record.name}' at {hex(push_addr)} "
+                        f"(original value {hex(record.value)}) was OVERWRITTEN by CPU hardware pushing {name} ({hex(val)})!"
+                    )
+            self.memory[push_addr] = val
+
+        self.rsp = push_addr
+        return log
+
+    # Alias for trigger_hardware_interrupt
+    trigger_cpu_interrupt = trigger_hardware_interrupt
+
+    def count_corrupted_variables(self) -> int:
+        """Return the number of local variables destroyed by the interrupt."""
+        return sum(1 for rec in self.stack_records if rec.is_corrupted)
+
+
+def plot_kernel_loading_and_entry_flow(output_path: str = "3/result/fig3_05_kernel_loading_and_entry_flow.png") -> str:
+    """Render high-resolution diagram of the MikanOS UEFI kernel loading and entry transition flow."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(16, 9), dpi=300)
+    ax.set_facecolor("#FAFAFC")
+
+    fig.suptitle(
+        "MikanOS Bootloader to Kernel Transition Architecture (Chapter 3.3 / day03a)",
+        fontsize=16,
+        fontweight="bold",
+        color="#1A237E",
+        y=0.97
+    )
+
+    # 4 Major Sequential Phases
+    phases = [
+        {
+            "step": "Phase 1: Kernel ELF Discovery & Sizing",
+            "actor": "UEFI Bootloader (Main.c)",
+            "api": "root_dir->Open(..., L\"\\\\kernel.elf\", ...)\nkernel_file->GetInfo(&gEfiFileInfoGuid, ...)",
+            "desc": "Access FAT filesystem using EFI_SIMPLE_FILE_SYSTEM_PROTOCOL.\nRetrieve exact kernel binary size (kernel_file_size) in bytes.",
+            "color": "#E3F2FD",
+            "border": "#1976D2",
+            "icon": "[DISK / FAT32]"
+        },
+        {
+            "step": "Phase 2: 1MiB Physical Page Allocation & Read",
+            "actor": "UEFI Boot Services (Memory Allocation)",
+            "api": "gBS->AllocatePages(AllocateAddress, EfiLoaderData,\n    (size + 0xfff) / 0x1000, &kernel_base_addr);\nkernel_file->Read(..., (VOID*)kernel_base_addr);",
+            "desc": "Fix base address at 0x100000 (1MiB, legacy real-mode ceiling).\nAllocate contiguous 4KiB pages and copy raw ELF binary into RAM.",
+            "color": "#E8F5E9",
+            "border": "#388E3C",
+            "icon": "[RAM / 0x100000]"
+        },
+        {
+            "step": "Phase 3: ExitBootServices Sovereignty Handoff",
+            "actor": "UEFI Firmware -> OS Kernel Transition",
+            "api": "status = gBS->ExitBootServices(image_handle, memmap.map_key);\nif (EFI_ERROR(status)) {\n    GetMemoryMap(&memmap); // Retry with updated MapKey\n    gBS->ExitBootServices(image_handle, memmap.map_key);\n}",
+            "desc": "Terminate all UEFI Boot Services (no more Print, dynamic alloc).\nKernel acquires bare-metal CPU sovereignty. MapKey retry is mandatory.",
+            "color": "#FFF3E0",
+            "border": "#F57C00",
+            "icon": "[CPU SOVEREIGNTY]"
+        },
+        {
+            "step": "Phase 4: ELF64 Entry Dereference & Far Jump",
+            "actor": "Kernel Launch (C++ KernelMain)",
+            "api": "UINT64 entry_addr = *(UINT64*)(kernel_base_addr + 24);\ntypedef void EntryPointType(void);\n((EntryPointType*)entry_addr)();\n--> KernelMain(): while(1) __asm__(\"hlt\");",
+            "desc": "Read e_entry from ELF64 header (offset 0x18 = 24 bytes).\nCast to function pointer and execute CALL. Enter infinite HLT loop.",
+            "color": "#F3E5F5",
+            "border": "#7B1FA2",
+            "icon": "[KERNEL RUNTIME]"
+        }
+    ]
+
+    card_width = 0.21
+    gap = 0.035
+    start_x = 0.04
+    card_y = 0.45
+    card_height = 0.44
+
+    for i, p in enumerate(phases):
+        x = start_x + i * (card_width + gap)
+
+        card = patches.FancyBboxPatch(
+            (x, card_y), card_width, card_height,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor=p["color"], edgecolor=p["border"], linewidth=2.0, zorder=2
+        )
+        ax.add_patch(card)
+
+        # Header tag
+        ax.text(x + 0.015, card_y + card_height - 0.035, p["icon"], fontsize=9.5, fontweight="bold", color=p["border"])
+        ax.text(x + 0.015, card_y + card_height - 0.075, p["step"], fontsize=10.5, fontweight="bold", color="#212121")
+        ax.text(x + 0.015, card_y + card_height - 0.105, f"Actor: {p['actor']}", fontsize=8.5, fontstyle="italic", color="#555555")
+
+        # Divider
+        ax.plot([x + 0.01, x + card_width - 0.01], [card_y + card_height - 0.12, card_y + card_height - 0.12], color=p["border"], alpha=0.4, linewidth=1.2)
+
+        # Code API Box
+        code_box = patches.FancyBboxPatch(
+            (x + 0.01, card_y + 0.14), card_width - 0.02, 0.16,
+            boxstyle="round,pad=0.008,rounding_size=0.01",
+            facecolor="#FFFFFF", edgecolor="#B0BEC5", linewidth=1.0, zorder=3
+        )
+        ax.add_patch(code_box)
+        ax.text(x + 0.015, card_y + 0.27, p["api"], fontsize=7.6, family="monospace", color="#1A237E", verticalalignment="top")
+
+        # Description text
+        ax.text(x + 0.012, card_y + 0.07, p["desc"], fontsize=8.2, color="#37474F", verticalalignment="top")
+
+        # Arrow to next phase
+        if i < len(phases) - 1:
+            arrow_x = x + card_width + 0.005
+            ax.annotate(
+                "", xy=(arrow_x + gap - 0.01, card_y + card_height / 2),
+                xytext=(arrow_x, card_y + card_height / 2),
+                arrowprops=dict(arrowstyle="->,head_width=0.4,head_length=0.6", color="#455A64", lw=2.5),
+                zorder=4
+            )
+
+    # Bottom Callout: Detail on ELF64 Header Offset 24
+    elf_detail_box = patches.FancyBboxPatch(
+        (0.04, 0.08), 0.92, 0.30,
+        boxstyle="round,pad=0.015,rounding_size=0.02",
+        facecolor="#ECEFF1", edgecolor="#607D8B", linewidth=1.8, zorder=2
+    )
+    ax.add_patch(elf_detail_box)
+
+    ax.text(0.06, 0.33, "[DEEP-DIVE ARCHITECTURE] Why *(UINT64*)(kernel_base_addr + 24) Points to Entry Point",
+            fontsize=12, fontweight="bold", color="#263238")
+
+    elf_text = (
+        "1. ELF64 Header (Elf64_Ehdr) Standard Memory Layout:\n"
+        "   - Bytes 00..15 (16 Bytes): e_ident (ELF Magic 0x7F 'ELF', 64-bit class, 2's complement little-endian, System V ABI)\n"
+        "   - Bytes 16..17 (02 Bytes): e_type (0x0002 = ET_EXEC: Executable binary)\n"
+        "   - Bytes 18..19 (02 Bytes): e_machine (0x003E = 62 = EM_X86_64: AMD x86-64 Architecture)\n"
+        "   - Bytes 20..23 (04 Bytes): e_version (0x00000001 = EV_CURRENT)\n"
+        "   - Bytes 24..31 (08 Bytes): e_entry (64-bit Entry Point Virtual Address)  <--- EXACTLY AT OFFSET 24 (0x18)!\n"
+        "2. The 1MiB Boundary (0x100000) Choice:\n"
+        "   - In x86 architecture, the first 1MiB (0x00000000 - 0x000FFFFF) contains IVT, BDA, EBDA, Video RAM (VRAM 0xA0000),\n"
+        "     and BIOS ROM. Loading the kernel at 1MiB (0x100000) prevents hardware memory collisions while staying within 32-bit RAM limits.\n"
+        "3. MapKey Mismatch & ExitBootServices Consistency:\n"
+        "   - Any memory allocation or device event modifies the UEFI internal MemoryMap, invalidating the previous MapKey.\n"
+        "   - MikanOS implements an immediate re-fetch loop (`GetMemoryMap` -> `ExitBootServices`) ensuring infallible transition."
+    )
+    ax.text(0.06, 0.11, elf_text, fontsize=8.8, family="monospace", color="#37474F")
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0, 1.0)
+    ax.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_red_zone_mechanism_and_trap(output_path: str = "3/result/fig3_06_red_zone_mechanism_and_trap.png") -> str:
+    """Render high-resolution diagram explaining System V AMD64 ABI Red Zone and the kernel interrupt trap."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 9), dpi=300)
+    fig.suptitle(
+        "System V AMD64 ABI Red Zone (128-Byte) Mechanism & Kernel Crash Trap (Column 3.1)",
+        fontsize=16,
+        fontweight="bold",
+        color="#B71C1C",
+        y=0.97
+    )
+
+    # 1. Left Subplot: User Space (Standard ABI with Red Zone) vs Interrupt Destruction
+    ax1.set_facecolor("#FFFDE7")
+    ax1.set_title("1. Standard User Space ABI: Red Zone Optimization & Kernel Trap", fontsize=12.5, fontweight="bold", color="#D84315", pad=12)
+
+    stack_cards = [
+        (0.80, "Caller Frame (Saved RSP, Return RIP)", "#ECEFF1", "#90A4AE", "Normal Stack Area"),
+        (0.68, "Current Function Stack Frame (%rsp points here)", "#C8E6C9", "#43A047", "RSP (Current Top of Stack)"),
+        (0.53, "RED ZONE [RSP - 1 .. RSP - 128] (128 Bytes)\nCompiler stores local variables here WITHOUT moving RSP!\n`mov [rsp - 8], rax`  (Faster: No `sub rsp, 128` needed)", "#FFCDD2", "#E53935", "Scratch Space (128B)"),
+        (0.33, "[!] TRAP IN OS KERNEL: Asynchronous Interrupt Arrives!\nCPU Hardware automatically pushes 40 bytes directly onto %rsp:\n[SS, RSP, RFLAGS, CS, RIP]\n---> OVERWRITES AND CLOBBERS RED ZONE LOCAL VARIABLES!", "#FF8A80", "#B71C1C", "STACK CORRUPTION!"),
+        (0.12, "Result: Silent Data Corruption, Undefined Behavior, Kernel Crash\nUpon interrupt return (`iretq`), clobbered local variables cause invalid memory pointers.", "#FFEBEE", "#C62828", "FATAL CRASH"),
+    ]
+
+    for y, label, fc, ec, tag in stack_cards:
+        box = patches.FancyBboxPatch(
+            (0.05, y - 0.08), 0.90, 0.12 if "TRAP" in label else 0.09,
+            boxstyle="round,pad=0.01,rounding_size=0.015",
+            facecolor=fc, edgecolor=ec, linewidth=1.8, zorder=2
+        )
+        ax1.add_patch(box)
+        ax1.text(0.08, y - 0.01, label, fontsize=9.2, fontweight="bold" if "TRAP" in label else "normal",
+                 color="#880E4F" if "TRAP" in label else "#212121", family="monospace" if "mov" in label else "sans-serif")
+        ax1.text(0.72, y - 0.065, f"[{tag}]", fontsize=8.0, fontweight="bold", color=ec)
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. Right Subplot: OS Kernel Solution (-mno-red-zone)
+    ax2.set_facecolor("#E8F5E9")
+    ax2.set_title("2. OS Kernel Solution: Compiling with `-mno-red-zone`", fontsize=12.5, fontweight="bold", color="#1B5E20", pad=12)
+
+    safe_stack_cards = [
+        (0.80, "Caller Frame (Saved RSP, Return RIP)", "#ECEFF1", "#90A4AE", "Normal Stack Area"),
+        (0.66, "Pushed Stack Frame via `sub rsp, N`\nCompiler explicitly decrements RSP before saving local variables.\nLocal variables reside INSIDE valid stack space [RSP .. RSP + N].", "#C8E6C9", "#2E7D32", "Valid Stack Frame"),
+        (0.50, "%rsp points strictly BELOW all active local variables", "#A5D6A7", "#1B5E20", "RSP (Safe Position)"),
+        (0.33, "[OK] SAFE: Asynchronous Interrupt / Exception Occurs!\nCPU pushes [SS, RSP, RFLAGS, CS, RIP] below the updated %rsp.\nLocal variables above %rsp are completely untouched and safe!", "#B9F6CA", "#00C853", "ZERO CORRUPTION"),
+        (0.12, "Why MikanOS Mandates `-mno-red-zone`:\nEvery kernel and freestanding bare-metal binary must disable Red Zone\nto guarantee infallible hardware interrupt handling.", "#E8F5E9", "#2E7D32", "KERNEL STABILITY"),
+    ]
+
+    for y, label, fc, ec, tag in safe_stack_cards:
+        box = patches.FancyBboxPatch(
+            (0.05, y - 0.08), 0.90, 0.12 if "SAFE" in label else 0.09,
+            boxstyle="round,pad=0.01,rounding_size=0.015",
+            facecolor=fc, edgecolor=ec, linewidth=1.8, zorder=2
+        )
+        ax2.add_patch(box)
+        ax2.text(0.08, y - 0.01, label, fontsize=9.2, fontweight="bold" if "SAFE" in label else "normal",
+                 color="#1B5E20" if "SAFE" in label else "#212121", family="monospace" if "sub" in label else "sans-serif")
+        ax2.text(0.72, y - 0.065, f"[{tag}]", fontsize=8.0, fontweight="bold", color=ec)
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
