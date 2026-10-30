@@ -76,6 +76,9 @@ add_test(NAME test_ch02_uefi_memory_map_concept_sim COMMAND ch02_uefi_memory_map
 add_executable(ch02_get_memory_map_sim src/ch02/get_memory_map_sim.cpp)
 add_test(NAME test_ch02_get_memory_map_sim COMMAND ch02_get_memory_map_sim --test)
 
+add_executable(ch02_save_memory_map_sim src/ch02/save_memory_map_sim.cpp)
+add_test(NAME test_ch02_save_memory_map_sim COMMAND ch02_save_memory_map_sim)
+
 
 
 

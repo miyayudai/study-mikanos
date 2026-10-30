@@ -7782,3 +7782,409 @@ def plot_uefi_mapkey_lifecycle_and_exit_boot_services_consistency(
     plt.close()
     return output_path
 
+
+# ==============================================================================
+# Section 2.6: Saving Memory Map to File Simulations (EFI_FILE_PROTOCOL & CSV)
+# ==============================================================================
+
+# UEFI File Open Mode Flags
+EFI_FILE_MODE_READ: int = 0x0000000000000001
+EFI_FILE_MODE_WRITE: int = 0x0000000000000002
+EFI_FILE_MODE_CREATE: int = 0x8000000000000000
+
+# Standard UEFI Protocol GUID constants
+EFI_LOADED_IMAGE_PROTOCOL_GUID: str = "5B1B31A1-9562-11D2-8E3F-00A0C969723B"
+EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: str = "964E5B22-6459-11D2-8E39-00A0C969723B"
+
+
+class MockFileProtocol:
+    """Mock implementation of EFI_FILE_PROTOCOL representing a UEFI file or directory."""
+
+    def __init__(
+        self,
+        name: str = "",
+        mode: int = EFI_FILE_MODE_READ,
+        attributes: int = 0,
+        is_directory: bool = False,
+    ) -> None:
+        self.name: str = name
+        self.mode: int = mode
+        self.attributes: int = attributes
+        self.is_directory: bool = is_directory
+        self.is_closed: bool = False
+        self.buffer: bytearray = bytearray()
+        self.children: dict[str, MockFileProtocol] = {} if is_directory else {}
+        self.cursor: int = 0
+
+    def write(self, data: Union[str, bytes]) -> int:
+        """Writes string or byte data to the file, returning bytes written."""
+        if self.is_closed:
+            raise RuntimeError(f"Cannot write to closed file '{self.name}' (EFI_DEVICE_ERROR)")
+        if self.is_directory:
+            raise RuntimeError(f"Cannot write data directly to directory '{self.name}'")
+        if not (self.mode & EFI_FILE_MODE_WRITE):
+            raise PermissionError(f"File '{self.name}' was not opened with EFI_FILE_MODE_WRITE")
+
+        raw_bytes = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        self.buffer.extend(raw_bytes)
+        self.cursor += len(raw_bytes)
+        return len(raw_bytes)
+
+    def read(self, size: int) -> bytes:
+        """Reads up to `size` bytes from the file."""
+        if self.is_closed:
+            raise RuntimeError(f"Cannot read from closed file '{self.name}'")
+        chunk = self.buffer[self.cursor : self.cursor + size]
+        self.cursor += len(chunk)
+        return bytes(chunk)
+
+    def set_position(self, position: int) -> None:
+        """Sets file cursor position (simulating EFI_FILE_PROTOCOL.SetPosition)."""
+        if self.is_closed:
+            raise RuntimeError(f"Cannot set position on closed file '{self.name}'")
+        if position == 0xFFFF_FFFF_FFFF_FFFF:  # Special UEFI constant for EOF
+            self.cursor = len(self.buffer)
+        else:
+            self.cursor = max(0, min(position, len(self.buffer)))
+
+    def open(
+        self,
+        relative_path: str,
+        mode: int = EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
+        attributes: int = 0,
+    ) -> MockFileProtocol:
+        """Opens or creates a file or sub-directory within this directory."""
+        if not self.is_directory:
+            raise RuntimeError(f"Cannot open sub-file in non-directory '{self.name}'")
+        if self.is_closed:
+            raise RuntimeError(f"Directory '{self.name}' is closed")
+
+        clean_path = relative_path.lstrip("\\/").replace("\\", "/")
+        if not clean_path:
+            raise ValueError("Path must not be empty")
+
+        if clean_path in self.children:
+            existing = self.children[clean_path]
+            existing.mode = mode
+            existing.is_closed = False
+            existing.cursor = 0
+            return existing
+
+        if mode & EFI_FILE_MODE_CREATE:
+            new_file = MockFileProtocol(name=clean_path, mode=mode, attributes=attributes, is_directory=False)
+            self.children[clean_path] = new_file
+            return new_file
+
+        raise FileNotFoundError(f"File '{clean_path}' not found in directory '{self.name}' (EFI_NOT_FOUND)")
+
+    def close(self) -> None:
+        """Closes the file and flushes unwritten buffers."""
+        self.is_closed = True
+
+    def get_content_as_str(self, encoding: str = "utf-8") -> str:
+        """Decodes the current file buffer as string."""
+        return self.buffer.decode(encoding, errors="replace")
+
+    def get_content_bytes(self) -> bytes:
+        """Returns a copy of the raw bytes."""
+        return bytes(self.buffer)
+
+
+class MockSimpleFileSystemProtocol:
+    """Mock implementation of EFI_SIMPLE_FILE_SYSTEM_PROTOCOL."""
+
+    def __init__(self, volume_label: str = "MIKANOS_BOOT") -> None:
+        self.volume_label: str = volume_label
+        self.root_dir: MockFileProtocol = MockFileProtocol(name="\\", is_directory=True)
+
+    def open_volume(self) -> MockFileProtocol:
+        """Returns the root directory EFI_FILE_PROTOCOL."""
+        return self.root_dir
+
+
+@dataclass
+class MockLoadedImageProtocol:
+    """Mock implementation of EFI_LOADED_IMAGE_PROTOCOL."""
+
+    image_base: int = 0x4000_0000
+    image_size: int = 1024 * 1024
+    device_handle: int = 0x1001
+
+
+class MockUefiEnvironment:
+    """Full mock UEFI environment simulating handle database and protocols."""
+
+    def __init__(self) -> None:
+        self.image_handle: int = 0x0001
+        self.device_handle: int = 0x1001
+        self.loaded_image: MockLoadedImageProtocol = MockLoadedImageProtocol(device_handle=self.device_handle)
+        self.file_system: MockSimpleFileSystemProtocol = MockSimpleFileSystemProtocol()
+
+        self.protocols: dict[int, dict[str, Any]] = {
+            self.image_handle: {
+                EFI_LOADED_IMAGE_PROTOCOL_GUID: self.loaded_image,
+            },
+            self.device_handle: {
+                EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: self.file_system,
+            },
+        }
+
+    def open_protocol(self, handle: int, protocol_guid: str) -> Any:
+        """Simulates gBS->OpenProtocol()."""
+        handle_map = self.protocols.get(handle)
+        if not handle_map or protocol_guid not in handle_map:
+            raise KeyError(f"Protocol '{protocol_guid}' not installed on handle 0x{handle:04x} (EFI_UNSUPPORTED)")
+        return handle_map[protocol_guid]
+
+    def open_root_dir(self, image_handle: Optional[int] = None) -> MockFileProtocol:
+        """Implements OpenRootDir logic from MikanOS LoaderPkg/Main.c."""
+        if image_handle is None:
+            image_handle = self.image_handle
+
+        loaded_image = self.open_protocol(image_handle, EFI_LOADED_IMAGE_PROTOCOL_GUID)
+        fs = self.open_protocol(loaded_image.device_handle, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID)
+        return fs.open_volume()
+
+
+class MemoryMapCsvExporter:
+    """Simulates SaveMemoryMap() function from MikanOS day02b."""
+
+    CSV_HEADER: str = "Index, Type, Type(name), PhysicalStart, NumberOfPages, Attribute\n"
+    ATTRIBUTE_MASK: int = 0xFFFFF
+
+    @classmethod
+    def save_memory_map(
+        cls,
+        memory_map: MemoryMapStruct,
+        file: MockFileProtocol,
+    ) -> str:
+        """Exports UEFI MemoryMapStruct to a CSV formatted file protocol."""
+        file.write(cls.CSV_HEADER)
+
+        for i, desc in enumerate(memory_map.descriptors):
+            line = (
+                f"{i}, {desc.type.value:x}, {desc.type.name}, "
+                f"{desc.physical_start:08x}, {desc.number_of_pages:x}, "
+                f"{desc.attribute & cls.ATTRIBUTE_MASK:x}\n"
+            )
+            file.write(line)
+
+        return file.get_content_as_str()
+
+
+def parse_memory_map_csv(csv_text: str) -> list[dict[str, Any]]:
+    """Parses exported MikanOS memory map CSV text into structured records."""
+    lines = [line.strip() for line in csv_text.strip().splitlines() if line.strip()]
+    if not lines:
+        return []
+
+    header = lines[0]
+    expected_header_prefix = "Index, Type, Type(name), PhysicalStart, NumberOfPages, Attribute"
+    if not header.startswith(expected_header_prefix):
+        raise ValueError(f"Invalid memory map CSV header: '{header}'")
+
+    records: list[dict[str, Any]] = []
+    for line in lines[1:]:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 6:
+            continue
+        idx = int(parts[0], 10)
+        type_val = int(parts[1], 16)
+        type_name = parts[2]
+        phys_start = int(parts[3], 16)
+        num_pages = int(parts[4], 16)
+        attribute = int(parts[5], 16)
+        size_bytes = num_pages * 4096
+        phys_end = phys_start + size_bytes
+
+        records.append({
+            "Index": idx,
+            "Type": type_val,
+            "TypeName": type_name,
+            "PhysicalStart": phys_start,
+            "PhysicalEnd": phys_end,
+            "NumberOfPages": num_pages,
+            "Attribute": attribute,
+            "SizeBytes": size_bytes,
+            "SizeMiB": size_bytes / (1024 * 1024),
+        })
+
+    return records
+
+
+def plot_uefi_file_system_protocol_hierarchy(
+    output_path: str = "2/result/fig2_11_uefi_file_system_protocol_hierarchy.png",
+) -> str:
+    """Renders high-DPI diagram of UEFI Protocol hierarchy, OpenRootDir, and file lifecycle."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_arch, ax_life) = plt.subplots(
+        2, 1, figsize=(15, 11.0), gridspec_kw={"height_ratios": [1.1, 0.9], "hspace": 0.28}
+    )
+
+    # Upper subplot: UEFI Protocol Object Model Architecture
+    ax_arch.set_title("1. UEFI プロトコル指向アーキテクチャとファイルシステム探索階層 (OpenRootDir)", fontsize=11, fontweight="bold", pad=12)
+    ax_arch.set_xlim(0, 100)
+    ax_arch.set_ylim(0, 100)
+    ax_arch.axis("off")
+
+    nodes = [
+        ("ImageHandle (EFI_HANDLE)\nブートローダ自身の実行モジュール", 3, 62, 28, 28, "#E3F2FD", "#1565C0",
+         "エントリポイント引数\nimage_handle"),
+        ("EFI_LOADED_IMAGE_PROTOCOL\nロード元デバイスの特定", 36, 62, 28, 28, "#EDE7F6", "#4527A0",
+         "gEfiLoadedImageProtocolGuid\n-> DeviceHandle を取得"),
+        ("DeviceHandle & EFI_SIMPLE_FILE_SYSTEM_PROTOCOL\nFATファイルシステムの抽象化", 69, 62, 28, 28, "#E8F5E9", "#2E7D32",
+         "gEfiSimpleFileSystemProtocolGuid\n-> OpenVolume(&root_dir)"),
+        ("root_dir (EFI_FILE_PROTOCOL*)\nルートディレクトリ ('\\')", 36, 12, 28, 28, "#FFF3E0", "#E65100",
+         "root_dir->Open(..., L\"\\\\memmap\",\n  READ|WRITE|CREATE, 0)"),
+        ("memmap_file (EFI_FILE_PROTOCOL*)\n新規作成された \\memmap ファイル", 69, 12, 28, 28, "#FFEBEE", "#C62828",
+         "SaveMemoryMap(&memmap, file)\nfile->Write(len, buf)\nfile->Close()"),
+    ]
+
+    for title, x, y, w, h, c, bc, sub in nodes:
+        box = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.4", facecolor=c, edgecolor=bc, lw=1.3)
+        ax_arch.add_patch(box)
+        ax_arch.text(x + w / 2, y + h * 0.72, title, fontsize=8.0, ha="center", fontweight="bold", color=bc)
+        ax_arch.text(x + w / 2, y + h * 0.28, sub, fontsize=7.0, ha="center", color="#263238")
+
+    # Arrows in Upper Subplot
+    # 1 -> 2
+    ax_arch.annotate("", xy=(36, 76), xytext=(31, 76),
+                     arrowprops=dict(arrowstyle="->", lw=2.0, color="#1565C0"))
+    ax_arch.text(33.5, 78, "① OpenProtocol", fontsize=7.2, ha="center", color="#1565C0", fontweight="bold")
+
+    # 2 -> 3
+    ax_arch.annotate("", xy=(69, 76), xytext=(64, 76),
+                     arrowprops=dict(arrowstyle="->", lw=2.0, color="#4527A0"))
+    ax_arch.text(66.5, 78, "② OpenProtocol", fontsize=7.2, ha="center", color="#4527A0", fontweight="bold")
+
+    # 3 -> 4
+    ax_arch.annotate("", xy=(50, 40), xytext=(83, 62),
+                     arrowprops=dict(arrowstyle="->", lw=2.0, color="#2E7D32", connectionstyle="arc3,rad=-0.15"))
+    ax_arch.text(70, 48, "③ OpenVolume", fontsize=7.2, ha="center", color="#2E7D32", fontweight="bold")
+
+    # 4 -> 5
+    ax_arch.annotate("", xy=(69, 26), xytext=(64, 26),
+                     arrowprops=dict(arrowstyle="->", lw=2.0, color="#E65100"))
+    ax_arch.text(66.5, 29, "④ root_dir->Open", fontsize=7.2, ha="center", color="#E65100", fontweight="bold")
+
+    # Lower subplot: File Protocol Lifecycle & Safety
+    ax_life.set_title("2. EFI_FILE_PROTOCOL のライフサイクル遷移とクローズフラッシュの重要性", fontsize=11, fontweight="bold", pad=12)
+    ax_life.set_xlim(0, 100)
+    ax_life.set_ylim(0, 100)
+    ax_life.axis("off")
+
+    life_steps = [
+        ("1. Open (ファイル作成・開く)", 3, 20, 21, 65, "#E1F5FE", "#0288D1",
+         "root_dir->Open(\n  ..., L\"\\\\memmap\",\n  READ|WRITE|CREATE, 0)\n\n• UTF-16LE パス指定\n• FAT32 ディレクトリ内に\n  新規エントリ確保"),
+        ("2. Header Write (CSVヘッダ書き込み)", 27, 20, 21, 65, "#E8F5E9", "#388E3C",
+         "len = AsciiStrLen(header);\nfile->Write(file, &len, header);\n\n• len は IN OUT 引数\n• 要求バイト数渡し\n• 実書込バイト数返却"),
+        ("3. Row Loop (メモリディスクリプタ書込)", 51, 20, 21, 65, "#FFF8E1", "#FFA000",
+         "for (iter... iter += desc_size)\n  AsciiSPrint(buf, ...);\n  file->Write(file, &len, buf);\n\n• 可変長バイトポインタ走査\n• 属性下位20bitマスク"),
+        ("4. Close (バッファフラッシュ・完了)", 75, 20, 22, 65, "#FFEBEE", "#D32F2F",
+         "file->Close(memmap_file);\n\n⚠️ クローズの絶対遵守:\n未書込キャッシュをFATへ書き出し、\nディレクトリエントリの\nファイルサイズを確定更新！"),
+    ]
+
+    for title, x, y, w, h, c, bc, desc in life_steps:
+        box = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_life.add_patch(box)
+        ax_life.text(x + w / 2, y + h * 0.88, title, fontsize=7.6, ha="center", fontweight="bold", color=bc)
+        ax_life.text(x + 1.5, y + h * 0.45, desc, fontsize=6.8, va="center", color="#212121")
+
+    for x_arr in [24, 48, 72]:
+        ax_life.annotate("", xy=(x_arr + 3, 52), xytext=(x_arr, 52),
+                         arrowprops=dict(arrowstyle="->", lw=2.0, color="#455A64"))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_memory_map_csv_export_and_layout(
+    output_path: str = "2/result/fig2_12_memory_map_csv_export_and_layout.png",
+) -> str:
+    """Renders high-DPI diagram of Memory Map CSV layout, attribute bitmasking, and parsed distribution."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_fmt, ax_chart) = plt.subplots(
+        2, 1, figsize=(15, 10.5), gridspec_kw={"height_ratios": [1.1, 0.9], "hspace": 0.32}
+    )
+
+    # Upper Subplot: CSV Format & Attribute Bitmasking
+    ax_fmt.set_title("1. メモリディスクリプタ構造体から CSV 行へのマッピングと属性ビットマスク数理", fontsize=11, fontweight="bold", pad=12)
+    ax_fmt.set_xlim(0, 100)
+    ax_fmt.set_ylim(0, 100)
+    ax_fmt.axis("off")
+
+    # CSV Format Table Visual
+    csv_box = FancyBboxPatch((2, 58), 96, 38, boxstyle="round,pad=0.3", facecolor="#ECEFF1", edgecolor="#37474F", lw=1.2)
+    ax_fmt.add_patch(csv_box)
+    ax_fmt.text(50, 91, '出力CSV行フォーマット: AsciiSPrint(buf, sizeof(buf), "%u, %x, %-ls, %08lx, %lx, %lx\\n", ...)',
+                fontsize=8.0, ha="center", fontweight="bold", color="#263238")
+
+    cols = [
+        ("Index (%u)", 4, 13, "0, 1, 2...", "ディスクリプタ通し番号 (i++)\n0 から昇順", "#E3F2FD", "#1565C0"),
+        ("Type (%x)", 18, 12, "7 (Conventional)", "EFI_MEMORY_TYPE 16進値\n例: 7 = 0x7", "#EDE7F6", "#512DA8"),
+        ("Type(name) (%-ls)", 31, 20, "EfiConventionalMemory", "UTF-16 文字列名称 (左詰)\nGetMemoryTypeUnicode()", "#E8F5E9", "#2E7D32"),
+        ("PhysicalStart (%08lx)", 52, 19, "00100000", "物理開始アドレス (16進数)\n最低8桁ゼロ埋めフォーマット", "#FFF3E0", "#E65100"),
+        ("NumberOfPages (%lx)", 72, 13, "6f7f", "4KiBページ数 (16進数)\nバイト数 = pages * 4096", "#FCE4EC", "#C2185B"),
+        ("Attribute (%lx)", 86, 11, "f", "desc->Attribute & 0xffffflu\n下位20bit属性マスク", "#FFEBEE", "#C62828"),
+    ]
+
+    for title, x, w, ex, desc, c, bc in cols:
+        b = FancyBboxPatch((x, 62), w, 24, boxstyle="round,pad=0.2", facecolor=c, edgecolor=bc, lw=1.0)
+        ax_fmt.add_patch(b)
+        ax_fmt.text(x + w / 2, 81, title, fontsize=6.8, ha="center", fontweight="bold", color=bc)
+        ax_fmt.text(x + w / 2, 73, f"例: {ex}", fontsize=6.3, ha="center", color="#212121")
+        ax_fmt.text(x + w / 2, 65, desc, fontsize=5.8, ha="center", color="#546E7A")
+
+    # Bitmask Explanation Box
+    mask_box = FancyBboxPatch((2, 4), 96, 48, boxstyle="round,pad=0.3", facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.2)
+    ax_fmt.add_patch(mask_box)
+    ax_fmt.text(50, 46, "【重要数理】なぜ desc->Attribute & 0xffffflu (下位20ビットマスク) を行うのか？",
+                fontsize=8.0, ha="center", fontweight="bold", color="#F57F17")
+    ax_fmt.text(5, 33, "• UEFI 仕様のメモリキャッシュ属性ビット定義 (UEFI Spec 7.2.1):\n"
+                       "  - Bit 0: UC (Uncacheable, 0x1)          - Bit 1: WC (Write-Coalescing, 0x2)    - Bit 2: WT (Write-Through, 0x4)\n"
+                       "  - Bit 3: WB (Write-Back, 0x8)           - Bit 4: UCE (Uncacheable Exported)    - Bit 12: WP (Write-Protected)\n"
+                       "  - Bit 13: RP (Read-Protected)           - Bit 14: XP (Execute-Protected)       - Bit 15: NV (Non-Volatile)\n"
+                       "• 0xFFFFF (20ビットマスク) の意義:\n"
+                       "  上位ビット (Bit 20〜63) はプラットフォーム・ベンダー固有予約属性や実行時属性 (EFI_MEMORY_RUNTIME = 0x8000000000000000) であり、\n"
+                       "  CSV出力時に上位の巨大なフラグを切り離して、メモリ本来のキャッシュ・保護属性 (下位20bit) のみを簡潔に比較観察するため！",
+                fontsize=6.8, color="#212121")
+
+    # Lower Subplot: Parsed Memory Distribution from simulated CSV
+    ax_chart.set_title("2. 保存された \\memmap CSV のパース集計によるメモリタイプ別容量分布 (QEMU OVMF 標準 2GiB)", fontsize=11, fontweight="bold", pad=12)
+
+    # Sample distribution simulating QEMU standard 2GB memory map
+    categories = [
+        "Conventional\n(空きRAM)",
+        "BootServices\n(Data/Code)",
+        "RuntimeServices\n(Data/Code)",
+        "ACPI\n(Reclaim/NVS)",
+        "Reserved\n(ファームウェア)",
+        "MMIO\n(デバイスI/O)",
+    ]
+    sizes_mib = [1912.4, 68.5, 12.8, 4.2, 10.1, 32.0]
+    colors = ["#4CAF50", "#2196F3", "#9C27B0", "#FF9800", "#607D8B", "#F44336"]
+
+    bars = ax_chart.bar(categories, sizes_mib, color=colors, edgecolor="#37474F", width=0.55, lw=1.0)
+    ax_chart.set_ylabel("容量 (MiB)", fontsize=9.0, fontweight="bold")
+    ax_chart.set_ylim(0, 2200)
+
+    for bar, val in zip(bars, sizes_mib):
+        y = bar.get_height()
+        pct = (val / sum(sizes_mib)) * 100
+        ax_chart.text(
+            bar.get_x() + bar.get_width() / 2, y + 35,
+            f"{val:.1f} MiB\n({pct:.1f}%)", ha="center", fontsize=7.2, fontweight="bold", color="#263238"
+        )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
