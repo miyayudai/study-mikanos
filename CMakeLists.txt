@@ -64,6 +64,10 @@ add_test(NAME test_ch01_os_chapter1_exercises COMMAND ch01_os_chapter1_exercises
 add_executable(ch02_edk2_package_analyzer src/ch02/edk2_package_analyzer.cpp)
 add_test(NAME test_ch02_edk2_package_analyzer COMMAND ch02_edk2_package_analyzer)
 
+add_executable(ch02_uefi_hello_world_sim src/ch02/uefi_hello_world_sim.cpp)
+add_test(NAME test_ch02_uefi_hello_world_sim COMMAND ch02_uefi_hello_world_sim --test)
+
+
 
 
 

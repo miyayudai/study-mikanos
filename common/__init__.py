@@ -123,6 +123,12 @@ from common.os_sim import (
     BuildApproachComparator,
     plot_edk2_architecture_and_packages,
     plot_edk2_build_pipeline_comparison,
+    UefiStatus,
+    UefiStringEncoder,
+    PreprocessResult,
+    CPreprocessorSimulator,
+    plot_uefi_hello_world_execution_flow,
+    plot_preprocessor_include_expansion_and_tree,
 )
 
 __all__ = [
@@ -248,4 +254,10 @@ __all__ = [
     "BuildApproachComparator",
     "plot_edk2_architecture_and_packages",
     "plot_edk2_build_pipeline_comparison",
+    "UefiStatus",
+    "UefiStringEncoder",
+    "PreprocessResult",
+    "CPreprocessorSimulator",
+    "plot_uefi_hello_world_execution_flow",
+    "plot_preprocessor_include_expansion_and_tree",
 ]

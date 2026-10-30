@@ -89,7 +89,7 @@ cmake --build build
 |:---:|---|:---:|:---:|---|:---:|:---:|
 | **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | [`0_Exercises.ipynb`](0/0_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | [`1_Exercises.ipynb`](1/1_Exercises.ipynb) | `[x]` 完了 (10/10) |
-| **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[-]` 進行中 (1/10) |
+| **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[-]` 進行中 (2/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
@@ -155,6 +155,7 @@ cmake --build build
 | ノートブック | 内容 | Colab で開く |
 |---|---|:---:|
 | [`2.1_Introduction_to_EDK2.ipynb`](2/2.1_Introduction_to_EDK2.ipynb) | 2.1 EDK II入門（EDK IIアーキテクチャ・MdePkgとMikanLoaderPkg・DEC/INF/DSCメタ仕様・依存性注入・6段階ビルドパイプライン） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.1_Introduction_to_EDK2.ipynb) |
+| [`2.2_Hello_World_with_EDK2.ipynb`](2/2.2_Hello_World_with_EDK2.ipynb) | 2.2 EDK IIでハローワールド（`osbook_day02a`・`MikanLoaderPkg`構成・`UefiMain`とABI・UTF-16LE・コラム2.1 プリプロセッサ展開と探索パス・インクルードガード） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.2_Hello_World_with_EDK2.ipynb) |
 
 
 

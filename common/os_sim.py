@@ -6060,3 +6060,500 @@ def plot_edk2_build_pipeline_comparison(output_path: Path | str) -> Path:
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+
+# ==============================================================================
+# Chapter 2.2: EDK II Hello World, UEFI Status, UTF-16, and Preprocessor Simulator
+# ==============================================================================
+
+class UefiStatus:
+    """UEFI Status Code representation and bit-manipulation utilities (64-bit integer)."""
+
+    EFI_ERROR_MASK: int = 0x8000_0000_0000_0000
+
+    # Common UEFI Status Codes (UEFI Specification 2.8+ Table 238)
+    SUCCESS: int = 0
+    LOAD_ERROR: int = EFI_ERROR_MASK | 1
+    INVALID_PARAMETER: int = EFI_ERROR_MASK | 2
+    UNSUPPORTED: int = EFI_ERROR_MASK | 3
+    BAD_BUFFER_SIZE: int = EFI_ERROR_MASK | 4
+    BUFFER_TOO_SMALL: int = EFI_ERROR_MASK | 5
+    NOT_READY: int = EFI_ERROR_MASK | 6
+    DEVICE_ERROR: int = EFI_ERROR_MASK | 7
+    WRITE_PROTECTED: int = EFI_ERROR_MASK | 8
+    OUT_OF_RESOURCES: int = EFI_ERROR_MASK | 9
+    VOLUME_CORRUPTED: int = EFI_ERROR_MASK | 10
+    VOLUME_FULL: int = EFI_ERROR_MASK | 11
+    NO_MEDIA: int = EFI_ERROR_MASK | 12
+    MEDIA_CHANGED: int = EFI_ERROR_MASK | 13
+    NOT_FOUND: int = EFI_ERROR_MASK | 14
+    ACCESS_DENIED: int = EFI_ERROR_MASK | 15
+
+    _NAMES: Dict[int, str] = {
+        0: "EFI_SUCCESS",
+        EFI_ERROR_MASK | 1: "EFI_LOAD_ERROR",
+        EFI_ERROR_MASK | 2: "EFI_INVALID_PARAMETER",
+        EFI_ERROR_MASK | 3: "EFI_UNSUPPORTED",
+        EFI_ERROR_MASK | 4: "EFI_BAD_BUFFER_SIZE",
+        EFI_ERROR_MASK | 5: "EFI_BUFFER_TOO_SMALL",
+        EFI_ERROR_MASK | 6: "EFI_NOT_READY",
+        EFI_ERROR_MASK | 7: "EFI_DEVICE_ERROR",
+        EFI_ERROR_MASK | 8: "EFI_WRITE_PROTECTED",
+        EFI_ERROR_MASK | 9: "EFI_OUT_OF_RESOURCES",
+        EFI_ERROR_MASK | 10: "EFI_VOLUME_CORRUPTED",
+        EFI_ERROR_MASK | 11: "EFI_VOLUME_FULL",
+        EFI_ERROR_MASK | 12: "EFI_NO_MEDIA",
+        EFI_ERROR_MASK | 13: "EFI_MEDIA_CHANGED",
+        EFI_ERROR_MASK | 14: "EFI_NOT_FOUND",
+        EFI_ERROR_MASK | 15: "EFI_ACCESS_DENIED",
+    }
+
+    @classmethod
+    def is_error(cls, status: int) -> bool:
+        """Return True if high bit 63 is set (UEFI Error flag)."""
+        return bool(status & cls.EFI_ERROR_MASK)
+
+    @classmethod
+    def error_code(cls, status: int) -> int:
+        """Extract the numeric error code without the error bit."""
+        return status & ~cls.EFI_ERROR_MASK
+
+    @classmethod
+    def name(cls, status: int) -> str:
+        """Return human-readable EFI_STATUS identifier."""
+        return cls._NAMES.get(status, f"EFI_CUSTOM_STATUS(0x{status:016X})")
+
+    @classmethod
+    def to_hex(cls, status: int) -> str:
+        """Return formatted 16-character hex representation."""
+        return f"0x{status:016X}"
+
+
+class UefiStringEncoder:
+    """UTF-16LE string encoder and memory layout analyzer for UEFI CHAR16 wide strings."""
+
+    @staticmethod
+    def encode(text: str) -> bytes:
+        """Encode Python string into null-terminated UTF-16LE byte sequence."""
+        return text.encode("utf-16-le") + b"\x00\x00"
+
+    @staticmethod
+    def decode(data: bytes) -> str:
+        """Decode null-terminated UTF-16LE bytes into Python string."""
+        if data.endswith(b"\x00\x00"):
+            data = data[:-2]
+        return data.decode("utf-16-le")
+
+    @staticmethod
+    def to_char16_list(text: str) -> List[int]:
+        """Convert string to list of 16-bit unsigned integer values (including null terminator)."""
+        values = [ord(c) for c in text]
+        values.append(0)
+        return values
+
+    @classmethod
+    def analyze_memory_layout(cls, text: str) -> List[Dict[str, Any]]:
+        """Analyze memory bytes, offset, character representation, and word values."""
+        raw_bytes = cls.encode(text)
+        records = []
+        for i in range(0, len(raw_bytes), 2):
+            low = raw_bytes[i]
+            high = raw_bytes[i + 1] if i + 1 < len(raw_bytes) else 0
+            val16 = low | (high << 8)
+            char_rep = chr(val16) if 32 <= val16 <= 126 else (r"\n" if val16 == 10 else (r"\0" if val16 == 0 else f"U+{val16:04X}"))
+            records.append({
+                "offset": i,
+                "hex_bytes": f"{low:02X} {high:02X}",
+                "uint16_val": f"0x{val16:04X}",
+                "char": char_rep,
+            })
+        return records
+
+
+@dataclass
+class PreprocessResult:
+    """Output of CPreprocessorSimulator."""
+
+    entry_path: str
+    expanded_code: str
+    source_line_count: int
+    expanded_line_count: int
+    include_tree: Dict[str, Any]
+    included_files_in_order: List[str]
+    guard_symbols_defined: List[str]
+
+
+class CPreprocessorSimulator:
+    """Deterministic C preprocessor simulator modeling #include, search paths, and include guards."""
+
+    def __init__(self) -> None:
+        self.files: Dict[str, str] = {}
+        self.system_include_dirs: List[str] = []
+        self.defined_macros: set[str] = set()
+
+    def add_file(self, path: str, content: str) -> None:
+        """Register a file in virtual file system with normalized POSIX path."""
+        norm_path = os.path.normpath(path)
+        self.files[norm_path] = content
+
+    def add_include_dir(self, dir_path: str) -> None:
+        """Add a directory to the system include path list (-I flags)."""
+        norm_dir = os.path.normpath(dir_path)
+        if norm_dir not in self.system_include_dirs:
+            self.system_include_dirs.append(norm_dir)
+
+    def resolve_include(self, include_target: str, current_dir: str, is_system: bool) -> Optional[str]:
+        """Resolve #include <target> or #include "target" according to C standard rules."""
+        # Rule 1: Quoted include searches current directory first
+        if not is_system:
+            local_candidate = os.path.normpath(os.path.join(current_dir, include_target))
+            if local_candidate in self.files:
+                return local_candidate
+
+        # Rule 2: Search system include directories in order
+        for inc_dir in self.system_include_dirs:
+            candidate = os.path.normpath(os.path.join(inc_dir, include_target))
+            if candidate in self.files:
+                return candidate
+
+        # Rule 3: Exact path fallback in virtual root
+        norm_target = os.path.normpath(include_target)
+        if norm_target in self.files:
+            return norm_target
+
+        return None
+
+    def preprocess(self, entry_file: str) -> PreprocessResult:
+        """Preprocess entry file, expanding #include directives while tracking guards and tree."""
+        norm_entry = os.path.normpath(entry_file)
+        if norm_entry not in self.files:
+            raise FileNotFoundError(f"Entry file '{entry_file}' not found in virtual filesystem.")
+
+        included_files_in_order: List[str] = []
+        guard_symbols_defined: List[str] = []
+        active_guards: set[str] = set()
+        seen_pragma_once: set[str] = set()
+
+        def parse_file(current_path: str, visited_stack: List[str]) -> Tuple[List[str], Dict[str, Any]]:
+            if current_path in visited_stack:
+                raise RuntimeError(f"Recursive circular include detected: {' -> '.join(visited_stack + [current_path])}")
+
+            content = self.files[current_path]
+            lines = content.splitlines()
+            current_dir = os.path.dirname(current_path)
+
+            tree_node: Dict[str, Any] = {
+                "file": current_path,
+                "children": [],
+                "skipped_by_guard": False,
+            }
+
+            # Check pragma once
+            if current_path in seen_pragma_once:
+                tree_node["skipped_by_guard"] = True
+                return [], tree_node
+
+            out_lines: List[str] = []
+            guard_stack: List[Tuple[str, bool]] = []  # (symbol, skipping)
+
+            for line in lines:
+                sline = line.strip()
+
+                if sline.startswith("#pragma once"):
+                    seen_pragma_once.add(current_path)
+                    continue
+
+                if sline.startswith("#ifndef"):
+                    parts = sline.split()
+                    if len(parts) >= 2:
+                        sym = parts[1]
+                        skipping = (sym in active_guards)
+                        guard_stack.append((sym, skipping))
+                        if skipping:
+                            continue
+
+                elif sline.startswith("#define"):
+                    parts = sline.split()
+                    if len(parts) >= 2:
+                        sym = parts[1]
+                        if not any(sk for _, sk in guard_stack):
+                            active_guards.add(sym)
+                            guard_symbols_defined.append(sym)
+
+                elif sline.startswith("#endif"):
+                    if guard_stack:
+                        guard_stack.pop()
+                        continue
+
+                # If currently skipped by guard, do not emit
+                if any(sk for _, sk in guard_stack):
+                    continue
+
+                if sline.startswith("#include"):
+                    # Parse <header.h> or "header.h"
+                    is_system = False
+                    target = ""
+                    if "<" in sline and ">" in sline:
+                        is_system = True
+                        target = sline[sline.find("<") + 1 : sline.find(">")]
+                    elif '"' in sline:
+                        first_q = sline.find('"')
+                        second_q = sline.find('"', first_q + 1)
+                        if second_q != -1:
+                            target = sline[first_q + 1 : second_q]
+
+                    if target:
+                        resolved = self.resolve_include(target, current_dir, is_system)
+                        if not resolved:
+                            raise FileNotFoundError(f"Header '{target}' could not be resolved from '{current_path}' (system={is_system})")
+
+                        included_files_in_order.append(resolved)
+                        child_lines, child_tree = parse_file(resolved, visited_stack + [current_path])
+                        tree_node["children"].append(child_tree)
+                        out_lines.append(f"/* >>> BEGIN EXPAND: {target} ({resolved}) */")
+                        out_lines.extend(child_lines)
+                        out_lines.append(f"/* <<< END EXPAND: {target} */")
+                        continue
+
+                out_lines.append(line)
+
+            return out_lines, tree_node
+
+        expanded_lines, tree = parse_file(norm_entry, [])
+        expanded_code = "\n".join(expanded_lines)
+        source_line_count = len(self.files[norm_entry].splitlines())
+        expanded_line_count = len(expanded_lines)
+
+        return PreprocessResult(
+            entry_path=norm_entry,
+            expanded_code=expanded_code,
+            source_line_count=source_line_count,
+            expanded_line_count=expanded_line_count,
+            include_tree=tree,
+            included_files_in_order=included_files_in_order,
+            guard_symbols_defined=guard_symbols_defined,
+        )
+
+
+def plot_uefi_hello_world_execution_flow(output_path: Path | str) -> Path:
+    """Generate high-DPI architecture diagram of UEFI Hello World execution flow."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(15, 8.5))
+    fig.patch.set_facecolor("#FCFCFD")
+    ax.set_facecolor("#FAFAFA")
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+
+    ax.text(50, 97, "MikanOS 第2章 2.2: EDK II Hello World (`osbook_day02a`) 実行制御フロー & メモリ構造",
+            fontsize=13, fontweight="bold", ha="center", color="#0D47A1")
+    ax.text(50, 93.5, "UEFI BIOS ブートマネージャから UefiMain 呼び出し、Print(L\"...\") 出力、CPU 静止までの完全トレース",
+            fontsize=9.5, ha="center", color="#455A64", style="italic")
+
+    # Column 1: Firmware & Boot Manager Phase
+    box1 = FancyBboxPatch((4, 10), 28, 80, boxstyle="round,pad=1.0", facecolor="#E3F2FD", edgecolor="#1976D2", lw=1.8)
+    ax.add_patch(box1)
+    ax.text(18, 86, "【Phase 1】ファームウェア初期化\n& ブートマネージャ", fontsize=10.5, fontweight="bold", ha="center", color="#0D47A1")
+
+    steps1 = [
+        ("1. CPUリセット / SEC・PEI", "SEC (Security) → PEI (Pre-EFI)\nメモリ初期化 & CPU 64bit Long Mode 移行", "#BBDEFB"),
+        ("2. DXE (Driver Execution)", "UEFI システムテーブル (EFI_SYSTEM_TABLE)\nブートサービス (gBS) テーブル構築", "#BBDEFB"),
+        ("3. BDS (Boot Device Select)", "FAT32 USB / ディスクの探索\n`\\EFI\\BOOT\\BOOTX64.EFI` 検出", "#90CAF9"),
+        ("4. PE32+ イメージロード", "Relocation & セグメント配置\nImageHandle 生成 & メモリ割当", "#90CAF9"),
+        ("5. エントリポイント呼び出し", "call *EntryPoint(ImageHandle, SystemTable)\nMicrosoft x64 ABI (RCX, RDX)", "#64B5F6"),
+    ]
+    y = 75
+    for title, desc, bg in steps1:
+        p = FancyBboxPatch((6, y - 7.5), 24, 9, boxstyle="round,pad=0.5", facecolor=bg, edgecolor="#1565C0", lw=1.0)
+        ax.add_patch(p)
+        ax.text(7.5, y - 1.5, title, fontsize=9, fontweight="bold", color="#0D47A1")
+        ax.text(7.5, y - 6.5, desc, fontsize=7.8, color="#212121")
+        y -= 13
+
+    # Column 2: Loader.efi & UefiMain
+    box2 = FancyBboxPatch((36, 10), 28, 80, boxstyle="round,pad=1.0", facecolor="#FFF8E1", edgecolor="#FFA000", lw=1.8)
+    ax.add_patch(box2)
+    ax.text(50, 86, "【Phase 2】Loader.efi 内部実行\n`UefiMain` (`Main.c`)", fontsize=10.5, fontweight="bold", ha="center", color="#E65100")
+
+    steps2 = [
+        ("1. AutoGen エントリラッパー", "_ModuleEntryPoint(ImageHandle, SystemTable)\ngST, gBS, gImageHandle グローバル初期化", "#FFE082"),
+        ("2. UefiMain 呼び出し", "EFI_STATUS EFIAPI UefiMain(\n  EFI_HANDLE ImageHandle,\n  EFI_SYSTEM_TABLE *SystemTable)", "#FFD54F"),
+        ("3. Print(L\"Hello, Mikan World!\\n\")", "UefiLib 高水準関数呼び出し\nUTF-16LE CHAR16 文字列フォーマット", "#FFCA28"),
+        ("4. ConOut->OutputString()", "SystemTable->ConOut->OutputString(\n  SystemTable->ConOut, L\"...\") 呼び出し", "#FFB300"),
+        ("5. while (1); ループ静止", "ブートマネージャへの早期リターンを防ぎ\n画面出力を維持したまま CPU を静止", "#FF8F00"),
+    ]
+    y = 75
+    for title, desc, bg in steps2:
+        p = FancyBboxPatch((38, y - 7.5), 24, 9, boxstyle="round,pad=0.5", facecolor=bg, edgecolor="#BF360C", lw=1.0)
+        ax.add_patch(p)
+        ax.text(39.5, y - 1.5, title, fontsize=9, fontweight="bold", color="#B71C1C")
+        ax.text(39.5, y - 6.5, desc, fontsize=7.8, color="#212121")
+        y -= 13
+
+    # Column 3: Output & Hardware State
+    box3 = FancyBboxPatch((68, 10), 28, 80, boxstyle="round,pad=1.0", facecolor="#E8F5E9", edgecolor="#388E3C", lw=1.8)
+    ax.add_patch(box3)
+    ax.text(82, 86, "【Phase 3】画面描画 & ハードウェア状態\n(Console & GOP)", fontsize=10.5, fontweight="bold", ha="center", color="#1B5E20")
+
+    steps3 = [
+        ("1. テキスト出力プロトコル", "EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL\n行・桁カーソル管理、属性（白文字/黒背景）", "#C8E6C9"),
+        ("2. GOP フレームバッファ転送", "文字フォントグリフを VRAM (GOP)\nピクセルバッファへラスタライズ転送", "#A5D6A7"),
+        ("3. QEMU / 実機モニタ表示", "「Hello, Mikan World!」\nターミナルコンソール画面に明瞭に表示", "#81C784"),
+        ("4. CPU レジスタ状態", "RIP: Main.c while(1) 命令アドレス\n無限ループで静止（ファームウェア復帰防止）", "#66BB6A"),
+        ("5. 正常終了戻り値 (未達)", "return EFI_SUCCESS; (0x00000000_00000000)\n※次節以降でカーネルロードへ進展", "#4CAF50"),
+    ]
+    y = 75
+    for title, desc, bg in steps3:
+        p = FancyBboxPatch((70, y - 7.5), 24, 9, boxstyle="round,pad=0.5", facecolor=bg, edgecolor="#1B5E20", lw=1.0)
+        ax.add_patch(p)
+        ax.text(71.5, y - 1.5, title, fontsize=9, fontweight="bold", color="#004D40")
+        ax.text(71.5, y - 6.5, desc, fontsize=7.8, color="#212121")
+        y -= 13
+
+    # Connectors between columns
+    ax.annotate("", xy=(36, 50), xytext=(32, 50), arrowprops=dict(arrowstyle="->", color="#0D47A1", lw=2.5))
+    ax.annotate("", xy=(68, 50), xytext=(64, 50), arrowprops=dict(arrowstyle="->", color="#E65100", lw=2.5))
+
+    # Bottom summary banner
+    summary_box = FancyBboxPatch((4, 2), 92, 6, boxstyle="round,pad=0.4", facecolor="#ECEFF1", edgecolor="#78909C", lw=1.2)
+    ax.add_patch(summary_box)
+    ax.text(50, 4.8, "EDK II の UefiLib が SystemTable->ConOut を抽象化し、Print() で UTF-16LE 文字列描画を1行で実現",
+            fontsize=9.2, fontweight="bold", ha="center", color="#263238")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_preprocessor_include_expansion_and_tree(output_path: Path | str) -> Path:
+    """Generate high-DPI diagram detailing C Preprocessor #include expansion and include guard logic."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8.5))
+    fig.patch.set_facecolor("#FCFCFD")
+
+    # Left Panel: Text Expansion and Search Path Rules
+    ax1.set_facecolor("#F9FBE7")
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.text(50, 96, "【コラム2.1】プリプロセッサ #include の展開メカニズム", fontsize=11.5, fontweight="bold", ha="center", color="#33691E")
+    ax1.text(50, 92, "単なるテキストの丸ごとコピペ（テキスト置換）と探索パスの違い", fontsize=9, ha="center", color="#558B2F", style="italic")
+
+    # Code Box Before Expansion
+    box_before = FancyBboxPatch((8, 52), 36, 36, boxstyle="round,pad=0.6", facecolor="#FFFFFF", edgecolor="#827717", lw=1.5)
+    ax1.add_patch(box_before)
+    ax1.text(26, 84, "Main.c (展開前: 約10行)", fontsize=9.5, fontweight="bold", ha="center", color="#827717")
+    code_before = (
+        '#include <Uefi.h>\n'
+        '#include <Library/UefiLib.h>\n'
+        '\n'
+        'EFI_STATUS EFIAPI UefiMain(\n'
+        '    EFI_HANDLE ImageHandle,\n'
+        '    EFI_SYSTEM_TABLE *SystemTable)\n'
+        '{\n'
+        '  Print(L"Hello, Mikan World!\\n");\n'
+        '  while (1);\n'
+        '  return EFI_SUCCESS;\n'
+        '}'
+    )
+    ax1.text(10, 80, code_before, fontsize=7.2, family="monospace", va="top", color="#212121")
+
+    # Arrow for expansion
+    ax1.annotate("", xy=(56, 70), xytext=(46, 70),
+                 arrowprops=dict(arrowstyle="->", color="#E65100", lw=3.0))
+    ax1.text(51, 72, "CPP 展開\n(-E オプション)", fontsize=8.5, fontweight="bold", ha="center", color="#E65100")
+
+    # Code Box After Expansion
+    box_after = FancyBboxPatch((58, 52), 36, 36, boxstyle="round,pad=0.6", facecolor="#FFF3E0", edgecolor="#E65100", lw=1.5)
+    ax1.add_patch(box_after)
+    ax1.text(76, 84, "Main.i (展開後: 数万行！)", fontsize=9.5, fontweight="bold", ha="center", color="#BF360C")
+    code_after = (
+        '// typedef unsigned long long UINT64;\n'
+        '// typedef UINT64 EFI_STATUS;\n'
+        '// struct _EFI_SYSTEM_TABLE {\n'
+        '//   EFI_TABLE_HEADER Hdr;\n'
+        '//   ... (thousands of lines of types)\n'
+        '// };\n'
+        '// EFI_STATUS Print(IN CONST CHAR16*);\n'
+        '// ... all headers expanded inline\n'
+        '\n'
+        'EFI_STATUS EFIAPI UefiMain(...) {\n'
+        '  Print(L"Hello, Mikan World!\\n");\n'
+        '  while (1); return 0;\n'
+        '}'
+    )
+    ax1.text(60, 80, code_after, fontsize=7.2, family="monospace", va="top", color="#3E2723")
+
+    # Search Path Rules Card
+    box_rules = FancyBboxPatch((8, 6), 86, 40, boxstyle="round,pad=0.6", facecolor="#FFFFFF", edgecolor="#558B2F", lw=1.5)
+    ax1.add_patch(box_rules)
+    ax1.text(51, 42, "探索規則: #include <...> vs #include \"...\"", fontsize=10, fontweight="bold", ha="center", color="#1B5E20")
+
+    rule_text = (
+        "1. #include <Header.h> (システムヘッダ探索):\n"
+        "   - カレントディレクトリを無視し、コンパイラの -I インクルードパスのみを順次探索。\n"
+        "   - EDK II では Loader.inf の [Packages] MdePkg.dec により、MdePkg/Include が自動注入。\n\n"
+        "2. #include \"Header.h\" (ローカルヘッダ探索):\n"
+        "   - まず『インクルードを指示したソースが存在するカレントディレクトリ』を最優先で探索。\n"
+        "   - カレントに存在しない場合、システムインクルードパス (-I) を順次フォールバック探索。\n\n"
+        "3. EDK II におけるインクルードパス解決:\n"
+        "   - MdePkg.dec の [Includes] Include, Include/X64 が BaseTools により -I フラグに変換される。"
+    )
+    ax1.text(12, 38, rule_text, fontsize=8.0, va="top", color="#263238")
+
+    # Right Panel: Include Tree & Guards
+    ax2.set_facecolor("#EDE7F6")
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.text(50, 96, "多重インクルード防止（インクルードガード）の数理構造", fontsize=11.5, fontweight="bold", ha="center", color="#4A148C")
+    ax2.text(50, 92, "木構造展開（Include Tree）と重複定義エラー (Redefinition) の遮断", fontsize=9, ha="center", color="#6A1B9A", style="italic")
+
+    # Tree visualization
+    tree_box = FancyBboxPatch((8, 48), 84, 40, boxstyle="round,pad=0.6", facecolor="#FFFFFF", edgecolor="#7B1FA2", lw=1.5)
+    ax2.add_patch(tree_box)
+    ax2.text(50, 84, "MikanLoaderPkg の Include 依存関係ツリー", fontsize=10, fontweight="bold", ha="center", color="#4A148C")
+
+    tree_art = (
+        "Main.c\n"
+        " |-- <Uefi.h>\n"
+        " |    |-- <Uefi/UefiBaseType.h>\n"
+        " |    |    +-- <Base.h> (UINTN, CHAR16, EFI_STATUS types)\n"
+        " |    +-- <Uefi/UefiSpec.h> (EFI_SYSTEM_TABLE, EFI_BOOT_SERVICES)\n"
+        " +-- <Library/UefiLib.h>\n"
+        "      |-- <Uefi.h>  ---> [Guard Active: 2nd expansion skipped]\n"
+        "      +-- Print(), Unicode string functions prototype"
+    )
+    ax2.text(12, 80, tree_art, fontsize=8.2, family="monospace", va="top", color="#212121")
+
+    # Guard Mechanism Comparison Card
+    guard_box = FancyBboxPatch((8, 6), 84, 38, boxstyle="round,pad=0.6", facecolor="#F3E5F5", edgecolor="#8E24AA", lw=1.5)
+    ax2.add_patch(guard_box)
+    ax2.text(50, 40, "インクルードガード方式の比較", fontsize=10, fontweight="bold", ha="center", color="#4A148C")
+
+    guard_desc = (
+        "【伝統的マクロガード (#ifndef / #define / #endif)】\n"
+        "#ifndef __UEFI_H__\n"
+        "#define __UEFI_H__\n"
+        "// ヘッダ本体\n"
+        "#endif\n"
+        "・長所: C89/C99/C11/C++ 全規格で 100% 準拠・ポータブル。\n"
+        "・動作: 2回目以降は #ifndef が偽になり、ファイル末尾まで全行読み飛ばされる。\n\n"
+        "【現代的ディレクティブ (#pragma once)】\n"
+        "・動作: コンパイラが inode/ファイルパスを記憶し、2回目のファイルオープン自体を省略。\n"
+        "・長所: 大規模プロジェクトでプリプロセスが高速化。EDK II 標準では双方を併用。"
+    )
+    ax2.text(12, 36, guard_desc, fontsize=8.0, va="top", color="#212121")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
