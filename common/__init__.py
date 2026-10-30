@@ -179,6 +179,11 @@ from common.os_sim import (
     PointerModelSimulator,
     plot_figure_2_15_pointer_memory_model,
     plot_figure_2_16_pointer_arithmetic_scaling,
+    StructMember,
+    StructMemoryLayout,
+    DoublePointerSimulator,
+    plot_figure_2_17_struct_layout_and_arrow_operator,
+    plot_figure_2_18_double_pointer_and_uefi_interface,
 )
 
 __all__ = [
@@ -360,4 +365,9 @@ __all__ = [
     "PointerModelSimulator",
     "plot_figure_2_15_pointer_memory_model",
     "plot_figure_2_16_pointer_arithmetic_scaling",
+    "StructMember",
+    "StructMemoryLayout",
+    "DoublePointerSimulator",
+    "plot_figure_2_17_struct_layout_and_arrow_operator",
+    "plot_figure_2_18_double_pointer_and_uefi_interface",
 ]

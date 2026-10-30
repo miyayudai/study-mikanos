@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-183%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-10.5%25%20(24%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-190%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-11.0%25%20(25%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -89,7 +89,7 @@ cmake --build build
 |:---:|---|:---:|:---:|---|:---:|:---:|
 | **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | [`0_Exercises.ipynb`](0/0_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | [`1_Exercises.ipynb`](1/1_Exercises.ipynb) | `[x]` 完了 (10/10) |
-| **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[-]` 進行中 (8/10) |
+| **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[-]` 進行中 (9/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
@@ -162,6 +162,7 @@ cmake --build build
 | [`2.6_Saving_Memory_Map_to_File.ipynb`](2/2.6_Saving_Memory_Map_to_File.ipynb) | 2.6 メモリマップのファイルへの保存（`osbook_day02b`・`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`・`EFI_FILE_PROTOCOL`・`OpenRootDir`プロトコル解決チェーン・UTF-16LEパスとOpenモード・`SaveMemoryMap`・可変長バイトポインタ走査・属性マスク `& 0xffffflu`・`Close`フラッシュ） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.6_Saving_Memory_Map_to_File.ipynb) |
 | [`2.7_Analyzing_Memory_Map_Output.ipynb`](2/2.7_Analyzing_Memory_Map_Output.ipynb) | 2.7 メモリマップの確認（出力CSVのパース・EfiConventionalMemory空きRAM集計・ExitBootServices後のBootServicesCode/Data回収可能メモリ数理・物理アドレス断片化・MMIOホール・カーネル配置アドレス0x100000の必然性・C++20/Pythonシミュレーション） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.7_Analyzing_Memory_Map_Output.ipynb) |
 | [`2.8_Pointers_Part1_Address_and_Pointer.ipynb`](2/2.8_Pointers_Part1_Address_and_Pointer.ipynb) | 2.8 ポインタ入門(1)：アドレスとポインタ（メモリバイト配列数理・64bitポインタサイズ不変性・アドレス演算子 &・リトルエンディアン・デリファレンス *・ポインタ型とアクセス幅・ポインタ算術スケーリング・メモリマップ走査キャスト・VRAM直接描画布石・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.8_Pointers_Part1_Address_and_Pointer.ipynb) |
+| [`2.9_Pointers_and_Arrow_Operator.ipynb`](2/2.9_Pointers_and_Arrow_Operator.ipynb) | 2.9 ポインタとアロー演算子（構造体メモリレイアウト・自然アライメントとパディング数理・アロー演算子と(*p).member完全等価性・x86-64オフセット解決・コラム2.2 ポインタのポインタ(二重ポインタT**)・値渡しvsポインタ渡し・UEFI OpenRootDir出力引数パターン・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.9_Pointers_and_Arrow_Operator.ipynb) |
 
 
 

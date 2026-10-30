@@ -9158,3 +9158,660 @@ def plot_figure_2_16_pointer_arithmetic_scaling(output_path: str = "2/result/fig
 
 
 
+
+
+# =============================================================================
+# Chapter 2.9: Struct Memory Layout, Arrow Operator, and Double Pointers
+# =============================================================================
+
+@dataclass
+class StructMember:
+    """Represents a member field within a struct with offset and alignment math."""
+    name: str
+    type_name: str
+    size: int
+    alignment: int
+    offset: int = 0
+    padding_before: int = 0
+
+
+class StructMemoryLayout:
+    """Simulates struct memory layout, alignment, padding, and arrow operator dereferencing."""
+
+    TYPE_SIZES_AND_ALIGN = {
+        "char": (1, 1),
+        "uint8_t": (1, 1),
+        "int8_t": (1, 1),
+        "bool": (1, 1),
+        "short": (2, 2),
+        "uint16_t": (2, 2),
+        "int16_t": (2, 2),
+        "CHAR16": (2, 2),
+        "int": (4, 4),
+        "uint32_t": (4, 4),
+        "int32_t": (4, 4),
+        "UINT32": (4, 4),
+        "float": (4, 4),
+        "long long": (8, 8),
+        "uint64_t": (8, 8),
+        "int64_t": (8, 8),
+        "UINT64": (8, 8),
+        "UINTN": (8, 8),
+        "uintptr_t": (8, 8),
+        "void*": (8, 8),
+        "pointer": (8, 8),
+        "double": (8, 8),
+    }
+
+    def __init__(self, struct_name: str, members_def: list[tuple[str, str]]):
+        """
+        Initializes struct layout from list of (member_name, type_name).
+        Calculates offsets, alignment padding, and total struct size.
+        """
+        self.struct_name = struct_name
+        self.members: list[StructMember] = []
+        self.total_size = 0
+        self.struct_alignment = 1
+        self._calculate_layout(members_def)
+
+    def _calculate_layout(self, members_def: list[tuple[str, str]]) -> None:
+        current_offset = 0
+        max_align = 1
+
+        for name, type_name in members_def:
+            if type_name.endswith("*"):
+                size, align = 8, 8
+            else:
+                size, align = self.TYPE_SIZES_AND_ALIGN.get(type_name, (4, 4))
+
+            max_align = max(max_align, align)
+
+            # Padding before this member to satisfy alignment
+            padding = 0
+            if current_offset % align != 0:
+                padding = align - (current_offset % align)
+                current_offset += padding
+
+            member = StructMember(
+                name=name,
+                type_name=type_name,
+                size=size,
+                alignment=align,
+                offset=current_offset,
+                padding_before=padding,
+            )
+            self.members.append(member)
+            current_offset += size
+
+        # Structure tail padding to align to max_align
+        tail_padding = 0
+        if current_offset % max_align != 0:
+            tail_padding = max_align - (current_offset % max_align)
+            current_offset += tail_padding
+
+        self.struct_alignment = max_align
+        self.total_size = current_offset
+
+    def get_member(self, name: str) -> StructMember:
+        for m in self.members:
+            if m.name == name:
+                return m
+        raise KeyError(f"Member '{name}' not found in struct '{self.struct_name}'")
+
+    def simulate_arrow_operator(self, base_address: int, member_name: str) -> tuple[int, int, str]:
+        """
+        Simulates p->member access.
+        Returns (effective_address, offset, assembly_instruction).
+        """
+        member = self.get_member(member_name)
+        effective_address = base_address + member.offset
+        asm = f"MOV RAX, [RDI + {member.offset}]  ; RDI holds base_address 0x{base_address:X}"
+        return effective_address, member.offset, asm
+
+    def get_summary_dict(self) -> dict[str, Any]:
+        return {
+            "struct_name": self.struct_name,
+            "total_size": self.total_size,
+            "struct_alignment": self.struct_alignment,
+            "members": [
+                {
+                    "name": m.name,
+                    "type": m.type_name,
+                    "size": m.size,
+                    "alignment": m.alignment,
+                    "offset": m.offset,
+                    "padding_before": m.padding_before,
+                }
+                for m in self.members
+            ],
+        }
+
+
+class DoublePointerSimulator:
+    """
+    Simulates pointer-to-pointer semantics, memory layout, stack frames,
+    and UEFI output parameter patterns (e.g. OpenRootDir / AllocatePool).
+    Uses a sparse virtual memory model supporting 64-bit address spaces.
+    """
+
+    def __init__(self, stack_base: int = 0x7FFF_0020, heap_base: int = 0x1000_5000):
+        self.stack_base = stack_base
+        self.heap_base = heap_base
+        self._memory_bytes: dict[int, int] = {}  # Sparse byte-level memory
+        self.next_stack_addr = stack_base
+        self.next_heap_addr = heap_base
+        self.entities: dict[str, dict[str, Any]] = {}
+
+    def write_bytes(self, addr: int, data: bytes) -> None:
+        for i, b in enumerate(data):
+            self._memory_bytes[addr + i] = b
+
+    def read_bytes(self, addr: int, size: int) -> bytes:
+        return bytes(self._memory_bytes.get(addr + i, 0) for i in range(size))
+
+    def write_uint64(self, addr: int, val: int) -> None:
+        self.write_bytes(addr, struct.pack("<Q", val & 0xFFFFFFFFFFFFFFFF))
+
+    def read_uint64(self, addr: int) -> int:
+        data = self.read_bytes(addr, 8)
+        return struct.unpack("<Q", data)[0]
+
+    def allocate_target_object(self, name: str, size: int, initial_data: bytes = b"\x00") -> int:
+        """Allocates an object on heap (e.g., EFI_FILE_PROTOCOL instance)."""
+        addr = self.next_heap_addr
+        self.next_heap_addr += ((size + 15) // 16) * 16  # 16-byte aligned
+
+        data = initial_data.ljust(size, b"\x00")
+        self.write_bytes(addr, data)
+        self.entities[name] = {
+            "name": name,
+            "category": "object",
+            "address": addr,
+            "size": size,
+            "type": "struct",
+        }
+        return addr
+
+    def allocate_local_pointer(self, name: str, target_address: int = 0) -> int:
+        """
+        Allocates a local pointer variable on stack (e.g., EFI_FILE_PROTOCOL* root_dir = nullptr).
+        Address on stack is 8-byte aligned.
+        """
+        addr = self.next_stack_addr
+        self.next_stack_addr += 8
+        self.write_uint64(addr, target_address)
+        self.entities[name] = {
+            "name": name,
+            "category": "pointer",
+            "address": addr,
+            "size": 8,
+            "target_address": target_address,
+            "type": "T*",
+        }
+        return addr
+
+    def allocate_double_pointer(self, name: str, target_pointer_name: str) -> int:
+        """
+        Allocates a pointer-to-pointer variable (e.g., EFI_FILE_PROTOCOL** new_handle = &root_dir).
+        Holds the address of the pointer variable on stack.
+        """
+        if target_pointer_name not in self.entities:
+            raise KeyError(f"Target pointer '{target_pointer_name}' does not exist")
+        ptr_entry = self.entities[target_pointer_name]
+        target_ptr_addr = ptr_entry["address"]
+
+        addr = self.next_stack_addr
+        self.next_stack_addr += 8
+        self.write_uint64(addr, target_ptr_addr)
+        self.entities[name] = {
+            "name": name,
+            "category": "double_pointer",
+            "address": addr,
+            "size": 8,
+            "target_address": target_ptr_addr,
+            "target_pointer_name": target_pointer_name,
+            "type": "T**",
+        }
+        return addr
+
+    def dereference_pointer(self, pointer_name: str) -> int:
+        """Returns the target address stored in the pointer (*p)."""
+        ptr = self.entities[pointer_name]
+        return self.read_uint64(ptr["address"])
+
+    def dereference_double_pointer_level1(self, double_pointer_name: str) -> int:
+        """Dereferences once: (*pp) -> address of the target pointer."""
+        pp = self.entities[double_pointer_name]
+        target_ptr_addr = self.read_uint64(pp["address"])
+        return target_ptr_addr
+
+    def dereference_double_pointer_level2(self, double_pointer_name: str) -> int:
+        """Dereferences twice: (**pp) -> value pointed to by the underlying pointer."""
+        target_ptr_addr = self.dereference_double_pointer_level1(double_pointer_name)
+        target_obj_addr = self.read_uint64(target_ptr_addr)
+        return target_obj_addr
+
+    def simulate_pass_by_value_failure(self, caller_ptr_name: str, allocated_obj_addr: int) -> dict[str, Any]:
+        """
+        Simulates what happens if a caller passes a pointer by value to an initialization function:
+            void FailAlloc(EFI_FILE_PROTOCOL* p) { p = &new_object; }
+        The callee updates its local copy, leaving caller_ptr unchanged!
+        """
+        caller_ptr = self.entities[caller_ptr_name]
+        initial_val = self.read_uint64(caller_ptr["address"])
+
+        # Callee receives a copy of the pointer on its own stack
+        callee_copy_addr = self.next_stack_addr
+        self.next_stack_addr += 8
+        self.write_uint64(callee_copy_addr, initial_val)
+
+        # Callee overwrites its local copy
+        self.write_uint64(callee_copy_addr, allocated_obj_addr)
+
+        # Value in caller remains initial_val!
+        caller_val_after = self.read_uint64(caller_ptr["address"])
+
+        return {
+            "success": False,
+            "caller_ptr_address": caller_ptr["address"],
+            "caller_ptr_value_before": initial_val,
+            "caller_ptr_value_after": caller_val_after,
+            "callee_copy_address": callee_copy_addr,
+            "callee_copy_value": allocated_obj_addr,
+            "is_caller_updated": (caller_val_after == allocated_obj_addr),
+            "explanation": "Callee modified its local copy on stack; caller's pointer remains unchanged (0x0 nullptr)",
+        }
+
+    def simulate_pass_by_double_pointer_success(
+        self,
+        caller_ptr_name: str,
+        allocated_obj_addr: int,
+    ) -> dict[str, Any]:
+        """
+        Simulates pass-by-double-pointer (UEFI protocol output pattern):
+            EFI_STATUS OpenRootDir(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* This, EFI_FILE_PROTOCOL** Root) {
+                *Root = &new_root_protocol;
+                return EFI_SUCCESS;
+            }
+        """
+        caller_ptr = self.entities[caller_ptr_name]
+        initial_val = self.read_uint64(caller_ptr["address"])
+
+        # Callee receives the address of caller's pointer: &root_dir
+        callee_arg_pp = caller_ptr["address"]
+
+        # Callee writes to *Root:
+        # *Root = allocated_obj_addr
+        self.write_uint64(callee_arg_pp, allocated_obj_addr)
+        caller_val_after = self.read_uint64(caller_ptr["address"])
+
+        return {
+            "success": True,
+            "caller_ptr_address": caller_ptr["address"],
+            "caller_ptr_value_before": initial_val,
+            "caller_ptr_value_after": caller_val_after,
+            "callee_arg_pp": callee_arg_pp,
+            "is_caller_updated": (caller_val_after == allocated_obj_addr),
+            "explanation": "Callee dereferenced *pp and wrote allocated_obj_addr directly into caller's stack variable",
+        }
+
+
+# =============================================================================
+# Plotting Functions for Chapter 2.9 (High-Resolution DPI 300)
+# =============================================================================
+
+def plot_figure_2_17_struct_layout_and_arrow_operator(output_path: str = "2/result/fig2_17_struct_memory_layout_and_arrow_operator.png") -> str:
+    """
+    Generates Figure 2.17: Struct Memory Layout, Member Offsets, Alignment Padding,
+    and Arrow Operator (->) vs (*p).member Equivalence.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    setup_plot_style()
+
+    fig = plt.figure(figsize=(15, 12), dpi=300)
+    fig.patch.set_facecolor("#FFFFFF")
+
+    fig.suptitle(
+        "図 2.17: 構造体のメモリレイアウト・アライメント数理とアロー演算子 (->) の機械語メカニズム",
+        fontsize=15,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.2, 1.0, 1.1], hspace=0.38)
+
+    # -------------------------------------------------------------------------
+    # Panel 1: Struct Memory Layout, Offsets, and Padding Math
+    # -------------------------------------------------------------------------
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_title(
+        "【1】構造体のメモリ配置数理: メンバのアライメント要件とパディング（埋め草）の発生原理",
+        fontsize=11.5,
+        fontweight="bold",
+        pad=10,
+    )
+    ax1.set_xlim(-0.5, 24.5)
+    ax1.set_ylim(-0.8, 3.2)
+    ax1.axis("off")
+
+    members = [
+        ("uint32_t a", 0, 4, "#1976D2", "0x00: a (4B)"),
+        ("uint8_t b", 4, 1, "#388E3C", "0x04: b (1B)"),
+        ("padding", 5, 1, "#BDBDBD", "0x05: [pad 1B]"),
+        ("uint16_t c", 6, 2, "#F57C00", "0x06: c (2B)"),
+        ("uint64_t d", 8, 8, "#7B1FA2", "0x08: d (8B, 64-bit int / pointer)"),
+    ]
+
+    for byte_idx in range(16):
+        ax1.text(byte_idx + 0.5, 2.5, f"+{byte_idx}B", ha="center", va="center", fontsize=7.5, color="#555555")
+
+    for name, offset, size, color, label in members:
+        rect = plt.Rectangle(
+            (offset, 0.8), size, 1.4,
+            facecolor=color, edgecolor="#212121", linewidth=1.5, alpha=0.88
+        )
+        ax1.add_patch(rect)
+        ax1.text(
+            offset + size / 2.0, 1.5, label,
+            ha="center", va="center", fontsize=8.2, fontweight="bold", color="#FFFFFF" if name != "padding" else "#212121"
+        )
+        ax1.annotate(
+            f"Offset {offset}",
+            xy=(offset, 0.8), xytext=(offset, 0.2),
+            ha="center", fontsize=7.5, fontweight="bold", color=color if name != "padding" else "#757575",
+            arrowprops=dict(arrowstyle="->", color=color if name != "padding" else "#757575", lw=1.2)
+        )
+
+    rule_text = (
+        "【アライメント数理】\n"
+        "• 各メンバのアドレスは自身のサイズ（またはアライメント要件）の倍数でなければならない:\n"
+        "    Address(member) % Alignment(member) == 0\n"
+        "• uint16_t c は 2の倍数番地に配置される必要があるため、b (1B) の後ろに 1バイトのパディングが自動挿入される。\n"
+        "• uint64_t d は 8の倍数番地 (offset 8) に配置されるため、パディングなしで直結する。\n"
+        "• 構造体全体のサイズは、最大メンバアライメント (8B) の倍数 (16B) に切り上げられる。"
+    )
+    ax1.text(
+        16.8, 1.5, rule_text, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#F5F5F5", edgecolor="#9E9E9E", lw=1.0)
+    )
+
+    # -------------------------------------------------------------------------
+    # Panel 2: Arrow Operator (->) vs (*p).member Equivalence & Assembly
+    # -------------------------------------------------------------------------
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.set_title(
+        "【2】アロー演算子 (->) と (*p).member の完全等価性と x86-64 レジスタオフセット解決",
+        fontsize=11.5,
+        fontweight="bold",
+        pad=10,
+    )
+    ax2.set_xlim(-0.5, 24.5)
+    ax2.set_ylim(-0.5, 3.2)
+    ax2.axis("off")
+
+    box_syntax = (
+        "【C/C++ 構文の等価性 (Syntax Sugar)】\n\n"
+        "  SampleStruct obj;\n"
+        "  SampleStruct* p = &obj;\n\n"
+        "  (*p).d = 42;    // [1] 間接参照 (*) してからドット (.) アクセス\n"
+        "  p->d   = 42;    // [2] アロー演算子 (->) によるアクセス\n\n"
+        "  ★ [1] と [2] はコンパイラにとって完全に同一！\n"
+        "  ※ なぜアロー演算子があるのか？\n"
+        "     演算子優先順位で . (1位) が * (2位) より高いため、\n"
+        "     *p.d と書くと *(p.d) と解釈されてコンパイルエラーになる！\n"
+        "     毎回 (*p).d と括弧を書く煩わしさを解消したのが p->d。"
+    )
+    ax2.text(
+        0.0, 1.4, box_syntax, fontsize=8.2, va="center",
+        bbox=dict(boxstyle="round,pad=0.7", facecolor="#E8EAF6", edgecolor="#3F51B5", lw=1.3)
+    )
+
+    box_asm = (
+        "【x86-64 機械語・アセンブリレベルの動作】\n\n"
+        "  // 引数 p が RDI レジスタで渡された場合:\n"
+        "  MOV RAX, [RDI + 8]   ; RDI (ベースアドレス) に offset 8 を加算し、\n"
+        "                       ; そのメモリ番地から 8 バイトを RAX にロード！\n\n"
+        "  数式モデル:\n"
+        "    Address(p->member) = (uintptr_t)p + offsetof(Struct, member)\n"
+        "    Value              = *((MemberType*)(Address(p->member)))\n\n"
+        "  ★ CPU には「アロー演算子」という命令は存在せず、\n"
+        "     すべて『ベースレジスタ + 即値オフセット』のアドレス修飾命令に変換される。"
+    )
+    ax2.text(
+        12.5, 1.4, box_asm, fontsize=8.2, va="center",
+        bbox=dict(boxstyle="round,pad=0.7", facecolor="#E0F2F1", edgecolor="#00897B", lw=1.3)
+    )
+
+    # -------------------------------------------------------------------------
+    # Panel 3: MikanOS Chapter 2 Use Cases (MemoryMap, gBS, SystemTable)
+    # -------------------------------------------------------------------------
+    ax3 = fig.add_subplot(gs[2, 0])
+    ax3.set_title(
+        "【3】MikanOS 第2章におけるアロー演算子の実用例（gBS, gST, root_dir, struct MemoryMap）",
+        fontsize=11.5,
+        fontweight="bold",
+        pad=10,
+    )
+    ax3.set_xlim(-0.5, 24.5)
+    ax3.set_ylim(-0.5, 3.2)
+    ax3.axis("off")
+
+    case1 = (
+        "【ケース A: UEFI サービス呼び出し】\n"
+        "gBS->GetMemoryMap(...) \n"
+        "• gBS は EFI_BOOT_SERVICES* 構造体ポインタ\n"
+        "• GetMemoryMap は関数ポインタメンバ\n"
+        "• 動作: (*gBS).GetMemoryMap(...) と等価\n"
+        "• 関数テーブル (vtable 類似) へのオフセット間接ジャンプ"
+    )
+    ax3.text(
+        0.0, 1.4, case1, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#FFF3E0", edgecolor="#FB8C00", lw=1.2)
+    )
+
+    case2 = (
+        "【ケース B: プロトコル多重参照】\n"
+        "SystemTable->ConOut->OutputString(ConOut, ...)\n"
+        "• 1段階目: SystemTable->ConOut\n"
+        "    EFI_SYSTEM_TABLE のオフセット 64B から\n"
+        "    SIMPLE_TEXT_OUTPUT_INTERFACE* を取得\n"
+        "• 2段階目: ->OutputString\n"
+        "    そのインターフェース内の関数ポインタを呼び出し"
+    )
+    ax3.text(
+        8.2, 1.4, case2, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#FCE4EC", edgecolor="#E91E63", lw=1.2)
+    )
+
+    case3 = (
+        "【ケース C: MemoryMap ドット vs アロー】\n"
+        "struct MemoryMap memmap;\n"
+        "memmap.buffer_size = sizeof(buffer);  // 実体はドット .\n"
+        "GetMemoryMap(&memmap);               // ポインタを渡す\n\n"
+        "EFI_STATUS GetMemoryMap(struct MemoryMap* map) {\n"
+        "    map->buffer_size = ...;          // 関数内はアロー ->\n"
+        "}"
+    )
+    ax3.text(
+        16.4, 1.4, case3, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#EDE7F6", edgecolor="#673AB7", lw=1.2)
+    )
+
+    plt.subplots_adjust(top=0.93, bottom=0.06, left=0.04, right=0.96)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_figure_2_18_double_pointer_and_uefi_interface(output_path: str = "2/result/fig2_18_double_pointer_and_uefi_interface.png") -> str:
+    """
+    Generates Figure 2.18: Double Pointers (Pointer-to-Pointer T**),
+    Stack vs Heap Memory Model, and UEFI Output Parameter Pattern.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    setup_plot_style()
+
+    fig = plt.figure(figsize=(15, 12), dpi=300)
+    fig.patch.set_facecolor("#FFFFFF")
+
+    fig.suptitle(
+        "図 2.18: ポインタのポインタ (T**) のメモリ構造と UEFI 出力引数パターンの完全図解",
+        fontsize=15,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.1, 1.2, 1.0], hspace=0.38)
+
+    # -------------------------------------------------------------------------
+    # Panel 1: Three Passing Modes (Pass by Value, Pointer, Double Pointer)
+    # -------------------------------------------------------------------------
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_title(
+        "【1】引数渡しの3形態の比較: なぜポインタ自身を書き換えるには『二重ポインタ』が必要なのか",
+        fontsize=11.5,
+        fontweight="bold",
+        pad=10,
+    )
+    ax1.set_xlim(-0.5, 24.5)
+    ax1.set_ylim(-0.5, 3.2)
+    ax1.axis("off")
+
+    mode1 = (
+        "【A. 値渡し (Pass by Value)】\n"
+        "void f(int x) { x = 99; }\n\n"
+        "• 呼び出し元の変数: a = 10\n"
+        "• スタックに a の値 10 がコピーされる\n"
+        "• 関数内で x を変更しても a は 10 のまま！\n"
+        "• [結果] 呼び出し元の値は不変"
+    )
+    ax1.text(
+        0.0, 1.4, mode1, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#FFEBEE", edgecolor="#EF5350", lw=1.2)
+    )
+
+    mode2 = (
+        "【B. ポインタ渡し (Pass by Pointer)】\n"
+        "void f(int* p) { *p = 99; }\n\n"
+        "• 呼び出し元の変数: a = 10\n"
+        "• スタックに a のアドレス &a が渡される\n"
+        "• *p = 99 により、a の中身が 99 に書き換わる！\n"
+        "• [結果] 指している先の値 (*p) を更新可能"
+    )
+    ax1.text(
+        8.2, 1.4, mode2, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#FFF8E1", edgecolor="#FFB300", lw=1.2)
+    )
+
+    mode3 = (
+        "【C. 二重ポインタ渡し (Pass by Pointer to Pointer)】\n"
+        "void f(int** pp) { *pp = &new_var; }\n\n"
+        "• 呼び出し元のポインタ変数: int* ptr = nullptr\n"
+        "• スタックに ptr 自身のアドレス &ptr が渡される\n"
+        "• *pp = &new_var により、ptr の中身 (指す先のアドレス) が書き換わる！\n"
+        "• [結果] ポインタ変数そのもの (ptr) を更新可能"
+    )
+    ax1.text(
+        16.4, 1.4, mode3, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#E8F5E9", edgecolor="#4CAF50", lw=1.2)
+    )
+
+    # -------------------------------------------------------------------------
+    # Panel 2: Stack & Heap Layout for UEFI OpenRootDir Pattern
+    # -------------------------------------------------------------------------
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.set_title(
+        "【2】UEFI OpenRootDir における二重ポインタ (&root_dir) のメモリチェーン完全トレース",
+        fontsize=11.5,
+        fontweight="bold",
+        pad=10,
+    )
+    ax2.set_xlim(-0.5, 24.5)
+    ax2.set_ylim(-0.8, 3.4)
+    ax2.axis("off")
+
+    rect_ptr = plt.Rectangle((1.0, 0.8), 5.5, 1.6, facecolor="#E3F2FD", edgecolor="#1565C0", lw=1.5)
+    ax2.add_patch(rect_ptr)
+    ax2.text(3.75, 2.1, "呼び出し元 (UefiMain) スタック", ha="center", fontsize=8.5, fontweight="bold", color="#0D47A1")
+    ax2.text(3.75, 1.6, "EFI_FILE_PROTOCOL* root_dir", ha="center", fontsize=8.0, fontweight="bold")
+    ax2.text(3.75, 1.1, "番地: 0x7FFF0020\n値: 0x10005000 (更新後)", ha="center", fontsize=7.8, color="#1B5E20")
+
+    rect_arg = plt.Rectangle((9.0, 0.8), 5.5, 1.6, facecolor="#F3E5F5", edgecolor="#7B1FA2", lw=1.5)
+    ax2.add_patch(rect_arg)
+    ax2.text(11.75, 2.1, "関数 (OpenRootDir) 引数レジスタ", ha="center", fontsize=8.5, fontweight="bold", color="#4A148C")
+    ax2.text(11.75, 1.6, "EFI_FILE_PROTOCOL** Root (RDX)", ha="center", fontsize=8.0, fontweight="bold")
+    ax2.text(11.75, 1.1, "格納値: 0x7FFF0020 (&root_dir)", ha="center", fontsize=7.8, color="#311B92")
+
+    rect_obj = plt.Rectangle((17.0, 0.8), 6.5, 1.6, facecolor="#E8F5E9", edgecolor="#2E7D32", lw=1.5)
+    ax2.add_patch(rect_obj)
+    ax2.text(20.25, 2.1, "UEFI ファームウェア内部 / ヒープ", ha="center", fontsize=8.5, fontweight="bold", color="#1B5E20")
+    ax2.text(20.25, 1.6, "EFI_FILE_PROTOCOL 実体", ha="center", fontsize=8.0, fontweight="bold")
+    ax2.text(20.25, 1.1, "番地: 0x10005000\nメンバ: Open, Read, Write...", ha="center", fontsize=7.8, color="#1B5E20")
+
+    ax2.annotate(
+        "&root_dir を渡す",
+        xy=(9.0, 1.6), xytext=(6.5, 1.6),
+        ha="center", fontsize=8.0, fontweight="bold", color="#7B1FA2",
+        arrowprops=dict(arrowstyle="->", color="#7B1FA2", lw=1.5)
+    )
+
+    ax2.annotate(
+        "*Root = 0x10005000\n(アドレスを書き戻す)",
+        xy=(6.5, 1.2), xytext=(17.0, 1.2),
+        ha="center", fontsize=8.0, fontweight="bold", color="#C2185B",
+        arrowprops=dict(arrowstyle="->", color="#C2185B", lw=1.8, connectionstyle="arc3,rad=-0.25")
+    )
+
+    ax2.annotate(
+        "生成オブジェクトのアドレス",
+        xy=(17.0, 1.8), xytext=(14.5, 1.8),
+        ha="center", fontsize=7.5, color="#2E7D32",
+        arrowprops=dict(arrowstyle="<-", color="#2E7D32", lw=1.2)
+    )
+
+    # -------------------------------------------------------------------------
+    # Panel 3: Why C Needs Double Pointers vs C++ References
+    # -------------------------------------------------------------------------
+    ax3 = fig.add_subplot(gs[2, 0])
+    ax3.set_title(
+        "【3】C言語 (UEFI ABI) と C++ の対比: なぜ EFI_FILE_PROTOCOL*& ではなく EFI_FILE_PROTOCOL** なのか",
+        fontsize=11.5,
+        fontweight="bold",
+        pad=10,
+    )
+    ax3.set_xlim(-0.5, 24.5)
+    ax3.set_ylim(-0.5, 3.2)
+    ax3.axis("off")
+
+    c_box = (
+        "【UEFI / C言語 ABI (C89/C99)】\n"
+        "• C言語には「参照 (Reference)」機能が存在しない。\n"
+        "• 関数の戻り値はステータスコード EFI_STATUS (64ビット整数) に固定されている。\n"
+        "• 生成されたプロトコルやバッファのアドレスを返すには、\n"
+        "  「呼び出し元のポインタのアドレス (&ptr: 二重ポインタ)」を出力引数として受け取るしかない。\n"
+        "• UEFI 仕様書における汎用インターフェース: VOID** Interface"
+    )
+    ax3.text(
+        0.0, 1.4, c_box, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.2)
+    )
+
+    cpp_box = (
+        "【現代 C++ との比較】\n"
+        "• C++ では参照渡し void Open(EFI_FILE_PROTOCOL*& root) が可能だが、\n"
+        "  コンパイルされたバイナリ (機械語) の実態は『アドレス渡し (二重ポインタ)』と全く同一！\n"
+        "• C++ の std::unique_ptr や戻り値タプル std::tuple<Status, Ptr> は\n"
+        "  C言語 ABI 境界 (UEFI ファームウェアとブートローダ間) では使えない。\n"
+        "• したがって、低レイヤ OS 開発では二重ポインタの完全な理解が不可欠となる。"
+    )
+    ax3.text(
+        12.5, 1.4, cpp_box, fontsize=8.0, va="center",
+        bbox=dict(boxstyle="round,pad=0.6", facecolor="#EDE7F6", edgecolor="#512DA8", lw=1.2)
+    )
+
+    plt.subplots_adjust(top=0.93, bottom=0.06, left=0.04, right=0.96)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
