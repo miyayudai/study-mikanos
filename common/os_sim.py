@@ -18503,3 +18503,518 @@ def plot_fig5_02_reference_vs_pointer_memory_model(output_path: Path | str) -> P
     plt.close()
     return output_path
 
+
+# ==============================================================================
+# Chapter 5.2: Separate Compilation & Linking Simulator (osbook_day05b)
+# ==============================================================================
+
+class SymbolBinding(Enum):
+    """Symbol binding scope in ELF symbol tables."""
+    LOCAL = "LOCAL"
+    GLOBAL = "GLOBAL"
+    WEAK = "WEAK"
+
+
+class SymbolSection(Enum):
+    """Section where a symbol is located."""
+    TEXT = "t"       # Code / functions
+    DATA = "d"       # Initialized writable data
+    RODATA = "r"     # Read-only constants
+    BSS = "b"        # Uninitialized zeroed data
+    UNDEF = "U"      # Undefined symbol (external reference)
+    COMMON = "c"     # Common uninitialized data
+
+
+@dataclass
+class SymbolSim:
+    """Simulation of an ELF symbol table entry."""
+    name: str
+    section: SymbolSection
+    binding: SymbolBinding = SymbolBinding.GLOBAL
+    size: int = 0
+    address: Optional[int] = None
+    demangled_name: Optional[str] = None
+
+    @property
+    def is_defined(self) -> bool:
+        """Return True if symbol is defined in this translation unit."""
+        return self.section != SymbolSection.UNDEF
+
+    @property
+    def nm_type_char(self) -> str:
+        """Return nm-compatible type character (uppercase for GLOBAL, lowercase for LOCAL)."""
+        char = self.section.value
+        if self.section == SymbolSection.UNDEF:
+            return "U"
+        return char.upper() if self.binding == SymbolBinding.GLOBAL else char.lower()
+
+
+@dataclass
+class ObjectFileSim:
+    """Simulation of an ELF relocatable object file (.o) produced from a translation unit."""
+    filename: str
+    source_cpp: str
+    included_headers: List[str] = field(default_factory=list)
+    defined_symbols: Dict[str, SymbolSim] = field(default_factory=dict)
+    undefined_symbols: Dict[str, SymbolSim] = field(default_factory=dict)
+
+    def add_defined_symbol(self, name: str, section: SymbolSection, size: int = 0,
+                           binding: SymbolBinding = SymbolBinding.GLOBAL,
+                           demangled: Optional[str] = None) -> SymbolSim:
+        """Register a defined symbol."""
+        sym = SymbolSim(name=name, section=section, binding=binding, size=size, demangled_name=demangled)
+        self.defined_symbols[name] = sym
+        return sym
+
+    def add_undefined_symbol(self, name: str, demangled: Optional[str] = None) -> SymbolSim:
+        """Register an undefined external symbol reference."""
+        sym = SymbolSim(name=name, section=SymbolSection.UNDEF, binding=SymbolBinding.GLOBAL, demangled_name=demangled)
+        self.undefined_symbols[name] = sym
+        return sym
+
+    def dump_nm_style(self) -> List[str]:
+        """Format symbols similar to 'nm -C' output."""
+        lines = []
+        for name, sym in sorted(self.defined_symbols.items()):
+            display_name = sym.demangled_name or name
+            lines.append(f"{sym.nm_type_char} {display_name}")
+        for name, sym in sorted(self.undefined_symbols.items()):
+            display_name = sym.demangled_name or name
+            lines.append(f"{sym.nm_type_char} {display_name}")
+        return lines
+
+
+class LinkerSim:
+    """Simulation of an ELF linker (LLD) performing symbol resolution and relocation."""
+
+    def __init__(self, base_address: int = 0x0010_0000):
+        self.base_address = base_address
+        self.object_files: List[ObjectFileSim] = []
+        self.resolved_symbols: Dict[str, int] = {}
+        self.symbol_origins: Dict[str, str] = {}
+        self.unresolved_symbols: List[Tuple[str, str]] = []  # (symbol_name, obj_filename)
+        self.duplicate_symbols: Dict[str, List[str]] = {}    # symbol_name -> list of obj_filenames
+
+    def add_object_file(self, obj: ObjectFileSim):
+        """Add an object file to the link input list."""
+        self.object_files.append(obj)
+
+    def link(self) -> Tuple[bool, str]:
+        """Perform symbol resolution, detect ODR violations and undefined symbols."""
+        self.resolved_symbols.clear()
+        self.symbol_origins.clear()
+        self.unresolved_symbols.clear()
+        self.duplicate_symbols.clear()
+
+        current_address = self.base_address
+
+        # Step 1: Collect and check defined symbols for duplicates (ODR violation)
+        for obj in self.object_files:
+            for name, sym in obj.defined_symbols.items():
+                if sym.binding == SymbolBinding.GLOBAL:
+                    if name in self.symbol_origins:
+                        if name not in self.duplicate_symbols:
+                            self.duplicate_symbols[name] = [self.symbol_origins[name]]
+                        self.duplicate_symbols[name].append(obj.filename)
+                    else:
+                        self.symbol_origins[name] = obj.filename
+                        self.resolved_symbols[name] = current_address
+                        current_address += max(sym.size, 16)
+
+        # Step 2: Resolve undefined symbols against global defined symbols
+        for obj in self.object_files:
+            for name in obj.undefined_symbols:
+                if name not in self.resolved_symbols:
+                    self.unresolved_symbols.append((name, obj.filename))
+
+        success = (len(self.unresolved_symbols) == 0) and (len(self.duplicate_symbols) == 0)
+        report_lines = [
+            f"=== ELF Linker Simulation Report (Base Address: 0x{self.base_address:08X}) ===",
+            f"Input Objects: {', '.join(o.filename for o in self.object_files)}",
+            f"Total Resolved Global Symbols: {len(self.resolved_symbols)}",
+        ]
+
+        if self.duplicate_symbols:
+            report_lines.append("[!] ERROR: Multiple definition (ODR violation) detected:")
+            for sym, objs in self.duplicate_symbols.items():
+                report_lines.append(f"    - Symbol '{sym}' defined in: {', '.join(objs)}")
+
+        if self.unresolved_symbols:
+            report_lines.append("[!] ERROR: Undefined symbol references detected:")
+            for sym, obj in self.unresolved_symbols:
+                report_lines.append(f"    - Symbol '{sym}' referenced from '{obj}' is undefined")
+
+        if success:
+            report_lines.append("[+] Link Succeeded: kernel.elf generated without errors.")
+            for sym, addr in sorted(self.resolved_symbols.items(), key=lambda x: x[1]):
+                report_lines.append(f"    0x{addr:08X} T {sym} ({self.symbol_origins[sym]})")
+
+        return success, "\n".join(report_lines)
+
+
+class DependencyGraphSim:
+    """Simulation of Makefile header dependency tracking (clang++ -MM)."""
+
+    def __init__(self):
+        self.dependencies: Dict[str, List[str]] = {}  # source_file -> list of headers
+
+    def add_dependency(self, source_file: str, headers: List[str]):
+        """Register header dependencies for a source file."""
+        self.dependencies[source_file] = list(headers)
+
+    def generate_d_file_content(self, cpp_file: str) -> str:
+        """Generate GNU Makefile dependency content as produced by clang++ -MM."""
+        obj_name = cpp_file.replace(".cpp", ".o")
+        headers = self.dependencies.get(cpp_file, [])
+        header_str = " \\\n  ".join(headers)
+        if headers:
+            return f"{obj_name}: {cpp_file} \\\n  {header_str}\n"
+        return f"{obj_name}: {cpp_file}\n"
+
+    def determine_rebuild_targets(self, modified_file: str) -> List[str]:
+        """Determine which object files need rebuild when a file is modified."""
+        rebuild_targets = []
+        if modified_file.endswith(".cpp"):
+            rebuild_targets.append(modified_file.replace(".cpp", ".o"))
+        else:
+            for cpp, headers in self.dependencies.items():
+                if modified_file in headers:
+                    rebuild_targets.append(cpp.replace(".cpp", ".o"))
+        return sorted(rebuild_targets)
+
+
+def create_day05b_object_files() -> Tuple[ObjectFileSim, ObjectFileSim, ObjectFileSim]:
+    """Create the exact MikanOS day05b modular object file representations."""
+    # graphics.o
+    graphics_o = ObjectFileSim(
+        filename="graphics.o",
+        source_cpp="graphics.cpp",
+        included_headers=["graphics.hpp", "frame_buffer_config.hpp"],
+    )
+    graphics_o.add_defined_symbol(
+        "_ZN30RGBResv8BitPerColorPixelWriter5WriteEiiRK10PixelColor",
+        SymbolSection.TEXT,
+        size=48,
+        demangled="RGBResv8BitPerColorPixelWriter::Write(int, int, PixelColor const&)",
+    )
+    graphics_o.add_defined_symbol(
+        "_ZN30BGRResv8BitPerColorPixelWriter5WriteEiiRK10PixelColor",
+        SymbolSection.TEXT,
+        size=48,
+        demangled="BGRResv8BitPerColorPixelWriter::Write(int, int, PixelColor const&)",
+    )
+    graphics_o.add_defined_symbol(
+        "_ZTV30RGBResv8BitPerColorPixelWriter",
+        SymbolSection.RODATA,
+        size=32,
+        demangled="vtable for RGBResv8BitPerColorPixelWriter",
+    )
+    graphics_o.add_defined_symbol(
+        "_ZTV30BGRResv8BitPerColorPixelWriter",
+        SymbolSection.RODATA,
+        size=32,
+        demangled="vtable for BGRResv8BitPerColorPixelWriter",
+    )
+
+    # font.o
+    font_o = ObjectFileSim(
+        filename="font.o",
+        source_cpp="font.cpp",
+        included_headers=["font.hpp", "graphics.hpp"],
+    )
+    font_o.add_defined_symbol(
+        "_Z10WriteAsciiR11PixelWriteriicRK10PixelColor",
+        SymbolSection.TEXT,
+        size=96,
+        demangled="WriteAscii(PixelWriter&, int, int, char, PixelColor const&)",
+    )
+    font_o.add_defined_symbol(
+        "_ZL6kFontA",
+        SymbolSection.RODATA,
+        size=16,
+        binding=SymbolBinding.LOCAL,
+        demangled="kFontA (file-scope constant)",
+    )
+
+    # main.o
+    main_o = ObjectFileSim(
+        filename="main.o",
+        source_cpp="main.cpp",
+        included_headers=["frame_buffer_config.hpp", "graphics.hpp", "font.hpp"],
+    )
+    main_o.add_defined_symbol(
+        "KernelMain",
+        SymbolSection.TEXT,
+        size=256,
+        demangled="KernelMain(FrameBufferConfig const&)",
+    )
+    main_o.add_undefined_symbol(
+        "_ZN30RGBResv8BitPerColorPixelWriter5WriteEiiRK10PixelColor",
+        demangled="RGBResv8BitPerColorPixelWriter::Write(int, int, PixelColor const&)",
+    )
+    main_o.add_undefined_symbol(
+        "_ZN30BGRResv8BitPerColorPixelWriter5WriteEiiRK10PixelColor",
+        demangled="BGRResv8BitPerColorPixelWriter::Write(int, int, PixelColor const&)",
+    )
+    main_o.add_undefined_symbol(
+        "_ZTV30RGBResv8BitPerColorPixelWriter",
+        demangled="vtable for RGBResv8BitPerColorPixelWriter",
+    )
+    main_o.add_undefined_symbol(
+        "_ZTV30BGRResv8BitPerColorPixelWriter",
+        demangled="vtable for BGRResv8BitPerColorPixelWriter",
+    )
+    main_o.add_undefined_symbol(
+        "_Z10WriteAsciiR11PixelWriteriicRK10PixelColor",
+        demangled="WriteAscii(PixelWriter&, int, int, char, PixelColor const&)",
+    )
+
+    return graphics_o, font_o, main_o
+
+
+def plot_fig5_03_separate_compilation_and_linking_pipeline(output_path: Union[str, Path]) -> str:
+    """Generate Figure 5.3: Complete Separate Compilation & Linking Architecture (DPI 300)."""
+    setup_plot_style()
+    output_path = str(output_path)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    fig = plt.figure(figsize=(16, 11), dpi=300)
+    gs = fig.add_gridspec(3, 1, height_ratios=[0.28, 0.44, 0.28], hspace=0.35)
+
+    # Subplot 1: Source Files & Modular Header Split
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_facecolor("#F8F9FA")
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 30)
+    ax1.axis("off")
+    ax1.set_title("1. ソースコード分割とヘッダの役割分担 (MikanOS day05b: graphics, font, main)",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=8)
+
+    boxes_top = [
+        ("graphics.hpp\n(宣言 / Interface)\n・struct PixelColor\n・class PixelWriter\n・class RGB/BGRPixelWriter", 10, 15, "#E3F2FD", "#1565C0"),
+        ("graphics.cpp\n(定義 / Implementation)\n・RGBPixelWriter::Write()\n・BGRPixelWriter::Write()\n#include \"graphics.hpp\"", 30, 15, "#BBDEFB", "#0D47A1"),
+        ("font.hpp\n(宣言 / Interface)\n・WriteAscii() 宣言\n#include \"graphics.hpp\"", 50, 15, "#E8F5E9", "#2E7D32"),
+        ("font.cpp\n(定義 / Implementation)\n・const uint8_t kFontA[16]\n・WriteAscii() 実装\n#include \"font.hpp\"", 70, 15, "#C8E6C9", "#1B5E20"),
+        ("main.cpp\n(制御 / Application)\n・KernelMain()\n・placement new\n#include \"graphics.hpp\"\n#include \"font.hpp\"", 90, 15, "#FFF3E0", "#E65100"),
+    ]
+
+    for title, cx, cy, bg, border in boxes_top:
+        rect = patches.FancyBboxPatch(
+            (cx - 8.5, cy - 11), 17, 22,
+            boxstyle="round,pad=0.6,rounding_size=1.2",
+            facecolor=bg, edgecolor=border, linewidth=2.0
+        )
+        ax1.add_patch(rect)
+        ax1.text(cx, cy, title, fontsize=8.2, va="center", ha="center",
+                 fontweight="bold", color="#212121", linespacing=1.25)
+
+    # Subplot 2: Compilation into Translation Units (.o) with Symbol Tables
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 40)
+    ax2.axis("off")
+    ax2.set_title("2. 独立コンパイル（clang++ -c）とリロケータブル・オブジェクトファイル (.o) のシンボルテーブル",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=8)
+
+    obj_boxes = [
+        ("graphics.o (ELF Relocatable)\n────────────────────────\n[T] RGB/BGR::Write() (定義)\n[R] vtable for RGB/BGR\n[U] (外部依存なし)\n\n※main.cppに依存せず単独ビルド可能", 18, 20, "#E1F5FE", "#0288D1"),
+        ("font.o (ELF Relocatable)\n────────────────────────\n[T] WriteAscii() (定義)\n[r] kFontA (ファイルローカル)\n[U] (外部依存なし)\n\n※フォント変更時のみ再コンパイル", 50, 20, "#E8F8F5", "#00897B"),
+        ("main.o (ELF Relocatable)\n────────────────────────\n[T] KernelMain() (定義)\n[U] WriteAscii() (未解決)\n[U] RGB/BGR::Write() (未解決)\n[U] vtable RGB/BGR (未解決)", 82, 20, "#FFF8E1", "#FFA000"),
+    ]
+
+    for title, cx, cy, bg, border in obj_boxes:
+        rect = patches.FancyBboxPatch(
+            (cx - 13, cy - 17), 26, 35,
+            boxstyle="round,pad=0.8,rounding_size=1.5",
+            facecolor=bg, edgecolor=border, linewidth=2.2
+        )
+        ax2.add_patch(rect)
+        ax2.text(cx, cy, title, fontsize=8.0, va="center", ha="center",
+                 color="#212121", linespacing=1.30)
+
+    for x in [18, 50, 82]:
+        arrow = patches.FancyArrowPatch(
+            (x, 38), (x, 34),
+            arrowstyle="-|>", mutation_scale=15,
+            color="#546E7A", linewidth=2.5
+        )
+        ax2.add_patch(arrow)
+        ax2.text(x, 38.5, "clang++ -c", fontsize=7.5, ha="center", va="bottom", color="#37474F", fontweight="bold")
+
+    # Subplot 3: Linker (LLD) Resolution & kernel.elf Creation
+    ax3 = fig.add_subplot(gs[2])
+    ax3.set_facecolor("#F1F8E9")
+    ax3.set_xlim(0, 100)
+    ax3.set_ylim(0, 30)
+    ax3.axis("off")
+    ax3.set_title("3. リンカ（LLD）によるシンボル解決（Symbol Resolution）と実行可能ファイル（kernel.elf）の生成",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=8)
+
+    rect_link = patches.FancyBboxPatch(
+        (10, 4), 80, 22,
+        boxstyle="round,pad=1.0,rounding_size=2.0",
+        facecolor="#FFFFFF", edgecolor="#2E7D32", linewidth=2.5
+    )
+    ax3.add_patch(rect_link)
+
+    linker_text = (
+        "【リンカ (ld.lld) の動作フロー】\n"
+        "① 各 .o ファイルのグローバル定義シンボル ([T], [R]) を集約して統合アドレス空間 (0x00100000〜) に配置\n"
+        "② main.o の未解決参照 [U] (WriteAscii, vtable等) を graphics.o と font.o の実アドレスへ書き換え (Relocation)\n"
+        "③ すべての未解決参照が解消されれば 64-bit ELF Executable (kernel.elf) を出力 (未解決があれば ld: error: undefined symbol)"
+    )
+    ax3.text(50, 15, linker_text, fontsize=8.6, ha="center", va="center",
+             color="#1B5E20", fontweight="bold", linespacing=1.45)
+
+    fig.suptitle("ゼロからのOS自作入門 第5章 5.2: 分割コンパイルとシンボル解決アーキテクチャ\n"
+                 "(Figure 5.3: Separate Compilation, Translation Units, Symbol Resolution and Linking)",
+                 fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig5_04_header_dependency_graph_and_odr(output_path: Union[str, Path]) -> str:
+    """Generate Figure 5.4: Header Dependency DAG, Makefile -MM, and ODR Mechanics (DPI 300)."""
+    setup_plot_style()
+    output_path = str(output_path)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    fig = plt.figure(figsize=(16, 11), dpi=300)
+    gs = fig.add_gridspec(2, 1, height_ratios=[0.48, 0.52], hspace=0.32)
+
+    # Subplot 1: Header Dependency DAG & Makefile Automatic Dependencies
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_facecolor("#FAFAFA")
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 50)
+    ax1.axis("off")
+    ax1.set_title("1. ヘッダ依存関係有向非巡回グラフ (DAG) と Makefile の自動依存関係生成 (clang++ -MM)",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=8)
+
+    dag_nodes = [
+        ("frame_buffer_config.hpp\n(ルート定義)", 20, 38, "#E0F2F1", "#00695C"),
+        ("graphics.hpp\n(PixelWriter, PixelColor)", 50, 38, "#E1F5FE", "#0277BD"),
+        ("font.hpp\n(WriteAscii 宣言)", 80, 38, "#E8F5E9", "#2E7D32"),
+        ("graphics.cpp\n→ graphics.o", 35, 16, "#BBDEFB", "#1565C0"),
+        ("font.cpp\n→ font.o", 65, 16, "#C8E6C9", "#2E7D32"),
+        ("main.cpp\n→ main.o", 85, 16, "#FFE0B2", "#EF6C00"),
+    ]
+
+    for name, x, y, bg, border in dag_nodes:
+        box = patches.FancyBboxPatch(
+            (x - 9, y - 5), 18, 10,
+            boxstyle="round,pad=0.5,rounding_size=1.0",
+            facecolor=bg, edgecolor=border, linewidth=2.0
+        )
+        ax1.add_patch(box)
+        ax1.text(x, y, name, fontsize=8.0, ha="center", va="center",
+                 fontweight="bold", color="#212121", linespacing=1.2)
+
+    arrows = [
+        ((41, 38), (29, 38), "includes"),        # graphics.hpp -> frame_buffer_config.hpp
+        ((71, 38), (59, 38), "includes"),        # font.hpp -> graphics.hpp
+        ((35, 21), (45, 33), "includes"),        # graphics.cpp -> graphics.hpp
+        ((65, 21), (75, 33), "includes"),        # font.cpp -> font.hpp
+        ((85, 21), (82, 33), "includes"),        # main.cpp -> font.hpp
+        ((80, 21), (55, 33), "includes"),        # main.cpp -> graphics.hpp
+    ]
+
+    for start, end, label in arrows:
+        arr = patches.FancyArrowPatch(
+            start, end, arrowstyle="-|>", mutation_scale=12,
+            color="#455A64", linewidth=1.8, linestyle="--"
+        )
+        ax1.add_patch(arr)
+
+    mm_text = (
+        "【Makefile における自動依存関係生成 (clang++ -MM)】\n"
+        "・コマンド: clang++ $(CPPFLAGS) $(CXXFLAGS) -MM $< > $@\n"
+        "・生成物: .main.d → 'main.o: main.cpp frame_buffer_config.hpp graphics.hpp font.hpp'\n"
+        "・効果: graphics.hpp を編集しただけで、make が main.o と graphics.o のリビルドを自動検知！"
+    )
+    rect_mm = patches.FancyBboxPatch(
+        (5, 1.5), 90, 8,
+        boxstyle="round,pad=0.5,rounding_size=1.0",
+        facecolor="#FFFDE7", edgecolor="#FBC02D", linewidth=1.5
+    )
+    ax1.add_patch(rect_mm)
+    ax1.text(50, 5.5, mm_text, fontsize=8.2, ha="center", va="center", color="#3E2723", linespacing=1.25)
+
+    # Subplot 2: One Definition Rule (ODR) & Include Guards Mechanics
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 50)
+    ax2.axis("off")
+    ax2.set_title("2. 単一定義規則 (One Definition Rule: ODR) とインクルードガード (#pragma once) の本質",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=8)
+
+    # Left: Correct Separation
+    rect_left = patches.FancyBboxPatch(
+        (3, 4), 45, 42,
+        boxstyle="round,pad=0.8,rounding_size=1.5",
+        facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=2.2
+    )
+    ax2.add_patch(rect_left)
+    ax2.text(25.5, 42, "【正】宣言と定義の分離 (Clean Build)", fontsize=10.5,
+             fontweight="bold", color="#1B5E20", ha="center")
+
+    good_text = (
+        "● ヘッダ (font.hpp):\n"
+        "   #pragma once\n"
+        "   void WriteAscii(PixelWriter& writer, ...);\n"
+        "   → 関数のシグネチャ（型・名前）のみ宣言。\n"
+        "     機械語コードやメモリ領域は生成されない。\n"
+        "────────────────────────\n"
+        "● 実装 (font.cpp):\n"
+        "   void WriteAscii(...) { /* 実装コード */ }\n"
+        "   → font.o にのみ実体シンボル [T] が1個生成。\n"
+        "────────────────────────\n"
+        "● リンカ (Linker):\n"
+        "   main.o の [U] を font.o の唯一の [T] にバインド。\n"
+        "   → ビルド成功！(ODR を完全遵守)"
+    )
+    ax2.text(5, 23, good_text, fontsize=7.8, va="center", color="#1B5E20", linespacing=1.28)
+
+    # Right: Incorrect
+    rect_right = patches.FancyBboxPatch(
+        (52, 4), 45, 42,
+        boxstyle="round,pad=0.8,rounding_size=1.5",
+        facecolor="#FFEBEE", edgecolor="#C62828", linewidth=2.2
+    )
+    ax2.add_patch(rect_right)
+    ax2.text(74.5, 42, "【誤】ヘッダに関数定義を書く罠 (ODR 違反)", fontsize=10.5,
+             fontweight="bold", color="#B71C1C", ha="center")
+
+    bad_text = (
+        "● ヘッダ (font.hpp) に実装を書いてしまう:\n"
+        "   #pragma once\n"
+        "   void WriteAscii(...) { /* 実装コード */ }\n"
+        "────────────────────────\n"
+        "● 落とし穴: #pragma once は同一翻訳単位内での\n"
+        "   重複展開を防ぐだけで、別々の .cpp からの\n"
+        "   インクルードは防げない！\n"
+        "   → font.o に WriteAscii の [T] が生成\n"
+        "   → main.o にも WriteAscii の [T] が生成\n"
+        "────────────────────────\n"
+        "● リンカエラー (LLD):\n"
+        "   ld.lld: error: duplicate symbol: WriteAscii\n"
+        "   >>> defined in font.o\n"
+        "   >>> defined in main.o  (リンク失敗!)"
+    )
+    ax2.text(54, 23, bad_text, fontsize=7.8, va="center", color="#B71C1C", linespacing=1.28)
+
+    fig.suptitle("ゼロからのOS自作入門 第5章 5.2: ヘッダ依存関係DAGと単一定義規則 (ODR) の深層\n"
+                 "(Figure 5.4: Dependency DAG, Header Guards, and the One Definition Rule)",
+                 fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+

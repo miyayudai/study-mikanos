@@ -317,6 +317,15 @@ from common.os_sim import (
     get_reference_vs_pointer_comparisons,
     plot_fig5_01_font_glyph_and_bit_expansion,
     plot_fig5_02_reference_vs_pointer_memory_model,
+    SymbolBinding,
+    SymbolSection,
+    SymbolSim,
+    ObjectFileSim,
+    LinkerSim,
+    DependencyGraphSim,
+    create_day05b_object_files,
+    plot_fig5_03_separate_compilation_and_linking_pipeline,
+    plot_fig5_04_header_dependency_graph_and_odr,
 )
 
 __all__ = [
@@ -636,4 +645,13 @@ __all__ = [
     "get_reference_vs_pointer_comparisons",
     "plot_fig5_01_font_glyph_and_bit_expansion",
     "plot_fig5_02_reference_vs_pointer_memory_model",
+    "SymbolBinding",
+    "SymbolSection",
+    "SymbolSim",
+    "ObjectFileSim",
+    "LinkerSim",
+    "DependencyGraphSim",
+    "create_day05b_object_files",
+    "plot_fig5_03_separate_compilation_and_linking_pipeline",
+    "plot_fig5_04_header_dependency_graph_and_odr",
 ]

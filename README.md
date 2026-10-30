@@ -92,7 +92,7 @@ cmake --build build
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | [`2_Exercises.ipynb`](2/2_Exercises.ipynb) | `[x]` 完了 (10/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | `[x]` 完了 (6/6) |
-| **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[-]` 進行中 (1/7) |
+| **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[-]` 進行中 (2/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[ ]` 未着手 (0/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 未着手 (0/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -194,6 +194,7 @@ cmake --build build
 | ノートブック | 内容 | Colab で開く |
 |---|---|:---:|
 | [`5.1_Drawing_Characters_and_References.ipynb`](5/5.1_Drawing_Characters_and_References.ipynb) | 5.1 文字を書いてみる（`osbook_day05a`・8x16ビットマップフォント・`kFontA[16]`グリフデータ・左シフトビット判定数理・VRAM文字描画・文字送り+8px・コラム5.1 参照とポインタ・System V ABIレジスタ渡し・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.1_Drawing_Characters_and_References.ipynb) |
+| [`5.2_Separate_Compilation_and_Linking.ipynb`](5/5.2_Separate_Compilation_and_Linking.ipynb) | 5.2 分割コンパイル（`osbook_day05b`・graphics/font/main分割・翻訳単位・宣言vs定義・ODR単一定義規則・`#pragma once`インクルードガード・シンボルテーブルT/R/D/U・LLDシンボル解決・Makefile依存関係自動生成`clang++ -MM`・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.2_Separate_Compilation_and_Linking.ipynb) |
 
 
 

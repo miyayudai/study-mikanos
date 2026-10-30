@@ -138,6 +138,10 @@ add_test(NAME test_ch04_os_chapter4_exercises COMMAND ch04_os_chapter4_exercises
 add_executable(ch05_font_rendering_sim src/ch05/font_rendering_sim.cpp)
 add_test(NAME test_ch05_font_rendering_sim COMMAND ch05_font_rendering_sim)
 
+add_executable(ch05_separate_compilation_sim src/ch05/separate_compilation_sim.cpp)
+add_test(NAME test_ch05_separate_compilation_sim COMMAND ch05_separate_compilation_sim)
+
+
 
 
 
