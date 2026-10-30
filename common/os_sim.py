@@ -14317,3 +14317,426 @@ def plot_fig3_14_disassembly_optimization_and_volatile(output_path: str | Path) 
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return Path(output_path)
+
+
+# =============================================================================
+# Chapter 3 Exercises: Comprehensive Verification & Quiz Engine
+# =============================================================================
+
+class Chapter3Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 3.1 to 3.7."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="3.1",
+                topic="QEMUモニタコマンドとデバッグ (info registers & xp)",
+                question="QEMUモニタにおけるコマンドの役割として正しいものはどれか？",
+                options=[
+                    "info registers はOSのファイル一覧を表示し、xp は仮想記憶空間のみを検査する",
+                    "info registers は全CPU汎用レジスタ・制御レジスタ・EFLAGSの状態をダンプし、xp は物理アドレスのメモリ内容を指定フォーマットでダンプする",
+                    "xp はブレークポイントを設定し、c はプログラムを強制終了する",
+                    "x コマンドは物理メモリダンプ専用で、xp コマンドは仮想メモリダンプ専用である",
+                ],
+                correct_index=1,
+                explanation="QEMUモニタの info registers コマンドは RAX〜R15、RIP、RSP、RFLAGS、CR0〜CR4 などの CPU 内部レジスタ状態を一覧ダンプします。また xp (examine physical memory) は物理アドレスを指定して生メモリをダンプし、x は仮想アドレス（ページング有効時）をダンプします。",
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="3.2",
+                topic="x86-64 レジスタ階層と32ビットゼロ拡張則",
+                question="x86-64 の 64ビット汎用レジスタ（RAX 等）に対する32ビットサブレジスタ（EAX）書き込み時の動作として正しいものはどれか？",
+                options=[
+                    "EAXに書き込むと、RAXの上位32ビットは変更されず以前の値がそのまま保持される",
+                    "EAXに書き込むと、RAXの上位32ビットは自動的にすべてゼロクリア（ゼロ拡張）される",
+                    "EAXに書き込むと、RAXの最上位ビットが符号拡張されて上位32ビットにコピーされる",
+                    "EAXへの書き込みは64ビットモードでは禁止されており一般保護例外 (#GP) が発生する",
+                ],
+                correct_index=1,
+                explanation="x86-64 アーキテクチャの基本仕様として、32ビットレジスタ操作（例: MOV EAX, 0x12345678）を実行すると、対応する64ビットレジスタ（RAX）の上位32ビットは常に自動的にゼロクリアされます。一方、16ビット（AX）や8ビット（AL/AH）への書き込み時は上位ビットは保持されます。",
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="3.2",
+                topic="x86-64 制御レジスタ (CR0, CR3, CR4)",
+                question="x86-64 の制御レジスタ CR0 および CR3 の役割の組み合わせとして正しいものはどれか？",
+                options=[
+                    "CR0 は浮動小数点演算の結果を保持し、CR3 はタイマ割り込み周期を設定する",
+                    "CR0 はプロテクトモード有効化 (PE) やページング有効化 (PG) などのCPU動作モードを制御し、CR3 は4階層ページテーブルの最上位 (PML4) 物理アドレスを保持する",
+                    "CR0 はスタックポインタであり、CR3 は命令ポインタである",
+                    "CR0 はカーネル引数レジスタであり、CR3 はシステムコール番号レジスタである",
+                ],
+                correct_index=1,
+                explanation="CR0 (Control Register 0) はビット0の PE (Protection Enable) やビット31の PG (Paging Enable) などの基本動作モードを司ります。CR3 はページテーブルの基底物理アドレス（x86-64 Long Mode では PML4 テーブルの物理アドレス）を保持します。",
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="3.3",
+                topic="ブートローダからのカーネルロードとエントリポイントジャンプ",
+                question="MikanOSブートローダ (day03a) がカーネルを実行する手順として正しいものはどれか？",
+                options=[
+                    "カーネルファイルをメモリ 0x100000 に読み込み、ExitBootServices() を呼んでブートサービスを終了させた後、エントリポイント関数ポインタへ引数なしでジャンプした",
+                    "カーネルを読み込まずに UEFI ファームウェア内の組み込みカーネル関数を呼び出した",
+                    "ExitBootServices() を呼ばずにカーネルへジャンプし、カーネル内から gBS->GetMemoryMap() を常時呼ぶ設計にした",
+                    "カーネルは常に 0x7C00 の MBR 領域に配置してリアルモードでジャンプした",
+                ],
+                correct_index=0,
+                explanation="MikanOSのブートローダはカーネルファイルを 0x100000 (1MiB) の物理メモリへ配置し、gBS->ExitBootServices() を呼び出してUEFI制御下から脱出した後、エントリポイントアドレスを関数ポインタ `typedef void (*KernelEntry)(void);` にキャストして実行権をカーネルへ渡しました。",
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="3.3",
+                topic="System V AMD64 ABI の Red Zone と -mno-red-zone",
+                question="System V AMD64 ABI の Red Zone 仕様と、OSカーネル開発で -mno-red-zone が絶対必須である理由として正しいものはどれか？",
+                options=[
+                    "Red Zone は 512バイトのセクタであり、ディスク読み込みのバッファとして使われるためカーネルでは無効化する",
+                    "Red Zone は RSP より下の 128バイト領域で、関数が RSP を下げずにスクラッチ領域として使ってよいが、割り込みや例外が発生するとCPUやハンドラによってこの領域が上書き破壊されてしまうため、カーネルコンパイル時は -mno-red-zone で無効化しなければならない",
+                    "Red Zone はカーネルメモリのセキュリティ保護領域であり、有効化しないと Ring 0 特権が剥奪される",
+                    "Red Zone はグラフィックス描画専用のVRAM予約領域であり、ブートローダでのみ使用できる",
+                ],
+                correct_index=1,
+                explanation="System V AMD64 ABI ではスタックポインタ RSP の下 128バイトが Red Zone として定義され、リーフ関数などがスタック拡張命令を省略して一時変数置き場として使えます。しかし非同期割り込みが発生すると、CPUは現在の RSP の直下にレジスタやリターンアドレスを退避するため、Red Zone のデータが破壊されます。したがってカーネルコードは必ず -mno-red-zone でコンパイルする必要があります。",
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="3.4",
+                topic="UEFI GOP (Graphics Output Protocol) の構造とストライド",
+                question="UEFI GOP (`EFI_GRAPHICS_OUTPUT_PROTOCOL`) における画面パラメータとストライド（PixelsPerScanLine）について正しいものはどれか？",
+                options=[
+                    "PixelsPerScanLine は常に HorizontalResolution と完全に同一であり、パディングは存在しない",
+                    "ハードウェアの制約やメモリアライメント（例: 64/128バイト境界）により、走査線あたりのピクセル数 PixelsPerScanLine は HorizontalResolution 以上になることがあり、(x, y) のピクセルオフセットは `y * PixelsPerScanLine + x` で計算しなければならない",
+                    "GOP フレームバッファはテキスト文字専用のバッファであり、RGBピクセル値の直接書き込みはできない",
+                    "FrameBufferBase は必ず 0x000A0000 の VGA 領域に固定される",
+                ],
+                correct_index=1,
+                explanation="GPUやディスプレイコントローラのアライメント要件（バス効率向上）により、1走査線のピクセル幅 PixelsPerScanLine (ppsl) は表示画面幅 HorizontalResolution (hr) よりも大きくなる（ppsl >= hr）場合があります。そのためピクセル (x, y) のバイトオフセットは `4 * (y * ppsl + x)` で算出する必要があります。",
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="3.4",
+                topic="GOP ピクセルフォーマット (RGB vs BGR)",
+                question="MikanOS (day03b) におけるピクセルフォーマットと色値書き込みについて正しいものはどれか？",
+                options=[
+                    "ピクセルフォーマットに関わらず、メモリ順は常に Red, Green, Blue の順に 1バイトずつ配置される",
+                    "PixelRedGreenBlueReserved8BitPerColor の場合、メモリの連続4バイトには低位アドレスから順に [R, G, B, Reserved] が並び、PixelBlueGreenRedReserved8BitPerColor の場合は [B, G, R, Reserved] の順に並ぶ",
+                    "1ピクセルは 2バイト（16ビット）固定であり、各色5ビットで表現される",
+                    "Reserved のバイトには常に 0xFF を書き込まなければハードウェアが画面描画を拒否する",
+                ],
+                correct_index=1,
+                explanation="UEFI GOP の 32-bit ピクセルフォーマットでは、RGB形式の場合はバイト [0]=R, [1]=G, [2]=B, [3]=Reserved となり、BGR形式の場合はバイト [0]=B, [1]=G, [2]=R, [3]=Reserved となります。白を描くには R=G=B=255 (0xFF) を書き込みます。",
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="3.5",
+                topic="カーネルへの引数引き渡しと System V AMD64 ABI 呼び出し規約",
+                question="ブートローダからカーネル Main(fb_base, fb_size) へ引数を引き渡す際、System V AMD64 ABI において第1引数・第2引数が格納されるレジスタの組み合わせはどれか？",
+                options=[
+                    "第1引数: RCX, 第2引数: RDX",
+                    "第1引数: RDI, 第2引数: RSI",
+                    "第1引数: RAX, 第2引数: RBX",
+                    "第1引数: スタックトップ [RSP], 第2引数: [RSP+8]",
+                ],
+                correct_index=1,
+                explanation="Linux や MikanOS カーネルが採用する System V AMD64 ABI では、整数・ポインタ引数は第1引数から順に RDI, RSI, RDX, RCX, R8, R9 のレジスタ経由で渡されます（Microsoft x64 ABI では RCX, RDX, R8, R9）。ブートローダからカーネルへの引数は RDI (fb_base) と RSI (fb_size) に格納されます。",
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="3.6",
+                topic="UEFI ステータスコードと C++ reinterpret_cast",
+                question="UEFI API の戻り値 EFI_STATUS のエラー判定マクロと、ポインタを安全に整数アドレスに再解釈する C++ キャスト演算子として正しいものはどれか？",
+                options=[
+                    "EFI_STATUS は負の値が成功を示し、キャストには dynamic_cast を用いる",
+                    "EFI_STATUS は最上位ビット（ビット63: 0x8000000000000000）が 1 の場合にエラーを表すため EFI_ERROR(status) マクロで判定し、ポインタと整数の相互変換には reinterpret_cast を用いる",
+                    "EFI_STATUS のエラー判定には常に status == 0 を比較し、キャストには const_cast のみを用いる",
+                    "EFI_ERROR(status) は status == EFI_NOT_READY の場合のみ真を返す",
+                ],
+                correct_index=1,
+                explanation="EFI_STATUS は最上位ビットが 1 であればエラー、0 であれば成功または警告を表します。EFI_ERROR(status) マクロは最上位ビットが立っているかを判定します。また、型体系を超えたポインタと整数型（uintptr_t や uint64_t）のビットパターン再解釈には C++ の reinterpret_cast を使用します。",
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="3.7",
+                topic="ポインタのアセンブリ展開、SIBアドレッシング、volatile 修飾",
+                question="ポインタ間接参照のアセンブリ言語展開およびハードウェア VRAM/MMIO 操作における volatile の役割として正しいものはどれか？",
+                options=[
+                    "SIB アドレッシングは [base + index] の2項目しか指定できず、volatile はコンパイル速度を上げるための修飾子である",
+                    "ポインタ演算 `base[i]` は CPU の SIB (Scale-Index-Base) アドレッシング `[base + index * scale + disp]` に直接対応し、ハードウェア MMIO/VRAM へのポインタにはコンパイラによる最適化（不要な書き込みの削除やSIMD統合）を防ぐため volatile を付与する必要がある",
+                    "volatile を付けると CPU キャッシュが無効化され、コンパイル時にすべて NOP 命令に置換される",
+                    "最適化オプション -O2 を指定すると volatile の指定は完全に無視される",
+                ],
+                correct_index=1,
+                explanation="C言語の配列/ポインタアクセスは x86-64 の SIB (Scale-Index-Base) アドレッシング命令（例: `MOV [RDI + RAX*4], EDX`）に1命令でマップされます。また MMIO や VRAM への書き込みは「外部ハードウェアへの副作用（Observable side effect）」であるため、volatile を指定することでコンパイラによる不要な書き込みの省略（デッドストア削除）やループの改変を防ぎます。",
+            ),
+        ]
+
+    def evaluate(self, answers: dict[int, int]) -> dict[str, Any]:
+        """Evaluate submitted quiz answers, compute score and mastery percentage."""
+        total_questions = len(self.questions)
+        correct_count = 0
+        details = []
+
+        section_scores: dict[str, list[bool]] = {}
+        for q in self.questions:
+            section_scores.setdefault(q.section, [])
+
+        for q in self.questions:
+            user_ans = answers.get(q.question_id)
+            is_correct = (user_ans == q.correct_index)
+            if is_correct:
+                correct_count += 1
+            section_scores[q.section].append(is_correct)
+
+            details.append({
+                "question_id": q.question_id,
+                "section": q.section,
+                "topic": q.topic,
+                "user_answer": user_ans,
+                "correct_index": q.correct_index,
+                "is_correct": is_correct,
+                "explanation": q.explanation,
+            })
+
+        percentage = (correct_count / total_questions) * 100.0 if total_questions > 0 else 0.0
+        mastery_rates: dict[str, float] = {}
+        for sec, results in sorted(section_scores.items()):
+            rate = (sum(results) / len(results)) * 100.0 if results else 0.0
+            mastery_rates[sec] = rate
+
+        return {
+            "total_questions": total_questions,
+            "correct_count": correct_count,
+            "percentage": percentage,
+            "details": details,
+            "mastery_rates": mastery_rates,
+            "passed": percentage >= 80.0,
+        }
+
+
+class Chapter3TheoryValidator:
+    """Validation helper for Chapter 3 systems theory, x86-64 architecture, GOP math, and ABI."""
+
+    @staticmethod
+    def validate_qemu_monitor_commands(commands: dict[str, str]) -> tuple[bool, str]:
+        """Validate QEMU monitor command mappings."""
+        info_reg = commands.get("info registers", "").lower()
+        xp_cmd = commands.get("xp", "").lower()
+        x_cmd = commands.get("x", "").lower()
+
+        errors = []
+        if not ("register" in info_reg or "レジスタ" in info_reg or "dump" in info_reg or "ダンプ" in info_reg):
+            errors.append("info registers: レジスタ状態のダンプであるべきです")
+        if not ("physical" in xp_cmd or "物理" in xp_cmd):
+            errors.append("xp: 物理メモリダンプ (examine physical) であるべきです")
+        if not ("virtual" in x_cmd or "仮想" in x_cmd):
+            errors.append("x: 仮想メモリダンプ (examine virtual) であるべきです")
+
+        if not errors:
+            return True, "正解！QEMUモニタの主要検査コマンドの役割を正確に同定しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_register_zero_extension(sim_dict: dict[str, int]) -> tuple[bool, str]:
+        """Validate 32-bit write zero-extension behavior into 64-bit RAX."""
+        initial_rax = sim_dict.get("initial_rax")
+        write_eax = sim_dict.get("write_eax")
+        final_rax = sim_dict.get("final_rax")
+
+        errors = []
+        if initial_rax is None or write_eax is None or final_rax is None:
+            return False, "引数辞書に必要なキー (initial_rax, write_eax, final_rax) が不足しています。"
+
+        expected_final = write_eax & 0xFFFFFFFF
+        if final_rax != expected_final:
+            errors.append(f"final_rax: 期待値 {hex(expected_final)}, 入力値 {hex(final_rax)}")
+
+        if not errors:
+            return True, "正解！32ビットサブレジスタ書き込み時の上位32ビットゼロクリア（ゼロ拡張）挙動を正確に計算しました。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_red_zone_rules(rules: dict[str, any]) -> tuple[bool, str]:
+        """Validate System V AMD64 ABI Red Zone properties."""
+        size_bytes = rules.get("size_bytes")
+        direction = str(rules.get("direction", "")).lower()
+        compiler_flag = rules.get("compiler_flag")
+        safe_for_interrupts = rules.get("safe_for_interrupts")
+
+        errors = []
+        if size_bytes != 128:
+            errors.append(f"size_bytes: 期待値 128バイト, 入力値 {size_bytes}")
+        if not ("below" in direction or "下" in direction or "負" in direction or "-" in direction):
+            errors.append("direction: RSP より下（負のオフセット）であるべきです")
+        if compiler_flag != "-mno-red-zone":
+            errors.append(f"compiler_flag: 期待値 -mno-red-zone, 入力値 {compiler_flag}")
+        if safe_for_interrupts is not False:
+            errors.append("safe_for_interrupts: 割り込みハンドラによる上書き破壊の危険があるため False であるべきです")
+
+        if not errors:
+            return True, "正解！Red Zone の仕様とカーネルにおける -mno-red-zone の絶対必要性を正確に理解しています。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_gop_framebuffer_math(math_dict: dict[str, int]) -> tuple[bool, str]:
+        """Validate GOP frame buffer offset and total size calculations."""
+        h_res = math_dict.get("h_res", 800)
+        v_res = math_dict.get("v_res", 600)
+        ppsl = math_dict.get("ppsl", 832)
+        bytes_per_pixel = math_dict.get("bytes_per_pixel", 4)
+        target_x = math_dict.get("target_x", 100)
+        target_y = math_dict.get("target_y", 50)
+        pixel_offset = math_dict.get("pixel_byte_offset")
+        total_fb_size = math_dict.get("total_fb_size")
+
+        expected_offset = bytes_per_pixel * (target_y * ppsl + target_x)
+        expected_size = bytes_per_pixel * ppsl * v_res
+
+        errors = []
+        if pixel_offset != expected_offset:
+            errors.append(f"pixel_byte_offset: 期待値 {expected_offset}バイト, 入力値 {pixel_offset}")
+        if total_fb_size != expected_size:
+            errors.append(f"total_fb_size: 期待値 {expected_size}バイト, 入力値 {total_fb_size}")
+
+        if not errors:
+            return True, "正解！PixelsPerScanLine（ストライド）を考慮したフレームバッファアドレス数理を完璧に計算しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_system_v_abi_args(arg_regs: list[str]) -> tuple[bool, str]:
+        """Validate 64-bit integer/pointer register passing order under System V AMD64 ABI."""
+        regs_clean = [r.strip().upper() for r in arg_regs]
+        expected_regs = ["RDI", "RSI", "RDX", "RCX", "R8", "R9"]
+        if regs_clean == expected_regs:
+            return True, "正解！System V AMD64 ABI の第1〜第6引数レジスタ順序（RDI, RSI, RDX, RCX, R8, R9）を正確に同定しました。"
+        return False, f"不正解です。期待値: {expected_regs}, 入力値: {regs_clean}"
+
+    @staticmethod
+    def validate_pointer_assembly_sib(sib_dict: dict[str, int]) -> tuple[bool, str]:
+        """Validate x86-64 SIB (Scale-Index-Base) addressing arithmetic."""
+        base = sib_dict.get("base")
+        index = sib_dict.get("index")
+        scale = sib_dict.get("scale")
+        disp = sib_dict.get("disp", 0)
+        effective_address = sib_dict.get("effective_address")
+
+        if any(v is None for v in [base, index, scale, effective_address]):
+            return False, "引数辞書に必要なキー (base, index, scale, effective_address) が不足しています。"
+
+        expected_ea = base + (index * scale) + disp
+        if effective_address != expected_ea:
+            return False, f"不正解です。期待値 {hex(expected_ea)}, 入力値 {hex(effective_address)}"
+        return True, "正解！SIB (Scale-Index-Base) アドレッシングの実効アドレス計算を正確に算出しました。"
+
+
+def plot_chapter3_exercises_summary(output_path: Path | str) -> Path:
+    """Generate high-DPI summary diagram showing Chapter 3 exercise structure and learning taxonomy."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(12, 7.5))
+    ax.set_facecolor("#FAFAFA")
+
+    exercises = [
+        {"id": "Ex 1", "sec": "3.1 / 3.2", "title": "QEMUモニタ & x86-64 レジスタ階層", "desc": "info registers / xp による物理メモリ検査、32bitゼロ拡張則、CR0/CR3/CR4 制御レジスタ", "color": "#1E88E5", "y": 0.84},
+        {"id": "Ex 2", "sec": "3.3", "title": "カーネルエントリ & Red Zone の罠", "desc": "0x100000 への配置、ExitBootServices、Red Zone (128B) と -mno-red-zone の絶対必要性", "color": "#43A047", "y": 0.67},
+        {"id": "Ex 3", "sec": "3.4", "title": "UEFI GOP & フレームバッファ数理", "desc": "PixelsPerScanLine ストライド計算、RGB vs BGR 32bit ピクセルフォーマット展開", "color": "#FB8C00", "y": 0.50},
+        {"id": "Ex 4", "sec": "3.5 / 3.6", "title": "引数引き渡し ABI & 型安全エラー処理", "desc": "System V AMD64 ABI (RDI, RSI)、EFI_STATUS 最上位ビット判定、reinterpret_cast", "color": "#8E24AA", "y": 0.33},
+        {"id": "Ex 5", "sec": "3.7 / 総合", "title": "アセンブリ展開・volatile & 総合テスト", "desc": "SIB アドレッシング [base + index*scale + disp]、MMIO volatile、10問クイズ & レーダー", "color": "#D81B60", "y": 0.16},
+    ]
+
+    for ex in exercises:
+        y = ex["y"]
+        rect = patches.FancyBboxPatch(
+            (0.05, y - 0.06), 0.90, 0.12,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor="white", edgecolor=ex["color"], linewidth=2, zorder=2
+        )
+        ax.add_patch(rect)
+
+        badge = patches.FancyBboxPatch(
+            (0.07, y - 0.04), 0.12, 0.08,
+            boxstyle="round,pad=0.01,rounding_size=0.01",
+            facecolor=ex["color"], edgecolor="none", zorder=3
+        )
+        ax.add_patch(badge)
+        ax.text(0.13, y, ex["id"], color="white", fontsize=11, fontweight="bold", ha="center", va="center", zorder=4)
+
+        ax.text(0.22, y + 0.02, f"[{ex['sec']}] {ex['title']}", color="#212121", fontsize=12, fontweight="bold", va="center")
+        ax.text(0.22, y - 0.025, ex["desc"], color="#555555", fontsize=9.5, va="center")
+
+        circle = plt.Circle((0.91, y), 0.025, facecolor="#E8F5E9", edgecolor="#4CAF50", linewidth=1.5, zorder=3)
+        ax.add_patch(circle)
+        ax.text(0.91, y, "✓", color="#2E7D32", fontsize=11, fontweight="bold", ha="center", va="center", zorder=4)
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0.05, 0.97)
+    ax.axis("off")
+    ax.set_title("MikanOS Study — Chapter 3 Exercises Curriculum & Assessment Map",
+                 fontsize=14, fontweight="bold", pad=20, color="#1A237E")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_chapter3_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float] | None = None) -> Path:
+    """Generate high-DPI 7-axis radar chart showing Chapter 3 concept mastery across all 7 sections."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    categories = [
+        "3.1 QEMUモニタ\n(info reg & xp Dump)",
+        "3.2 x86-64 レジスタ\n(Hierarchy & CR0-4)",
+        "3.3 カーネル起動\n(Entry & Red Zone)",
+        "3.4 GOP 描画\n(Stride & Pixel Format)",
+        "3.5 カーネル引数\n(ABI: RDI/RSI & Stripe)",
+        "3.6 エラー処理\n(EFI_STATUS & Casts)",
+        "3.7 ポインタとASM\n(SIB & volatile MMIO)",
+    ]
+    num_vars = len(categories)
+
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    angles += angles[:1]  # close polygon
+
+    if mastery_rates is None:
+        values = [100.0] * num_vars
+    else:
+        values = [
+            mastery_rates.get("3.1", 100.0),
+            mastery_rates.get("3.2", 100.0),
+            mastery_rates.get("3.3", 100.0),
+            mastery_rates.get("3.4", 100.0),
+            mastery_rates.get("3.5", 100.0),
+            mastery_rates.get("3.6", 100.0),
+            mastery_rates.get("3.7", 100.0),
+        ]
+    values += values[:1]
+
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+    ax.set_facecolor("#FCFCFD")
+
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+
+    plt.xticks(angles[:-1], categories, color="#1A237E", size=9.5, fontweight="bold")
+
+    ax.set_rlabel_position(0)
+    plt.yticks([20, 40, 60, 80, 100], ["20%", "40%", "60%", "80%", "100%"], color="#757575", size=8)
+    plt.ylim(0, 105)
+
+    ax.plot(angles, values, color="#1E88E5", linewidth=2.5, linestyle="solid", zorder=3)
+    ax.fill(angles, values, color="#90CAF9", alpha=0.35, zorder=2)
+
+    for angle, val in zip(angles[:-1], values[:-1]):
+        ax.scatter([angle], [val], color="#0D47A1", s=45, zorder=4)
+
+    plt.title("Chapter 3 Systems Architecture Mastery Profile",
+              size=14, fontweight="bold", color="#0D47A1", y=1.12)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

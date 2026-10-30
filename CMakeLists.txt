@@ -113,6 +113,9 @@ add_test(NAME test_ch03_error_handling_sim COMMAND ch03_error_handling_sim)
 add_executable(ch03_pointer_assembly_sim src/ch03/pointer_assembly_sim.cpp)
 add_test(NAME test_ch03_pointer_assembly_sim COMMAND ch03_pointer_assembly_sim)
 
+add_executable(ch03_os_chapter3_exercises src/ch03/os_chapter3_exercises.cpp)
+add_test(NAME test_ch03_os_chapter3_exercises COMMAND ch03_os_chapter3_exercises --test)
+
 
 
 

@@ -238,6 +238,10 @@ from common.os_sim import (
     PixelDisassemblyAnalyzer,
     plot_fig3_13_pointer_to_assembly_mapping_and_sib,
     plot_fig3_14_disassembly_optimization_and_volatile,
+    Chapter3Quiz,
+    Chapter3TheoryValidator,
+    plot_chapter3_exercises_summary,
+    plot_chapter3_mastery_radar,
 )
 
 __all__ = [
@@ -478,4 +482,8 @@ __all__ = [
     "PixelDisassemblyAnalyzer",
     "plot_fig3_13_pointer_to_assembly_mapping_and_sib",
     "plot_fig3_14_disassembly_optimization_and_volatile",
+    "Chapter3Quiz",
+    "Chapter3TheoryValidator",
+    "plot_chapter3_exercises_summary",
+    "plot_chapter3_mastery_radar",
 ]
