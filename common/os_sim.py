@@ -4655,3 +4655,411 @@ def plot_freestanding_vs_hosted_environment(
     plt.close()
     return output_path
 
+
+
+# ==============================================================================
+# Chapter 1.9: C言語でハローワールド & コラム1.1: PEとCOFFとELF
+# ==============================================================================
+
+@dataclass
+class UefiStructField:
+    """UEFI 構造体フィールドの定義とメモリレイアウト"""
+    name: str
+    offset: int
+    size: int
+    type_name: str
+    description: str
+
+
+class UefiSystemTableModel:
+    """UEFI システムテーブル (EFI_SYSTEM_TABLE) およびコンソール出力プロトコルのメモリモデル
+
+    『ゼロからのOS自作入門』第1章 1.9節の hello.c で定義された最小構造体と、
+    UEFI仕様書における完全な定義との対応関係、およびアロー演算子 (->) による
+    ポインタ間接参照チェーンをシミュレートする。
+    """
+
+    # hello.c における EFI_SYSTEM_TABLE のレイアウト
+    MINIMAL_SYSTEM_TABLE_FIELDS = [
+        UefiStructField("dummy", 0, 52, "char[52]", "EFI_TABLE_HEADER(24B) + Vendor/Revision + ConIn(28B) の集約ダミー"),
+        UefiStructField("ConsoleOutHandle", 52, 8, "EFI_HANDLE (void*)", "標準出力デバイスのUEFIハンドル"),
+        UefiStructField("ConOut", 60, 8, "EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL*", "標準テキスト出力プロトコルへのポインタ"),
+    ]
+
+    # hello.c における EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL のレイアウト
+    MINIMAL_TEXT_OUTPUT_FIELDS = [
+        UefiStructField("dummy", 0, 8, "void*", "Reset() 関数ポインタ（未使用のためダミーポインタ）"),
+        UefiStructField("OutputString", 8, 8, "EFI_TEXT_STRING", "文字列描画関数ポインタ OutputString(This, String)"),
+    ]
+
+    def __init__(self, system_table_base: int = 0x3F80_0000, con_out_base: int = 0x3F80_1000):
+        self.system_table_base = system_table_base
+        self.con_out_base = con_out_base
+        self.output_buffer: list[str] = []
+        self.call_history: list[dict[str, Any]] = []
+
+    def inspect_system_table_layout(self) -> list[dict[str, Any]]:
+        """EFI_SYSTEM_TABLE のメモリ配置情報を返す"""
+        return [
+            {
+                "field": f.name,
+                "offset": f.offset,
+                "offset_hex": f"0x{f.offset:02X}",
+                "size": f.size,
+                "type": f.type_name,
+                "description": f.description,
+            }
+            for f in self.MINIMAL_SYSTEM_TABLE_FIELDS
+        ]
+
+    def inspect_text_output_protocol_layout(self) -> list[dict[str, Any]]:
+        """EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL のメモリ配置情報を返す"""
+        return [
+            {
+                "field": f.name,
+                "offset": f.offset,
+                "offset_hex": f"0x{f.offset:02X}",
+                "size": f.size,
+                "type": f.type_name,
+                "description": f.description,
+            }
+            for f in self.MINIMAL_TEXT_OUTPUT_FIELDS
+        ]
+
+    def encode_utf16le(self, text: str) -> bytes:
+        """C言語のワイド文字列リテラル L"..." を UTF-16LE バイト列（ヌル終端含む）に変換"""
+        return text.encode("utf-16le") + b"\x00\x00"
+
+    def decode_utf16le(self, raw_bytes: bytes) -> str:
+        """UTF-16LE バイト列からヌル終端直前までの文字列をデコード"""
+        # 2バイトアライメントでヌル終端 (0x0000) を探す
+        end = len(raw_bytes)
+        for i in range(0, len(raw_bytes) - 1, 2):
+            if raw_bytes[i] == 0 and raw_bytes[i + 1] == 0:
+                end = i
+                break
+        return raw_bytes[:end].decode("utf-16le", errors="replace")
+
+    def simulate_call_output_string(self, this_ptr: int, string_utf16_bytes: bytes) -> tuple[int, str]:
+        """SystemTable->ConOut->OutputString(SystemTable->ConOut, L"...") の実行を模倣する
+
+        Returns:
+            (status_code, rendered_text): (0=EFI_SUCCESS, 表示されたテキスト)
+        """
+        # 第一引数 This ポインタの正当性検査 (オブジェクト指向 C言語の約束事)
+        if this_ptr != self.con_out_base:
+            error_status = 0x8000_0000_0000_0002  # EFI_INVALID_PARAMETER
+            self.call_history.append({
+                "status": "EFI_INVALID_PARAMETER",
+                "this_ptr": hex(this_ptr),
+                "expected_this": hex(self.con_out_base),
+                "rendered": "",
+            })
+            return error_status, ""
+
+        rendered = self.decode_utf16le(string_utf16_bytes)
+        self.output_buffer.append(rendered)
+        self.call_history.append({
+            "status": "EFI_SUCCESS",
+            "this_ptr": hex(this_ptr),
+            "expected_this": hex(self.con_out_base),
+            "rendered": rendered,
+        })
+        return 0, rendered
+
+    def trace_pointer_dereference(self) -> list[str]:
+        """SystemTable->ConOut->OutputString(...) のアロー演算子の評価ステップをトレース"""
+        st_base = hex(self.system_table_base)
+        co_offset = 60
+        co_ptr_addr = hex(self.system_table_base + co_offset)
+        co_base = hex(self.con_out_base)
+        out_str_offset = 8
+        func_ptr_addr = hex(self.con_out_base + out_str_offset)
+
+        return [
+            f"1. SystemTable ポインタ値 ({st_base}) を基底アドレスとして読み出し",
+            f"2. ConOut メンバのオフセット (+60 = 0x3C バイト) を加算 -> アドレス {co_ptr_addr}",
+            f"3. アドレス {co_ptr_addr} から 64ビットポインタ値を間接参照 (Dereference) -> ConOut={co_base}",
+            f"4. ConOut ({co_base}) を基底として OutputString オフセット (+8 = 0x08 バイト) を加算 -> アドレス {func_ptr_addr}",
+            f"5. アドレス {func_ptr_addr} から関数ポインタを間接参照し、呼び出し規約 (Microsoft x64) に従い RCX={co_base}, RDX=&String で CALL",
+        ]
+
+
+class BinaryFormatKind(Enum):
+    """実行可能バイナリ形式の分類"""
+    PE32_PLUS = "PE32+ (PE/COFF 64-bit)"
+    ELF64 = "ELF64 (Executable and Linkable Format 64-bit)"
+    COFF_OBJ = "COFF Object (.o)"
+
+
+@dataclass
+class BinaryFormatFeature:
+    """バイナリ形式の比較項目"""
+    category: str
+    pe32_plus: str
+    elf64: str
+    historical_reason: str
+
+
+class BinaryFormatComparator:
+    """コラム1.1: PEとCOFFとELF のバイナリ構造・歴史的選定比較シミュレータ"""
+
+    COMPARISONS: list[BinaryFormatFeature] = [
+        BinaryFormatFeature(
+            category="マジックナンバー (Signature)",
+            pe32_plus="MS-DOSヘッダ 'MZ' (0x5A4D) + PEシグネチャ 'PE\\0\\0' (0x00004550)",
+            elf64="ELFマジック 0x7F 'ELF' (0x464C457F)",
+            historical_reason="PEはMS-DOS互換ヘッダを先頭に残す設計。ELFはUnix System V由来で最初から純粋な32/64bit形式。"
+        ),
+        BinaryFormatFeature(
+            category="ヘッダ構造と階層",
+            pe32_plus="DOS Header (64B) -> DOS Stub -> COFF Header (20B) -> Optional Header (112B) -> Data Directories (128B) -> Section Headers (40B×N)",
+            elf64="ELF Header (64B) -> Program Header Table (56B×M, ローダ用) -> Section Header Table (64B×N, リンカ用)",
+            historical_reason="PEはCOFFの拡張としてOptional Headerを追加。ELFは実行用のセグメント(Program Header)とリンク用のセクションを明確に二層分離。"
+        ),
+        BinaryFormatFeature(
+            category="エントリポイント指定",
+            pe32_plus="AddressOfEntryPoint (ImageBaseからの相対仮想アドレス: RVA)",
+            elf64="e_entry (絶対仮想アドレス、またはPIE時はベースからのオフセット)",
+            historical_reason="PEは任意のアドレスにリロケーション可能なRVAが基本。UEFIファームウェアもメモリの空きスロットにRVAで配置する。"
+        ),
+        BinaryFormatFeature(
+            category="サブシステム識別",
+            pe32_plus="Subsystem フィールド (IMAGE_SUBSYSTEM_EFI_APPLICATION = 10, EFI_BOOT_SERVICE_DRIVER = 11 等)",
+            elf64="EI_OSABI フィールド (System V, Linux等) + PT_INTERP (動的リンカパス)",
+            historical_reason="PEはOSがGUI/CUI/EFIを1つのフィールドで直接識別。UEFI仕様書はPEのSubsystem=10をそのまま規格として採用。"
+        ),
+        BinaryFormatFeature(
+            category="主な採用環境",
+            pe32_plus="UEFI ファームウェア規格、Microsoft Windows (64-bit)",
+            elf64="Linux, FreeBSD, Android, 組込みLinux, POSIX準拠OS全般",
+            historical_reason="1990年代後半、IntelがItanium (IA-64) 向けにEFI仕様を策定した際、Microsoftと密接に協業していたためPE32+が規格として採用された。"
+        ),
+    ]
+
+    @classmethod
+    def get_comparison_table(cls) -> list[dict[str, str]]:
+        return [
+            {
+                "category": f.category,
+                "pe32_plus": f.pe32_plus,
+                "elf64": f.elf64,
+                "historical_reason": f.historical_reason,
+            }
+            for f in cls.COMPARISONS
+        ]
+
+    @classmethod
+    def explain_uefi_pe_adoption(cls) -> str:
+        """なぜ UEFI は ELF ではなく PE32+ を採用したのかの技術的・歴史的背景"""
+        return (
+            "【なぜUEFIはELFではなくPE32+を採用したのか？】\n"
+            "1. 歴史的経緯 (IntelとMicrosoftの協調):\n"
+            "   UEFIの前身である EFI (Extensible Firmware Interface) は、1990年代後半に Intel が\n"
+            "   次世代64ビットプロセッサ Itanium (IA-64) 向けに開発しました。当時、Itanium向けの\n"
+            "   OS・開発ツールチェーンで最も強力なパートナーが Microsoft であり、Windows NT が全面採用\n"
+            "   していた PE/COFF 形式をそのままファームウェアのバイナリ標準として採用しました。\n"
+            "\n"
+            "2. RVA (相対仮想アドレス) による位置独立性 (Position Independence):\n"
+            "   PE32+ はすべてのシンボルやエントリポイントを ImageBase からの相対オフセット (RVA)\n"
+            "   で表現し、`.reloc` セクション（ベース再配置テーブル）を持つため、UEFI BIOS が起動時に\n"
+            "   メモリ上の任意の空きアドレスにブートローダをロードして即座に再配置・実行できます。\n"
+            "\n"
+            "3. サブシステム (Subsystem) の標準化:\n"
+            "   PEヘッダの `Subsystem` フィールドに `IMAGE_SUBSYSTEM_EFI_APPLICATION (10)` や\n"
+            "   `IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER (11)` を定義するだけで、ファームウェアローダが\n"
+            "   バイナリの実行タイプを瞬時に判別できる統一仕様が完成しました。"
+        )
+
+
+class MinimalUefiCCompilerModel:
+    """Clang / LLD による hello.c ビルドパイプラインのシミュレータ"""
+
+    def __init__(self, source_code: str):
+        self.source_code = source_code
+
+    def validate_freestanding_compliance(self) -> dict[str, Any]:
+        """ソースコードが Freestanding 環境 (stdio.h なし、自前型定義) に適合しているか検証"""
+        has_stdio = "#include <stdio.h>" in self.source_code
+        has_stdlib = "#include <stdlib.h>" in self.source_code
+        has_efi_main = "EfiMain" in self.source_code
+        has_system_table = "EFI_SYSTEM_TABLE" in self.source_code
+        has_output_string = "OutputString" in self.source_code
+
+        is_compliant = (not has_stdio) and (not has_stdlib) and has_efi_main and has_system_table and has_output_string
+        return {
+            "is_compliant": is_compliant,
+            "has_forbidden_hosted_headers": has_stdio or has_stdlib,
+            "has_efi_main_entry": has_efi_main,
+            "has_system_table_def": has_system_table,
+            "has_output_string_call": has_output_string,
+        }
+
+    def simulate_build_commands(self) -> list[dict[str, str]]:
+        """Makefile のコンパイル・リンクコマンドをシミュレート"""
+        return [
+            {
+                "stage": "Compilation (Clang)",
+                "command": "clang -target x86_64-pc-win32-coff -o hello.o -c hello.c",
+                "target_triple": "x86_64-pc-win32-coff",
+                "output": "hello.o (COFF Object File)",
+                "purpose": "x86-64 向け COFF 形式オブジェクトファイルへのコンパイル",
+            },
+            {
+                "stage": "Linking (LLD-Link)",
+                "command": "lld-link /subsystem:efi_application /entry:EfiMain /out:hello.efi hello.o",
+                "subsystem": "efi_application (10)",
+                "entry_point": "EfiMain",
+                "output": "hello.efi (PE32+ Executable)",
+                "purpose": "UEFI アプリケーション形式の PE32+ バイナリ合成",
+            },
+        ]
+
+
+def plot_uefi_c_system_table_layout(output_path: str = "1/result/fig1_17_uefi_c_data_structures_and_system_table.png") -> str:
+    """Figure 1.17: C言語での最小UEFIアプリケーション構造と EFI_SYSTEM_TABLE のメモリ配置図 (DPI 300)"""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 8), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+    ax.set_facecolor("#FAFAFA")
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+
+    ax.set_title("C言語による最小 UEFI アプリケーションのデータ構造と EFI_SYSTEM_TABLE メモリマップ\n"
+                 "— SystemTable->ConOut->OutputString(SystemTable->ConOut, L\"...\") の完全解剖",
+                 fontsize=13, fontweight="bold", pad=15, color="#1A237E")
+
+    # Block 1: hello.c C言語コードスニペット
+    c_box = FancyBboxPatch((3, 48), 30, 44, boxstyle="round,pad=0.6", facecolor="#EDE7F6", edgecolor="#4A148C", lw=2)
+    ax.add_patch(c_box)
+    ax.text(18, 89, "hello.c 最小コード", fontsize=11, fontweight="bold", ha="center", color="#4A148C")
+
+    code_text = (
+        "typedef struct {\n"
+        "  char dummy[52];\n"
+        "  EFI_HANDLE ConsoleOutHandle;\n"
+        "  EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL\n"
+        "      *ConOut;\n"
+        "} EFI_SYSTEM_TABLE;\n"
+        "\n"
+        "EFI_STATUS EfiMain(\n"
+        "    EFI_HANDLE ImageHandle,\n"
+        "    EFI_SYSTEM_TABLE *SystemTable) {\n"
+        "  SystemTable->ConOut->OutputString(\n"
+        "      SystemTable->ConOut,\n"
+        "      L\"Hello, world!\\n\");\n"
+        "  while (1);\n"
+        "  return 0;\n"
+        "}"
+    )
+    ax.text(5, 68, code_text, fontsize=7.8, family="monospace", va="center", color="#1A237E")
+
+    # Block 2: EFI_SYSTEM_TABLE メモリレイアウト
+    st_box = FancyBboxPatch((37, 35), 28, 57, boxstyle="round,pad=0.6", facecolor="#E3F2FD", edgecolor="#1565C0", lw=2)
+    ax.add_patch(st_box)
+    ax.text(51, 89, "EFI_SYSTEM_TABLE\n(メモリ配置: 基底 0x3F80_0000)", fontsize=10.5, fontweight="bold", ha="center", color="#1565C0")
+
+    st_cells = [
+        (40, 75, 22, 9, "dummy[52] (52 Bytes)\nオフセット 0x00 〜 0x33\n[Header/Vendor/ConIn 等]", "#BBDEFB", "#0D47A1"),
+        (40, 64, 22, 8, "ConsoleOutHandle (8 Bytes)\nオフセット 0x34 〜 0x3B (+52)\n[コンソールハンドル]", "#90CAF9", "#0D47A1"),
+        (40, 48, 22, 13, "ConOut* (8 Bytes ポインタ)\nオフセット 0x3C 〜 0x43 (+60)\n値: 0x3F80_1000\n[TextOutputProtocol を指す]", "#FFE082", "#E65100"),
+    ]
+    for x, y, w, h, lbl, fc, ec in st_cells:
+        ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="square,pad=0.3", facecolor=fc, edgecolor=ec, lw=1.5))
+        ax.text(x + w / 2, y + h / 2, lbl, fontsize=8.0, fontweight="bold", ha="center", va="center", color=ec)
+
+    # Block 3: EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL メモリレイアウト
+    proto_box = FancyBboxPatch((69, 38), 28, 54, boxstyle="round,pad=0.6", facecolor="#FFF8E1", edgecolor="#F57F17", lw=2)
+    ax.add_patch(proto_box)
+    ax.text(83, 89, "EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL\n(メモリ配置: 基底 0x3F80_1000)", fontsize=10, fontweight="bold", ha="center", color="#F57F17")
+
+    proto_cells = [
+        (72, 73, 22, 9, "dummy (8 Bytes, 0x00〜0x07)\nReset() 関数ポインタ\n(未呼出のためダミー)", "#FFE082", "#E65100"),
+        (72, 54, 22, 16, "OutputString (8 Bytes, 0x08〜0x0F)\nEFI_TEXT_STRING 関数ポインタ\n値: 0x3FE5_22A0\nOutputString(This, String)\n[UEFI ファームウェア内部コード]", "#FFCC80", "#BF360C"),
+    ]
+    for x, y, w, h, lbl, fc, ec in proto_cells:
+        ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="square,pad=0.3", facecolor=fc, edgecolor=ec, lw=1.5))
+        ax.text(x + w / 2, y + h / 2, lbl, fontsize=8.0, fontweight="bold", ha="center", va="center", color=ec)
+
+    # Arrows between structures
+    # From SystemTable ConOut pointer to TextOutputProtocol
+    ax.annotate("", xy=(72, 62), xytext=(62, 54),
+                arrowprops=dict(arrowstyle="-|>", color="#E65100", lw=2.5, connectionstyle="arc3,rad=-0.15"))
+    ax.text(66, 61, "*ConOut 参照", fontsize=8.5, fontweight="bold", color="#E65100", ha="center")
+
+    # Block 4: Lower explanation area (Wide string & Calling convention)
+    call_box = FancyBboxPatch((3, 4), 94, 28, boxstyle="round,pad=0.6", facecolor="#E8F5E9", edgecolor="#2E7D32", lw=2)
+    ax.add_patch(call_box)
+    ax.text(50, 28, "Microsoft x64 呼び出し規約と OutputString の実行メカニズム", fontsize=11, fontweight="bold", ha="center", color="#2E7D32")
+
+    explanation_items = [
+        "① アロー演算子の評価: SystemTable (0x3F80_0000) + 60バイト -> ConOutポインタ (0x3F80_1000) を逆参照",
+        "② メンバ関数ポインタ取得: ConOut (0x3F80_1000) + 8バイト -> OutputString 実装先アドレス (0x3FE5_22A0) を逆参照",
+        "③ 第1引数 (RCX) = ConOut (0x3F80_1000): C言語における明示的な 'this' ポインタ渡し (オブジェクト指向設計)",
+        "④ 第2引数 (RDX) = L\"Hello, world!\\n\": 16ビット UTF-16LE 文字列へのポインタ (各文字2バイト: 'H'=0x0048, 'e'=0x0065... 終端=0x0000)",
+        "⑤ 画面描画と復帰: UEFI ファームウェアが GOP フレームバッファへ文字フォントを描画し、EFI_SUCCESS (0) を RAX で返却",
+    ]
+    for idx, text in enumerate(explanation_items):
+        ax.text(6, 23.5 - idx * 4.3, text, fontsize=8.4, color="#1B5E20")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_pe32plus_coff_elf_comparison(output_path: str = "1/result/fig1_18_pe32plus_coff_elf_binary_format_comparison.png") -> str:
+    """Figure 1.18: コラム1.1: PE32+ (PE/COFF) vs ELF64 バイナリ構造比較図 (DPI 300)"""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax_pe, ax_elf) = plt.subplots(1, 2, figsize=(16, 9), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: PE32+ (PE/COFF)
+    ax_pe.set_title("PE32+ (PE/COFF 64-bit)\n— UEFI ファームウェア & Windows の実行ファイル形式",
+                    fontsize=12, fontweight="bold", pad=12, color="#0D47A1")
+    ax_pe.set_xlim(0, 100)
+    ax_pe.set_ylim(0, 100)
+    ax_pe.axis("off")
+
+    pe_layers = [
+        (10, 88, 80, 8, "MS-DOS Header (64 Bytes)\nMagic: 'MZ' (0x5A4D) / e_lfanew -> PE Header Offset", "#E3F2FD", "#0D47A1"),
+        (10, 78, 80, 8, "MS-DOS Stub Program\n'This program cannot be run in DOS mode'", "#BBDEFB", "#1565C0"),
+        (10, 68, 80, 8, "PE Signature (4 Bytes)\n'PE\\0\\0' (0x00004550)", "#90CAF9", "#1565C0"),
+        (10, 56, 80, 10, "COFF File Header (20 Bytes)\nMachine: x86-64 (0x8664) / NumberOfSections / TimeDateStamp", "#64B5F6", "#0D47A1"),
+        (10, 36, 80, 18, "Optional Header (PE32+ 112B + Data Directories 128B)\nMagic: 0x020B (PE32+) / AddressOfEntryPoint (RVA)\nImageBase / SectionAlignment / Subsystem=10 (EFI_APP)", "#FFE082", "#E65100"),
+        (10, 22, 80, 12, "Section Table (40 Bytes × N)\n.text (コード) / .data (データ) / .rdata (定数/文字列) / .reloc (再配置)", "#C8E6C9", "#2E7D32"),
+        (10, 4, 80, 16, "Section Data (実際の機械語・データ本体)\n.text: EfiMain の x86-64 機械語\n.rdata: L\"Hello, world!\\n\" (UTF-16LE 文字列)", "#E8F5E9", "#1B5E20"),
+    ]
+
+    for x, y, w, h, lbl, fc, ec in pe_layers:
+        ax_pe.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.4", facecolor=fc, edgecolor=ec, lw=1.6))
+        ax_pe.text(x + w / 2, y + h / 2, lbl, fontsize=7.8, fontweight="bold", ha="center", va="center", color=ec)
+
+    # Right: ELF64
+    ax_elf.set_title("ELF64 (Executable and Linkable Format)\n— Linux / BSD / POSIX 標準の実行ファイル形式",
+                     fontsize=12, fontweight="bold", pad=12, color="#B71C1C")
+    ax_elf.set_xlim(0, 100)
+    ax_elf.set_ylim(0, 100)
+    ax_elf.axis("off")
+
+    elf_layers = [
+        (10, 82, 80, 14, "ELF Header (64 Bytes)\nMagic: 0x7F 'ELF' (0x464C457F) / 64-bit / Little Endian\ne_entry (エントリ仮想アドレス) / e_phoff / e_shoff", "#FFCDD2", "#B71C1C"),
+        (10, 60, 80, 20, "Program Header Table (56 Bytes × M) [実行・ローダ用]\nPT_LOAD: 仮想アドレスへのメモリマッピング指示 (コード/データ)\nPT_DYNAMIC: 動的リンカ情報 / PT_INTERP: /lib64/ld-linux-x86-64.so.2", "#FFE0B2", "#E65100"),
+        (10, 36, 80, 22, "Segments & Sections (セグメントとセクション本体)\nSegment 1 (R-X): .text, .rodata (文字列等)\nSegment 2 (RW-): .data, .bss\n(PT_LOAD セグメントの中に各セクションが束ねられる)", "#E8F5E9", "#1B5E20"),
+        (10, 16, 80, 18, "Section Header Table (64 Bytes × N) [リンク用・strip可能]\n.symtab (シンボル表) / .strtab (文字列表)\n.rela.text (再配置情報) / デバッグ情報 (.debug_*)", "#D1C4E9", "#4A148C"),
+        (10, 4, 80, 10, "特長: 実行ビュー(Segments) と リンクビュー(Sections) を二重構造で分離", "#ECEFF1", "#37474F"),
+    ]
+
+    for x, y, w, h, lbl, fc, ec in elf_layers:
+        ax_elf.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.4", facecolor=fc, edgecolor=ec, lw=1.6))
+        ax_elf.text(x + w / 2, y + h / 2, lbl, fontsize=8.0, fontweight="bold", ha="center", va="center", color=ec)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path

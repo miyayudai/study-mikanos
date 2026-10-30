@@ -54,6 +54,9 @@ add_test(NAME test_ch01_bios_uefi_comparator COMMAND ch01_bios_uefi_comparator)
 add_executable(ch01_toolchain_inspector src/ch01/toolchain_inspector.cpp)
 add_test(NAME test_ch01_toolchain_inspector COMMAND ch01_toolchain_inspector)
 
+add_executable(ch01_uefi_c_hello_analyzer src/ch01/uefi_c_hello_analyzer.cpp)
+add_test(NAME test_ch01_uefi_c_hello_analyzer COMMAND ch01_uefi_c_hello_analyzer)
+
 
 
 

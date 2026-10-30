@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-102%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-6.1%25%20(14%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-111%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-6.6%25%20(15%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -88,7 +88,7 @@ cmake --build build
 | Chapter | タイトル | 節数 | 対応タグ範囲 | 主なトピック | 演習問題 | 状態 |
 |:---:|---|:---:|:---:|---|:---:|:---:|
 | **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | [`0_Exercises.ipynb`](0/0_Exercises.ipynb) | `[x]` 完了 (6/6) |
-| **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | `1_Exercises.ipynb` | `[-]` 進行中 (8/10) |
+| **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | `1_Exercises.ipynb` | `[-]` 進行中 (9/10) |
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[ ]` 未着手 (0/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
@@ -147,6 +147,7 @@ cmake --build build
 | [`1.6_Hands_On_Mindset.ipynb`](1/1.6_Hands_On_Mindset.ipynb) | 1.6 とにかく手を動かそう（実験・観察OODAループ・UTF-16LE文字列改変・ヌル終端欠落とゴミ露出・セクション超過・機械語無限ループ解除） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.6_Hands_On_Mindset.ipynb) |
 | [`1.7_Booting_with_UEFI_BIOS.ipynb`](1/1.7_Booting_with_UEFI_BIOS.ipynb) | 1.7 UEFI BIOSによる起動（レガシーBIOS vs UEFI・16bitリアルモードとA20ゲート・MBR 2TiB限界 vs GPT 9.4ZB・Boot/Runtimeサービス分離） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.7_Booting_with_UEFI_BIOS.ipynb) |
 | [`1.8_Tools_for_OS_Development.ipynb`](1/1.8_Tools_for_OS_Development.ipynb) | 1.8 OSを作る道具（フリースタンディング環境・クロスコンパイルとターゲットトリプル・LLVM/Clangモジュラー設計・4大必須フラグ） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.8_Tools_for_OS_Development.ipynb) |
+| [`1.9_Hello_World_in_C_and_PE_COFF_ELF.ipynb`](1/1.9_Hello_World_in_C_and_PE_COFF_ELF.ipynb) | 1.9 C言語でハローワールド（最小Freestanding C実装・EFI_SYSTEM_TABLE 52Bオフセット数理・Thisポインタ・PE32+ vs ELF64徹底比較） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/1/1.9_Hello_World_in_C_and_PE_COFF_ELF.ipynb) |
 
 
 

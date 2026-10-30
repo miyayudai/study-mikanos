@@ -101,6 +101,14 @@ from common.os_sim import (
     CompilerToolchainPipeline,
     plot_llvm_toolchain_and_build_pipeline,
     plot_freestanding_vs_hosted_environment,
+    UefiStructField,
+    UefiSystemTableModel,
+    BinaryFormatKind,
+    BinaryFormatFeature,
+    BinaryFormatComparator,
+    MinimalUefiCCompilerModel,
+    plot_uefi_c_system_table_layout,
+    plot_pe32plus_coff_elf_comparison,
 )
 
 __all__ = [
@@ -204,4 +212,12 @@ __all__ = [
     "CompilerToolchainPipeline",
     "plot_llvm_toolchain_and_build_pipeline",
     "plot_freestanding_vs_hosted_environment",
+    "UefiStructField",
+    "UefiSystemTableModel",
+    "BinaryFormatKind",
+    "BinaryFormatFeature",
+    "BinaryFormatComparator",
+    "MinimalUefiCCompilerModel",
+    "plot_uefi_c_system_table_layout",
+    "plot_pe32plus_coff_elf_comparison",
 ]
