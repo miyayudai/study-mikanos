@@ -135,6 +135,10 @@ add_test(NAME test_ch04_elf_loader_sim COMMAND ch04_elf_loader_sim)
 add_executable(ch04_os_chapter4_exercises src/ch04/os_chapter4_exercises.cpp)
 add_test(NAME test_ch04_os_chapter4_exercises COMMAND ch04_os_chapter4_exercises --test)
 
+add_executable(ch05_font_rendering_sim src/ch05/font_rendering_sim.cpp)
+add_test(NAME test_ch05_font_rendering_sim COMMAND ch05_font_rendering_sim)
+
+
 
 
 

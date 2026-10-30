@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.patches import Rectangle, FancyBboxPatch, ArrowStyle
 from matplotlib.gridspec import GridSpec
+from matplotlib.colors import ListedColormap
 import numpy as np
 
 
@@ -18061,18 +18062,444 @@ def plot_chapter4_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     for angle, rate in zip(angles, rates):
         ax.text(angle, rate + 6, f"{rate:.0f}%", ha="center", va="center", fontsize=9, fontweight="bold", color="#0D47A1")
 
-    avg_score = np.mean(rates)
-    status_str = "合格 (Passed)" if avg_score >= 80.0 else "要復習 (Needs Review)"
-    status_color = "#2E7D32" if avg_score >= 80.0 else "#C62828"
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
 
-    fig.suptitle("第4章 各節マスター率レーダーチャート\n(Chapter 4 Mastery Radar Chart)",
-                 fontsize=13, fontweight="bold", color="#1A237E", y=0.97)
 
-    ax.text(0, -32, f"総合平均スコア: {avg_score:.1f}% [{status_str}]",
-            ha="center", fontsize=10.5, fontweight="bold", color=status_color,
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="#ECEFF1", edgecolor=status_color, lw=1.5))
+# ==============================================================================
+# Chapter 5.1: Drawing Characters & References (osbook_day05a)
+# ==============================================================================
+
+# 16-byte raw bitmap font data for character 'A' (8x16 pixels)
+FONT_A_RAW: tuple[int, ...] = (
+    0b00000000,  # Row 0
+    0b00011000,  # Row 1:     **
+    0b00011000,  # Row 2:     **
+    0b00011000,  # Row 3:     **
+    0b00011000,  # Row 4:     **
+    0b00100100,  # Row 5:    *  *
+    0b00100100,  # Row 6:    *  *
+    0b00100100,  # Row 7:    *  *
+    0b00100100,  # Row 8:    *  *
+    0b01111110,  # Row 9:   ******
+    0b01000010,  # Row 10:  *    *
+    0b01000010,  # Row 11:  *    *
+    0b01000010,  # Row 12:  *    *
+    0b11100111,  # Row 13: ***  ***
+    0b00000000,  # Row 14:
+    0b00000000,  # Row 15:
+)
+
+
+@dataclass(frozen=True)
+class BitmapFontGlyph:
+    """Represents an 8x16 monochrome bitmap font glyph."""
+    char: str
+    data: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.data) != 16:
+            raise ValueError(f"Glyph data must contain exactly 16 rows, got {len(self.data)}")
+        for i, row in enumerate(self.data):
+            if not (0 <= row <= 255):
+                raise ValueError(f"Row {i} value out of 8-bit range: {row}")
+
+    @property
+    def width(self) -> int:
+        return 8
+
+    @property
+    def height(self) -> int:
+        return 16
+
+    def is_pixel_lit(self, dx: int, dy: int) -> bool:
+        """Check if pixel at relative coordinate (dx, dy) is lit.
+        Matches MikanOS bit-test logic: ((data[dy] << dx) & 0x80u) != 0.
+        """
+        if not (0 <= dx < 8 and 0 <= dy < 16):
+            return False
+        return bool((self.data[dy] << dx) & 0x80)
+
+    def is_pixel_lit_right_shift(self, dx: int, dy: int) -> bool:
+        """Alternative equivalent bit-test logic: ((data[dy] >> (7 - dx)) & 1) != 0."""
+        if not (0 <= dx < 8 and 0 <= dy < 16):
+            return False
+        return bool((self.data[dy] >> (7 - dx)) & 1)
+
+    def count_lit_pixels(self) -> int:
+        """Count total lit pixels in this glyph."""
+        return sum(bin(row).count("1") for row in self.data)
+
+    def to_matrix(self) -> np.ndarray:
+        """Convert glyph to a 16x8 boolean matrix (True for lit, False for background)."""
+        mat = np.zeros((16, 8), dtype=bool)
+        for dy in range(16):
+            for dx in range(8):
+                mat[dy, dx] = self.is_pixel_lit(dx, dy)
+        return mat
+
+    def to_ascii_art(self, lit_char: str = "@", unlit_char: str = ".") -> str:
+        """Convert glyph to a multi-line ASCII art string."""
+        lines = []
+        for dy in range(16):
+            row_str = "".join(lit_char if self.is_pixel_lit(dx, dy) else unlit_char for dx in range(8))
+            lines.append(row_str)
+        return "\n".join(lines)
+
+
+# Singleton glyph instance for 'A'
+GLYPH_A = BitmapFontGlyph(char="A", data=FONT_A_RAW)
+
+
+def write_ascii_sim(
+    writer: PixelWriterSim,
+    x: int,
+    y: int,
+    c: str,
+    color: PixelColorSim,
+    glyph: BitmapFontGlyph = GLYPH_A,
+) -> int:
+    """Simulate MikanOS WriteAscii function (osbook_day05a).
+    
+    Draws character glyph 'A' using PixelWriter. Returns number of pixels rendered.
+    If c != 'A', does nothing and returns 0.
+    """
+    if c != glyph.char:
+        return 0
+
+    pixels_drawn = 0
+    for dy in range(glyph.height):
+        for dx in range(glyph.width):
+            if glyph.is_pixel_lit(dx, dy):
+                writer.write(x + dx, y + dy, color)
+                pixels_drawn += 1
+    return pixels_drawn
+
+
+def write_string_sim(
+    writer: PixelWriterSim,
+    x: int,
+    y: int,
+    s: str,
+    color: PixelColorSim,
+    glyph: BitmapFontGlyph = GLYPH_A,
+) -> int:
+    """Draw a string of characters sequentially with 8-pixel horizontal advance."""
+    total_pixels = 0
+    for i, ch in enumerate(s):
+        total_pixels += write_ascii_sim(writer, x + i * glyph.width, y, ch, color, glyph)
+    return total_pixels
+
+
+@dataclass
+class ReferenceVsPointerComparison:
+    """Detailed theoretical & assembly comparison between C++ Reference and Pointer (Column 5.1)."""
+    feature: str
+    cpp_reference: str
+    cpp_pointer: str
+    hardware_assembly_note: str
+
+
+def get_reference_vs_pointer_comparisons() -> list[ReferenceVsPointerComparison]:
+    """Retrieve systematic comparison items between Reference and Pointer."""
+    return [
+        ReferenceVsPointerComparison(
+            feature="構文と記号 (Syntax & Symbol)",
+            cpp_reference="Type& ref = var; (宣言時に & 付与、使用時は通常変数と同じドット演算子 .)",
+            cpp_pointer="Type* ptr = &var; (型に * 付与、アドレス取得に &、参照先に -> または *ptr)",
+            hardware_assembly_note="構文上の違いのみ。生成機械語は両者ともメモリアドレスをレジスタに格納して間接参照",
+        ),
+        ReferenceVsPointerComparison(
+            feature="NULL / nullptr の許容 (Nullability)",
+            cpp_reference="不可 (常に有効なオブジェクトに束縛され、nullptr 参照は未定義動作 / 原則禁止)",
+            cpp_pointer="許容 (nullptr / NULL を保持可能、ポインタ走査やオプショナル値として活用可能)",
+            hardware_assembly_note="参照渡しを用いることで関数の引数チェック (if (p == nullptr)) を省略でき分岐予測と安全性が向上",
+        ),
+        ReferenceVsPointerComparison(
+            feature="再束縛 / 再代入 (Rebinding)",
+            cpp_reference="不可 (初期化時に束縛されたオブジェクトを変更できない。ref = val は束縛先への値代入)",
+            cpp_pointer="可能 (ptr = &another_var で指す先のアドレスを何度でも自由に変更可能)",
+            hardware_assembly_note="参照は不変のアドレスエイリアスとして最適化され、レジスタ割り当てが容易",
+        ),
+        ReferenceVsPointerComparison(
+            feature="自身のアドレス (& 演算子)",
+            cpp_reference="&ref は束縛先オブジェクトのアドレスそのものを返す (参照自体の独立アドレスは不可視)",
+            cpp_pointer="&ptr はポインタ変数自身のアドレス (スタック上のポインタ格納領域) を返す",
+            hardware_assembly_note="二重ポインタ Type** は存在するが、二重参照 Type&& は右辺値参照であり意味が全く異なる",
+        ),
+        ReferenceVsPointerComparison(
+            feature="アセンブリ実装 (Assembly Implementation)",
+            cpp_reference="leaq -16(%rbp), %rax / movq %rax, %rdi / call WriteAscii (ポインタ渡しと100%同一)",
+            cpp_pointer="leaq -16(%rbp), %rax / movq %rax, %rdi / call WriteAscii (参照渡しと100%同一)",
+            hardware_assembly_note="System V AMD64 ABI において、参照渡しとポインタ渡しは全く同一のレジスタ渡し規約に従う",
+        ),
+        ReferenceVsPointerComparison(
+            feature="OSカーネル設計指針 (OS Design Guidelines)",
+            cpp_reference="WriteAscii(PixelWriter& writer, ...): 必須かつ変更不要なサブシステムを渡す際に推奨",
+            cpp_pointer="PixelWriter* pixel_writer;: 配置new前の未初期化状態や動的切り替えが必要な場合に必須",
+            hardware_assembly_note="MikanOS では WriteAscii に参照を採用し、呼び出し側の安全性とコード簡潔性を両立",
+        ),
+    ]
+
+
+def plot_fig5_01_font_glyph_and_bit_expansion(output_path: Path | str) -> Path:
+    """Generate high-resolution architecture figure for Section 5.1 (Figure 5.1).
+    Visualizes 8x16 bitmap font 'A', bit expansion mathematics, and VRAM drawing.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig = plt.figure(figsize=(18, 11), dpi=300)
+    gs = GridSpec(2, 2, figure=fig, width_ratios=[1.2, 1.0], height_ratios=[1.0, 1.0], hspace=0.32, wspace=0.25)
+
+    # Subplot 1: Glyph 'A' Bit Matrix & Row Bit Patterns
+    ax1 = fig.add_subplot(gs[:, 0])
+    ax1.set_facecolor("#FAFAFA")
+    ax1.set_title("1. 8×16 ビットマップフォント 'A' の内部データ構造とビット展開",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # Draw grid for 16 rows and 8 columns
+    matrix = GLYPH_A.to_matrix()
+    cmap = ListedColormap(["#ECEFF1", "#FF6F00"])
+    ax1.imshow(matrix, cmap=cmap, aspect="auto", extent=[-0.5, 7.5, 15.5, -0.5])
+
+    # Overlay grid lines
+    ax1.set_xticks(np.arange(-0.5, 8, 1), minor=True)
+    ax1.set_yticks(np.arange(-0.5, 16, 1), minor=True)
+    ax1.grid(which="minor", color="#90A4AE", linestyle="-", linewidth=1.2)
+    ax1.tick_params(which="minor", size=0)
+
+    ax1.set_xticks(range(8))
+    ax1.set_xticklabels([f"dx={i}\n(bit {7-i})" for i in range(8)], fontsize=8.5, fontweight="bold", color="#263238")
+    ax1.set_yticks(range(16))
+    ax1.set_yticklabels([f"dy={i:2d}" for i in range(16)], fontsize=8.5, fontweight="bold", color="#263238")
+
+    # Add text for bits and hex values
+    for dy in range(16):
+        byte_val = GLYPH_A.data[dy]
+        for dx in range(8):
+            bit_lit = bool((byte_val << dx) & 0x80)
+            bit_str = "1" if bit_lit else "0"
+            text_color = "#FFFFFF" if bit_lit else "#78909C"
+            ax1.text(dx, dy, bit_str, ha="center", va="center", fontsize=9, fontweight="bold", color=text_color)
+        # Right label with hex value
+        ax1.text(8.2, dy, f"0x{byte_val:02X} (0b{byte_val:08b})",
+                 ha="left", va="center", fontsize=8.2, family="monospace", color="#004D40", fontweight="bold")
+
+    ax1.set_xlim(-0.7, 12.2)
+    ax1.set_xlabel("ビット列走査方向: MSB (0x80, dx=0) ──> LSB (0x01, dx=7)", fontsize=9.5, fontweight="bold", color="#0D47A1")
+
+    # Subplot 2: Bit Shift Mathematical Formula & Architecture
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. ビット判定アルゴリズムの数理 (Bit-Test Logic)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+    ax2.axis("off")
+
+    formula_box = FancyBboxPatch((0.03, 0.05), 0.94, 0.90, boxstyle="round,pad=0.03",
+                                 facecolor="#E3F2FD", edgecolor="#1976D2", lw=2)
+    ax2.add_patch(formula_box)
+
+    formula_text = (
+        "【MikanOS ビット判定アルゴリズム (左シフト方式)】\n"
+        "  if ((kFontA[dy] << dx) & 0x80u) {\n"
+        "      writer.Write(x + dx, y + dy, color);\n"
+        "  }\n"
+        "───────────────────────────────────────\n"
+        "● 数理モデルの動作ステップ:\n"
+        "  1. 対象行の1バイトを取り出す: byte = kFontA[dy]\n"
+        "  2. dx ビット分だけ左シフト: shifted = byte << dx\n"
+        "     - dx=0 のとき: bit 7 (MSB) が最上位に留まる\n"
+        "     - dx=1 のとき: bit 6 が最上位 (bit 7) の位置にシフト\n"
+        "     - dx=7 のとき: bit 0 (LSB) が最上位 (bit 7) に到達\n"
+        "  3. マスク 0x80 (0b10000000) と AND 演算:\n"
+        "     - 最上位ビットが 1 なら非ゼロ (描画対象)\n"
+        "     - 最上位ビットが 0 なら 0 (描画スキップ)\n"
+        "───────────────────────────────────────\n"
+        "● 等価な右シフト方式 (Alternative Right Shift):\n"
+        "  if ((kFontA[dy] >> (7 - dx)) & 1) { ... }\n"
+        "  - どちらも完全に等価だが、左シフト方式は定数マスク 0x80 を\n"
+        "    固定でき、x86-64 の testb 命令等への最適化が効きやすい。"
+    )
+    ax2.text(0.06, 0.50, formula_text, fontsize=8.5,
+             va="center", color="#0D47A1", linespacing=1.35)
+
+    # Subplot 3: VRAM FrameBuffer Rendering Simulation ("AA" at (50, 50))
+    ax3 = fig.add_subplot(gs[1, 1])
+    ax3.set_facecolor("#212121")
+    ax3.set_title("3. VRAM フレームバッファへの文字描画結果 ('AA' 描画)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Simulate frame buffer slice around (40..75, 40..75)
+    config = FrameBufferConfigSim(
+        frame_buffer_base=0x8000_0000,
+        pixels_per_scan_line=200,
+        horizontal_resolution=200,
+        vertical_resolution=150,
+        pixel_format=PixelFormat.RGB_RESV_8BIT_PER_COLOR,
+    )
+    writer = RGBResv8BitPerColorPixelWriterSim(config)
+
+    # Fill white background
+    for y in range(150):
+        for x in range(200):
+            writer.write(x, y, PixelColorSim(255, 255, 255))
+
+    # Draw green rectangle as in day04c
+    for y in range(10, 40):
+        for x in range(10, 100):
+            writer.write(x, y, PixelColorSim(0, 200, 0))
+
+    # Draw 'A' at (50, 50) and 'A' at (58, 50) in black (0, 0, 0)
+    write_ascii_sim(writer, 50, 50, 'A', PixelColorSim(0, 0, 0))
+    write_ascii_sim(writer, 58, 50, 'A', PixelColorSim(0, 0, 0))
+
+    # Convert buffer slice [45..70, 45..70] to numpy image
+    img_slice = np.zeros((26, 26, 3), dtype=np.uint8)
+    for row_idx, cy in enumerate(range(45, 71)):
+        for col_idx, cx in enumerate(range(45, 71)):
+            offset = writer.pixel_at(cx, cy)
+            img_slice[row_idx, col_idx] = [
+                writer.buffer[offset],
+                writer.buffer[offset + 1],
+                writer.buffer[offset + 2],
+            ]
+
+    ax3.imshow(img_slice, extent=[45, 71, 71, 45], interpolation="nearest")
+    ax3.set_xlabel("VRAM X 座標 (Pixels) -> 文字送り +8 ピクセル (50 -> 58)", fontsize=8.5, fontweight="bold", color="#FFFFFF")
+    ax3.set_ylabel("VRAM Y 座標 (Pixels)", fontsize=8.5, fontweight="bold", color="#FFFFFF")
+    ax3.tick_params(colors="#FFFFFF", labelsize=8)
+
+    # Annotations
+    ax3.text(54, 48, "'A' (50, 50)", color="#D32F2F", fontsize=8.5, fontweight="bold", ha="center")
+    ax3.text(62, 48, "'A' (58, 50)", color="#1976D2", fontsize=8.5, fontweight="bold", ha="center")
+
+    fig.suptitle("ゼロからのOS自作入門 第5.1節: 8×16 ビットマップフォントと文字描画アルゴリズム\n"
+                 "(Chapter 5.1: 8x16 Bitmap Font Glyph, Bit-Expansion Math & VRAM Output)",
+                 fontsize=13.5, fontweight="bold", color="#0D47A1", y=0.98)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+def plot_fig5_02_reference_vs_pointer_memory_model(output_path: Path | str) -> Path:
+    """Generate high-resolution architecture figure for Column 5.1 (Figure 5.2).
+    Compares C++ Reference vs Pointer memory layout, ABI passing, and usage principles.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig = plt.figure(figsize=(18, 12), dpi=300)
+    gs = GridSpec(2, 1, figure=fig, height_ratios=[1.1, 1.0], hspace=0.32)
+
+    # Subplot 1: Stack & Memory Architecture (Pointer vs Reference)
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_facecolor("#FAFAFA")
+    ax1.set_title("1. スタックフレームとメモリ空間における「ポインタ」と「参照」の物理配置とABI",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+    ax1.axis("off")
+
+    # Left box: Pointer memory model
+    ptr_box = FancyBboxPatch((0.03, 0.08), 0.45, 0.84, boxstyle="round,pad=0.03",
+                             facecolor="#FFF3E0", edgecolor="#F57C00", lw=2)
+    ax1.add_patch(ptr_box)
+    ptr_text = (
+        "【ポインタ型変数: PixelWriter* ptr】\n"
+        "────────────────────────────────────────\n"
+        "● スタック上に「8バイトのアドレス格納領域」が独立して確保される\n"
+        "  - &ptr : スタック上のポインタ変数自身のアドレス (例: 0x7FFF_0008)\n"
+        "  - ptr  : 指している対象オブジェクトのアドレス (例: 0x8000_1000)\n"
+        "  - *ptr : デリファレンスして対象オブジェクトにアクセス\n"
+        "────────────────────────────────────────\n"
+        "● 特性とリスク:\n"
+        "  [+] nullptr 代入可能 (初期化前や存在しない状態を表現可能)\n"
+        "  [+] 再代入可能 (ptr = &other_writer でいつでも別の対象を指せる)\n"
+        "  [-] ヌルポインタ参照による #PF (Page Fault) の危険性あり\n"
+        "────────────────────────────────────────\n"
+        "● System V AMD64 ABI 関数呼び出し (機械語):\n"
+        "  movq  -8(%rbp), %rax       # スタックからポインタ値を読み出す\n"
+        "  movq  %rax, %rdi           # 第1引数レジスタ RDI にアドレスを設定\n"
+        "  call  WriteAscii           # 関数呼び出し"
+    )
+    ax1.text(0.05, 0.50, ptr_text, fontsize=8.2,
+             va="center", color="#E65100", linespacing=1.30)
+
+    # Right box: Reference memory model
+    ref_box = FancyBboxPatch((0.52, 0.08), 0.45, 0.84, boxstyle="round,pad=0.03",
+                             facecolor="#E8F5E9", edgecolor="#388E3C", lw=2)
+    ax1.add_patch(ref_box)
+    ref_text = (
+        "【参照型エイリアス: PixelWriter& ref】\n"
+        "────────────────────────────────────────\n"
+        "● 型システム上の「別名 (エイリアス)」。独立した変数領域は不可視\n"
+        "  - &ref : 束縛先オブジェクトのアドレスそのものを返す (0x8000_1000)\n"
+        "  - ref.Write(...) : 通常のオブジェクトと全く同じドット記法\n"
+        "  - 内部実装としてはポインタと同一の「8バイトアドレス」を保持\n"
+        "────────────────────────────────────────\n"
+        "● 特性と安全性:\n"
+        "  [+] nullptr 禁止 (常に有効なオブジェクトへの束縛が保証される)\n"
+        "  [+] 再束縛不可 (一度束縛されたら別のオブジェクトを指し直せない)\n"
+        "  [+] if (writer == nullptr) の無駄なチェックが不要で高速・堅牢\n"
+        "────────────────────────────────────────\n"
+        "● System V AMD64 ABI 関数呼び出し (機械語):\n"
+        "  leaq  -40(%rbp), %rax      # 実体オブジェクトのアドレスを計算\n"
+        "  movq  %rax, %rdi           # 第1引数レジスタ RDI にアドレスを設定\n"
+        "  call  WriteAscii           # 関数呼び出し (ポインタ渡しと100%同一!)"
+    )
+    ax1.text(0.54, 0.50, ref_text, fontsize=8.2,
+             va="center", color="#1B5E20", linespacing=1.30)
+
+    # Subplot 2: Comparison Matrix Table
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. コラム5.1: 参照 (Reference) とポインタ (Pointer) の 6 大特性比較対照表",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=10)
+    ax2.axis("off")
+
+    comparisons = get_reference_vs_pointer_comparisons()
+    table_data = []
+    for c in comparisons:
+        table_data.append([c.feature, c.cpp_reference, c.cpp_pointer, c.hardware_assembly_note])
+
+    col_labels = ["評価項目", "C++ 参照 (Reference: Type&)", "C++ ポインタ (Pointer: Type*)", "ハードウェア / ABI / 設計指針"]
+    col_widths = [0.18, 0.28, 0.28, 0.26]
+
+    table = ax2.table(
+        cellText=table_data,
+        colLabels=col_labels,
+        colWidths=col_widths,
+        cellLoc="left",
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.5)
+    table.scale(1.0, 1.7)
+
+    # Style header and rows
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#1A237E")
+            cell.set_text_props(color="#FFFFFF", fontweight="bold")
+        else:
+            if row % 2 == 1:
+                cell.set_facecolor("#F5F5F5")
+            else:
+                cell.set_facecolor("#FFFFFF")
+            if col == 0:
+                cell.set_text_props(fontweight="bold", color="#0D47A1")
+
+    fig.suptitle("ゼロからのOS自作入門 コラム5.1: C++ 参照 vs ポインタのメモリモデルとABI比較\n"
+                 "(Column 5.1: Reference vs Pointer in Modern C++ and x86-64 Bare-Metal Systems)",
+                 fontsize=13.5, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+

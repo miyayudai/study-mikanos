@@ -308,6 +308,15 @@ from common.os_sim import (
     Chapter4TheoryValidator,
     plot_chapter4_exercises_summary,
     plot_chapter4_mastery_radar,
+    FONT_A_RAW,
+    BitmapFontGlyph,
+    GLYPH_A,
+    write_ascii_sim,
+    write_string_sim,
+    ReferenceVsPointerComparison,
+    get_reference_vs_pointer_comparisons,
+    plot_fig5_01_font_glyph_and_bit_expansion,
+    plot_fig5_02_reference_vs_pointer_memory_model,
 )
 
 __all__ = [
@@ -618,4 +627,13 @@ __all__ = [
     "Chapter4TheoryValidator",
     "plot_chapter4_exercises_summary",
     "plot_chapter4_mastery_radar",
+    "FONT_A_RAW",
+    "BitmapFontGlyph",
+    "GLYPH_A",
+    "write_ascii_sim",
+    "write_string_sim",
+    "ReferenceVsPointerComparison",
+    "get_reference_vs_pointer_comparisons",
+    "plot_fig5_01_font_glyph_and_bit_expansion",
+    "plot_fig5_02_reference_vs_pointer_memory_model",
 ]

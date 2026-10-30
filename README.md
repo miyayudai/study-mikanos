@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-316%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-17.5%25%20(40%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-323%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-18.0%25%20(41%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -92,7 +92,7 @@ cmake --build build
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | [`2_Exercises.ipynb`](2/2_Exercises.ipynb) | `[x]` 完了 (10/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | `[x]` 完了 (6/6) |
-| **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
+| **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[-]` 進行中 (1/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[ ]` 未着手 (0/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 未着手 (0/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -188,6 +188,12 @@ cmake --build build
 | [`4.4_Virtual_Method_Table_vtable.ipynb`](4/4.4_Virtual_Method_Table_vtable.ipynb) | 4.4 vtable（仮想関数テーブル・`_vptr`とItanium C++ ABIメモリレイアウト・`mov rax, [rdi]; call [rax+16]`逆アセンブル・純粋仮想関数トラップ・`__cxa_pure_virtual`リンカ解決・ベアメタルHLT保護・ゼロオーバーヘッド原則） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.4_Virtual_Method_Table_vtable.ipynb) |
 | [`4.5_Loading_ELF_Segments_Properly.ipynb`](4/4.5_Loading_ELF_Segments_Properly.ipynb) | 4.5 ローダを改良する（`osbook_day04d`・ELF-64仕様・`Elf64_Ehdr`/`Phdr`・`PT_LOAD`セグメント配置・`.bss`ゼロクリア・二段階ロードアーキテクチャ・`AllocatePool`/`FreePool`・エントリポイント特定） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.5_Loading_ELF_Segments_Properly.ipynb) |
 | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | 第4章 演習問題（Makefile DAG自動変数・ベアメタルフラグ・FrameBufferConfig座標変換数理・System V vs MS x64 ABI・PixelWriter多態性と配置new・vtableメモリレイアウト・純粋仮想関数トラップ・ELF64 PT_LOADと.bssゼロクリア・10問自己採点テスト・レーダーチャート） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4_Exercises.ipynb) |
+
+### 第5章 文字表示とコンソールクラス (`5/`)
+
+| ノートブック | 内容 | Colab で開く |
+|---|---|:---:|
+| [`5.1_Drawing_Characters_and_References.ipynb`](5/5.1_Drawing_Characters_and_References.ipynb) | 5.1 文字を書いてみる（`osbook_day05a`・8x16ビットマップフォント・`kFontA[16]`グリフデータ・左シフトビット判定数理・VRAM文字描画・文字送り+8px・コラム5.1 参照とポインタ・System V ABIレジスタ渡し・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.1_Drawing_Characters_and_References.ipynb) |
 
 
 
