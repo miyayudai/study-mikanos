@@ -79,6 +79,9 @@ add_test(NAME test_ch02_get_memory_map_sim COMMAND ch02_get_memory_map_sim --tes
 add_executable(ch02_save_memory_map_sim src/ch02/save_memory_map_sim.cpp)
 add_test(NAME test_ch02_save_memory_map_sim COMMAND ch02_save_memory_map_sim)
 
+add_executable(ch02_analyze_memory_map_sim src/ch02/analyze_memory_map_sim.cpp)
+add_test(NAME test_ch02_analyze_memory_map_sim COMMAND ch02_analyze_memory_map_sim)
+
 
 
 

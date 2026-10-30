@@ -8188,3 +8188,455 @@ def plot_memory_map_csv_export_and_layout(
     return output_path
 
 
+# ==============================================================================
+# Chapter 2.7: Analyzing Memory Map Output (メモリマップの確認)
+# ==============================================================================
+
+class MemoryMapAnalyzer:
+    """Parses and computes statistical and architectural metrics on UEFI memory maps.
+
+    Handles CSV-formatted memory map dumps output by MikanOS SaveMemoryMap()
+    and evaluates free conventional memory, boot services reclaimability,
+    fragmentation, and physical address space layout.
+    """
+
+    def __init__(self, records: list[dict[str, Any]]) -> None:
+        """Initializes analyzer with records parsed from memory map CSV."""
+        self.records: list[dict[str, Any]] = sorted(records, key=lambda r: r["PhysicalStart"])
+        self._total_pages: int = sum(r["NumberOfPages"] for r in self.records)
+        self._total_bytes: int = self._total_pages * 4096
+
+    @classmethod
+    def from_csv(cls, csv_text: str) -> "MemoryMapAnalyzer":
+        """Factory method to construct analyzer directly from CSV string."""
+        records = parse_memory_map_csv(csv_text)
+        return cls(records)
+
+    @property
+    def total_records(self) -> int:
+        """Returns the number of memory descriptor records."""
+        return len(self.records)
+
+    @property
+    def total_pages(self) -> int:
+        """Returns the total number of 4KiB pages across all descriptors."""
+        return self._total_pages
+
+    @property
+    def total_bytes(self) -> int:
+        """Returns the total size in bytes across all descriptors."""
+        return self._total_bytes
+
+    @property
+    def total_mib(self) -> float:
+        """Returns the total size in mebibytes (MiB)."""
+        return self._total_bytes / (1024 * 1024)
+
+    @property
+    def total_gib(self) -> float:
+        """Returns the total size in gibibytes (GiB)."""
+        return self._total_bytes / (1024 * 1024 * 1024)
+
+    def type_breakdown(self) -> dict[str, dict[str, Any]]:
+        """Computes page count, byte size, MiB, and percentage per memory type."""
+        breakdown: dict[str, dict[str, Any]] = {}
+
+        for r in self.records:
+            type_name = r["TypeName"]
+            if type_name not in breakdown:
+                breakdown[type_name] = {
+                    "type_code": r["Type"],
+                    "count": 0,
+                    "pages": 0,
+                    "bytes": 0,
+                    "mib": 0.0,
+                    "percentage": 0.0,
+                }
+            breakdown[type_name]["count"] += 1
+            breakdown[type_name]["pages"] += r["NumberOfPages"]
+            breakdown[type_name]["bytes"] += r["SizeBytes"]
+
+        for info in breakdown.values():
+            info["mib"] = info["bytes"] / (1024 * 1024)
+            info["percentage"] = (info["bytes"] / self._total_bytes * 100) if self._total_bytes > 0 else 0.0
+
+        return breakdown
+
+    def conventional_memory_summary(self) -> dict[str, Any]:
+        """Analyzes EfiConventionalMemory (Type 7), representing immediately usable RAM."""
+        conv_records = [r for r in self.records if r["Type"] == 7 or r["TypeName"] == "EfiConventionalMemory"]
+        pages = sum(r["NumberOfPages"] for r in conv_records)
+        bytes_val = pages * 4096
+        mib_val = bytes_val / (1024 * 1024)
+        gib_val = bytes_val / (1024 * 1024 * 1024)
+        pct = (bytes_val / self._total_bytes * 100) if self._total_bytes > 0 else 0.0
+
+        max_block = max(conv_records, key=lambda r: r["NumberOfPages"]) if conv_records else None
+        min_block = min(conv_records, key=lambda r: r["NumberOfPages"]) if conv_records else None
+
+        return {
+            "record_count": len(conv_records),
+            "pages": pages,
+            "bytes": bytes_val,
+            "mib": mib_val,
+            "gib": gib_val,
+            "percentage": pct,
+            "regions": conv_records,
+            "max_block": max_block,
+            "min_block": min_block,
+        }
+
+    def reclaimable_boot_services_summary(self) -> dict[str, Any]:
+        """Analyzes EfiBootServicesCode and EfiBootServicesData reclaimable after ExitBootServices()."""
+        bs_records = [
+            r for r in self.records
+            if r["Type"] in (3, 4) or r["TypeName"] in ("EfiBootServicesCode", "EfiBootServicesData")
+        ]
+        pages = sum(r["NumberOfPages"] for r in bs_records)
+        bytes_val = pages * 4096
+        mib_val = bytes_val / (1024 * 1024)
+        pct = (bytes_val / self._total_bytes * 100) if self._total_bytes > 0 else 0.0
+
+        return {
+            "record_count": len(bs_records),
+            "pages": pages,
+            "bytes": bytes_val,
+            "mib": mib_val,
+            "percentage": pct,
+            "regions": bs_records,
+        }
+
+    def available_memory_after_boot(self) -> dict[str, Any]:
+        """Computes total usable memory once ExitBootServices() reclaims boot services memory."""
+        conv = self.conventional_memory_summary()
+        bs = self.reclaimable_boot_services_summary()
+
+        combined_pages = conv["pages"] + bs["pages"]
+        combined_bytes = combined_pages * 4096
+        combined_mib = combined_bytes / (1024 * 1024)
+        combined_gib = combined_bytes / (1024 * 1024 * 1024)
+        combined_pct = (combined_bytes / self._total_bytes * 100) if self._total_bytes > 0 else 0.0
+
+        return {
+            "pages": combined_pages,
+            "bytes": combined_bytes,
+            "mib": combined_mib,
+            "gib": combined_gib,
+            "percentage": combined_pct,
+            "conventional_mib": conv["mib"],
+            "reclaimable_bs_mib": bs["mib"],
+        }
+
+    def fragmentation_metrics(self) -> dict[str, Any]:
+        """Evaluates memory fragmentation metrics for EfiConventionalMemory."""
+        conv = self.conventional_memory_summary()
+        count = conv["record_count"]
+        if count == 0:
+            return {
+                "num_blocks": 0,
+                "avg_block_mib": 0.0,
+                "largest_block_ratio": 0.0,
+                "fragmentation_index": 0.0,
+            }
+
+        avg_mib = conv["mib"] / count
+        max_block_mib = (conv["max_block"]["SizeBytes"] / (1024 * 1024)) if conv["max_block"] else 0.0
+        largest_ratio = (max_block_mib / conv["mib"]) if conv["mib"] > 0 else 1.0
+        # Fragmentation index: 1.0 - largest_block_ratio (0.0 = completely contiguous, 1.0 = highly fragmented)
+        frag_index = 1.0 - largest_ratio
+
+        return {
+            "num_blocks": count,
+            "avg_block_mib": avg_mib,
+            "largest_block_ratio": largest_ratio,
+            "fragmentation_index": frag_index,
+        }
+
+    def find_free_regions_above(self, min_bytes: int) -> list[dict[str, Any]]:
+        """Filters conventional memory regions large enough to satisfy a minimum byte size."""
+        conv = self.conventional_memory_summary()
+        return [r for r in conv["regions"] if r["SizeBytes"] >= min_bytes]
+
+    def gap_analysis(self) -> list[dict[str, Any]]:
+        """Identifies address gaps between consecutive descriptors in physical memory."""
+        gaps: list[dict[str, Any]] = []
+        for i in range(len(self.records) - 1):
+            curr_end = self.records[i]["PhysicalEnd"]
+            next_start = self.records[i + 1]["PhysicalStart"]
+            if next_start > curr_end:
+                gap_size = next_start - curr_end
+                gaps.append({
+                    "gap_index": len(gaps),
+                    "after_index": self.records[i]["Index"],
+                    "before_index": self.records[i + 1]["Index"],
+                    "gap_start": curr_end,
+                    "gap_end": next_start,
+                    "gap_bytes": gap_size,
+                    "gap_mib": gap_size / (1024 * 1024),
+                })
+        return gaps
+
+    def summary_table(self) -> str:
+        """Formats a human-readable text summary table of the memory breakdown."""
+        lines = [
+            f"{'Type (Name)':<28} | {'Count':>5} | {'Pages':>10} | {'Size (MiB)':>10} | {'Ratio (%)':>9}",
+            "-" * 72,
+        ]
+        breakdown = self.type_breakdown()
+        for name, data in sorted(breakdown.items(), key=lambda item: item[1]["bytes"], reverse=True):
+            lines.append(
+                f"{name:<28} | {data['count']:>5} | {data['pages']:>10} | {data['mib']:>10.2f} | {data['percentage']:>8.2f}%"
+            )
+        lines.append("-" * 72)
+        lines.append(
+            f"{'TOTAL':<28} | {self.total_records:>5} | {self.total_pages:>10} | {self.total_mib:>10.2f} | 100.00%"
+        )
+        return "\n".join(lines)
+
+    @classmethod
+    def create_sample_qemu_memmap_csv(cls, total_ram_gib: float = 2.0) -> str:
+        """Generates realistic QEMU OVMF CSV memory map text for simulation and testing."""
+        # Scale conventional memory based on total_ram_gib (default 2.0 GiB)
+        # 1 page = 4096 bytes, 2GiB = 524288 pages
+        total_pages_approx = int(total_ram_gib * 1024 * 1024 * 1024 // 4096)
+        main_ram_pages = total_pages_approx - 0x10000  # reserve ~256MiB for firmware and MMIO
+
+        csv_rows = [
+            "Index, Type, Type(name), PhysicalStart, NumberOfPages, Attribute",
+            "0, 0, EfiReservedMemoryType, 00000000, 1, f",
+            "1, 7, EfiConventionalMemory, 00001000, 9f, f",
+            "2, 0, EfiReservedMemoryType, 000a0000, 60, f",
+            f"3, 7, EfiConventionalMemory, 00100000, {main_ram_pages - 0x6000:x}, f",
+            f"4, 3, EfiBootServicesCode, {(main_ram_pages - 0x5f00) * 4096:08x}, 1200, f",
+            f"5, 4, EfiBootServicesData, {(main_ram_pages - 0x4d00) * 4096:08x}, 2400, f",
+            f"6, 5, EfiRuntimeServicesCode, {(main_ram_pages - 0x2900) * 4096:08x}, 400, f",
+            f"7, 6, EfiRuntimeServicesData, {(main_ram_pages - 0x2500) * 4096:08x}, 800, f",
+            f"8, 9, EfiACPIReclaimMemory, {(main_ram_pages - 0x1d00) * 4096:08x}, 80, f",
+            f"9, a, EfiACPIMemoryNVS, {(main_ram_pages - 0x1c80) * 4096:08x}, 80, f",
+            f"10, 7, EfiConventionalMemory, {(main_ram_pages - 0x1c00) * 4096:08x}, 1c00, f",
+            "11, b, EfiMemoryMappedIO, 80000000, 10000, 1",
+            "12, b, EfiMemoryMappedIO, fed00000, 1, 1",
+            "13, b, EfiMemoryMappedIO, fee00000, 1, 1",
+            "14, b, EfiMemoryMappedIO, ffe00000, 200, 1",
+        ]
+        return "\n".join(csv_rows) + "\n"
+
+
+def plot_memory_map_analysis(
+    analyzer: MemoryMapAnalyzer,
+    output_path: str = "2/result/fig2_13_memory_map_analysis_breakdown.png",
+) -> str:
+    """Renders high-DPI figure of memory map breakdown, conventional RAM, and reclaimable pool."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 10.5))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.1, 0.9], width_ratios=[1.1, 1.0], hspace=0.28, wspace=0.22)
+
+    ax_pie = fig.add_subplot(gs[0, 0])
+    ax_bar = fig.add_subplot(gs[0, 1])
+    ax_avail = fig.add_subplot(gs[1, 0])
+    ax_frag = fig.add_subplot(gs[1, 1])
+
+    # 1. Type Breakdown Pie Chart
+    breakdown = analyzer.type_breakdown()
+    labels: list[str] = []
+    sizes: list[float] = []
+    color_map = {
+        "EfiConventionalMemory": "#4CAF50",
+        "EfiBootServicesCode": "#2196F3",
+        "EfiBootServicesData": "#03A9F4",
+        "EfiRuntimeServicesCode": "#9C27B0",
+        "EfiRuntimeServicesData": "#BA68C8",
+        "EfiACPIReclaimMemory": "#FF9800",
+        "EfiACPIMemoryNVS": "#FFB74D",
+        "EfiReservedMemoryType": "#78909C",
+        "EfiMemoryMappedIO": "#E53935",
+        "EfiLoaderCode": "#009688",
+        "EfiLoaderData": "#4DB6AC",
+    }
+    colors: list[str] = []
+
+    for name, data in sorted(breakdown.items(), key=lambda item: item[1]["bytes"], reverse=True):
+        if data["mib"] > 0.1:  # Filter out trivial micro-regions for clean pie chart
+            labels.append(f"{name}\n({data['mib']:.1f} MiB)")
+            sizes.append(data["mib"])
+            colors.append(color_map.get(name, "#B0BEC5"))
+
+    wedges, texts, autotexts = ax_pie.pie(
+        sizes, labels=labels, autopct="%1.1f%%", startangle=140, colors=colors,
+        textprops={"fontsize": 7.5, "color": "#263238"},
+        wedgeprops={"edgecolor": "#37474F", "linewidth": 1.0, "antialiased": True}
+    )
+    for at in autotexts:
+        at.set_fontsize(7.0)
+        at.set_fontweight("bold")
+    ax_pie.set_title("1. メモリタイプ別容量構成比 (Type Breakdown Pie Chart)", fontsize=10.5, fontweight="bold", pad=10)
+
+    # 2. Type Breakdown Horizontal Bar
+    names = [name.replace("Efi", "") for name in breakdown.keys()]
+    mibs = [data["mib"] for data in breakdown.values()]
+    bar_colors = [color_map.get(name, "#B0BEC5") for name in breakdown.keys()]
+
+    y_pos = range(len(names))
+    ax_bar.barh(y_pos, mibs, color=bar_colors, edgecolor="#37474F", height=0.6)
+    ax_bar.set_yticks(y_pos)
+    ax_bar.set_yticklabels(names, fontsize=7.5)
+    ax_bar.set_xlabel("容量 (MiB)", fontsize=8.5, fontweight="bold")
+    ax_bar.set_title("2. メモリタイプ別実容量 (MiB) 比較", fontsize=10.5, fontweight="bold", pad=10)
+    for i, v in enumerate(mibs):
+        ax_bar.text(v + (max(mibs) * 0.01), i, f"{v:.1f} MiB", va="center", fontsize=7.0, color="#263238")
+
+    # 3. Memory Usability Stages (Bootloader vs Post-ExitBootServices)
+    conv = analyzer.conventional_memory_summary()
+    bs = analyzer.reclaimable_boot_services_summary()
+    post_boot = analyzer.available_memory_after_boot()
+
+    stages = ["ブートローダ実行中\n(Conventional RAMのみ)", "OS起動完了後\n(ExitBootServices 後)"]
+    conv_parts = [conv["mib"], conv["mib"]]
+    bs_parts = [0.0, bs["mib"]]
+
+    b1 = ax_avail.bar(stages, conv_parts, label="EfiConventionalMemory (即時空きRAM)", color="#4CAF50", edgecolor="#2E7D32", width=0.45)
+    b2 = ax_avail.bar(stages, bs_parts, bottom=conv_parts, label="BootServices (回収可能RAM)", color="#2196F3", edgecolor="#1565C0", width=0.45)
+
+    ax_avail.set_ylabel("利用可能 RAM 容量 (MiB)", fontsize=8.5, fontweight="bold")
+    ax_avail.set_ylim(0, post_boot["mib"] * 1.25)
+    ax_avail.set_title("3. OS起動ステージ別 利用可能RAM容量推移", fontsize=10.5, fontweight="bold", pad=10)
+    ax_avail.legend(loc="upper left", fontsize=7.5)
+
+    ax_avail.text(0, conv["mib"] + 30, f"{conv['mib']:.1f} MiB\n({conv['percentage']:.1f}%)", ha="center", fontsize=7.8, fontweight="bold", color="#1B5E20")
+    ax_avail.text(1, post_boot["mib"] + 30, f"{post_boot['mib']:.1f} MiB\n(+{bs['mib']:.1f} MiB 回収)", ha="center", fontsize=7.8, fontweight="bold", color="#0D47A1")
+
+    # 4. Fragmentation & Region Distribution
+    frag = analyzer.fragmentation_metrics()
+    conv_regions = conv["regions"]
+    region_labels = [f"Region #{r['Index']}\n({r['PhysicalStart']:08x})" for r in conv_regions[:8]]
+    region_sizes = [r["SizeMiB"] for r in conv_regions[:8]]
+
+    ax_frag.bar(range(len(region_sizes)), region_sizes, color="#81C784", edgecolor="#2E7D32", width=0.5)
+    ax_frag.set_xticks(range(len(region_labels)))
+    ax_frag.set_xticklabels(region_labels, fontsize=6.8, rotation=25, ha="right")
+    ax_frag.set_ylabel("ブロックサイズ (MiB)", fontsize=8.5, fontweight="bold")
+    ax_frag.set_title(
+        f"4. Conventional RAM 断片化分析 (総ブロック数: {frag['num_blocks']}, 断片化度: {frag['fragmentation_index']:.3f})",
+        fontsize=10.5, fontweight="bold", pad=10
+    )
+
+    for i, v in enumerate(region_sizes):
+        ax_frag.text(i, v + (max(region_sizes) * 0.02), f"{v:.1f} MiB", ha="center", fontsize=7.0, color="#1B5E20")
+
+    plt.subplots_adjust(top=0.94, bottom=0.08, left=0.07, right=0.96, hspace=0.32, wspace=0.25)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_physical_memory_layout_map(
+    analyzer: MemoryMapAnalyzer,
+    output_path: str = "2/result/fig2_14_physical_memory_layout_map.png",
+) -> str:
+    """Renders high-DPI horizontal allocation bar of 0-4GiB physical memory layout."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_main, ax_low) = plt.subplots(
+        2, 1, figsize=(15, 8.5), gridspec_kw={"height_ratios": [1.0, 1.0], "hspace": 0.40}
+    )
+
+    color_map = {
+        "EfiConventionalMemory": "#4CAF50",
+        "EfiBootServicesCode": "#2196F3",
+        "EfiBootServicesData": "#03A9F4",
+        "EfiRuntimeServicesCode": "#9C27B0",
+        "EfiRuntimeServicesData": "#BA68C8",
+        "EfiACPIReclaimMemory": "#FF9800",
+        "EfiACPIMemoryNVS": "#FFB74D",
+        "EfiReservedMemoryType": "#78909C",
+        "EfiMemoryMappedIO": "#E53935",
+        "EfiLoaderCode": "#009688",
+        "EfiLoaderData": "#4DB6AC",
+    }
+
+    # 1. Main Memory Layout (0 to 4GiB)
+    max_addr = max(r["PhysicalEnd"] for r in analyzer.records)
+    plot_limit = max(max_addr, 0x100000000)  # At least 4GiB (0x100000000)
+    limit_gib = plot_limit / (1024 * 1024 * 1024)
+
+    ax_main.set_title(
+        f"1. 物理アドレス空間全体 (0 〜 {limit_gib:.1f}GiB) のメモリマップ配置 (Physical Memory Allocation Map)",
+        fontsize=11, fontweight="bold", pad=12
+    )
+    ax_main.set_xlim(0, plot_limit)
+    ax_main.set_ylim(-0.5, 1.5)
+    ax_main.set_yticks([])
+
+    # Plot memory segments as horizontal bar strips
+    for r in analyzer.records:
+        start = r["PhysicalStart"]
+        width = r["SizeBytes"]
+        color = color_map.get(r["TypeName"], "#B0BEC5")
+        ax_main.barh(0.5, width, left=start, height=0.6, color=color, edgecolor="#263238", linewidth=0.5)
+
+    # Key markers
+    markers = [
+        (0x0, "0x0 (Reset/IVT)"),
+        (0x100000, "1MiB (High RAM)"),
+        (0x80000000, "2GiB"),
+        (0xE0000000, "3.5GiB (PCI MMIO Hole)"),
+        (0x100000000, "4GiB (32-bit Limit)"),
+    ]
+    for addr, label in markers:
+        if addr <= plot_limit:
+            ax_main.axvline(x=addr, color="#B71C1C", linestyle="--", alpha=0.6, linewidth=1.0)
+            ax_main.text(addr, 1.15, label, rotation=35, ha="left", fontsize=7.2, color="#B71C1C", fontweight="bold")
+
+    ax_main.set_xlabel("物理アドレス (Bytes / Hex)", fontsize=8.5, fontweight="bold")
+    # Format x-axis in Hex/GiB
+    ticks = [0, 0x40000000, 0x80000000, 0xC0000000, 0x100000000]
+    ax_main.set_xticks(ticks)
+    ax_main.set_xticklabels(["0x0 (0GiB)", "0x40000000 (1GiB)", "0x80000000 (2GiB)", "0xC0000000 (3GiB)", "0x100000000 (4GiB)"], fontsize=7.5)
+
+    # 2. Detailed Low Memory Layout (0 to 16MiB Zoom)
+    low_limit = 16 * 1024 * 1024  # 16 MiB
+    ax_low.set_title(
+        "2. 低位メモリ領域詳細 (0 〜 16MiB 拡大表示: レガシー予約・低位Conventional・カーネル配置候補)",
+        fontsize=11, fontweight="bold", pad=12
+    )
+    ax_low.set_xlim(0, low_limit)
+    ax_low.set_ylim(-0.5, 1.5)
+    ax_low.set_yticks([])
+
+    low_records = [r for r in analyzer.records if r["PhysicalStart"] < low_limit]
+    for r in low_records:
+        start = r["PhysicalStart"]
+        width = min(r["SizeBytes"], low_limit - start)
+        color = color_map.get(r["TypeName"], "#B0BEC5")
+        ax_low.barh(0.5, width, left=start, height=0.6, color=color, edgecolor="#263238", linewidth=0.6)
+        if width > 1024 * 512:  # Label regions larger than 512KiB
+            ax_low.text(
+                start + width / 2, 0.5, f"{r['TypeName'].replace('Efi', '')}\n({r['SizeBytes']/1024:.0f}KiB)",
+                ha="center", va="center", fontsize=6.8, fontweight="bold", color="#FFFFFF" if color in ("#E53935", "#2196F3", "#9C27B0") else "#212121"
+            )
+
+    low_markers = [
+        (0x0, "0x0 (IVT/BDA)"),
+        (0x9F000, "0x9F000 (EBDA)"),
+        (0xA0000, "0xA0000 (VRAM 128KB)"),
+        (0x100000, "0x100000 (1MiB カーネル標準配置アドレス)"),
+    ]
+    for addr, label in low_markers:
+        ax_low.axvline(x=addr, color="#0D47A1", linestyle=":", alpha=0.8, linewidth=1.2)
+        ax_low.text(addr, 1.15, label, rotation=30, ha="left", fontsize=7.2, color="#0D47A1", fontweight="bold")
+
+    ax_low.set_xlabel("物理アドレス (Bytes)", fontsize=8.5, fontweight="bold")
+    low_ticks = [0, 0x100000, 0x400000, 0x800000, 0xC00000, 0x1000000]
+    ax_low.set_xticks(low_ticks)
+    ax_low.set_xticklabels(["0x0", "1MiB (0x100000)", "4MiB (0x400000)", "8MiB (0x800000)", "12MiB (0xC00000)", "16MiB (0x1000000)"], fontsize=7.5)
+
+    plt.subplots_adjust(top=0.92, bottom=0.10, left=0.06, right=0.96, hspace=0.45)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+

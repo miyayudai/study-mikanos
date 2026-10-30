@@ -170,6 +170,9 @@ from common.os_sim import (
     parse_memory_map_csv,
     plot_uefi_file_system_protocol_hierarchy,
     plot_memory_map_csv_export_and_layout,
+    MemoryMapAnalyzer,
+    plot_memory_map_analysis,
+    plot_physical_memory_layout_map,
 )
 
 __all__ = [
@@ -342,4 +345,7 @@ __all__ = [
     "parse_memory_map_csv",
     "plot_uefi_file_system_protocol_hierarchy",
     "plot_memory_map_csv_export_and_layout",
+    "MemoryMapAnalyzer",
+    "plot_memory_map_analysis",
+    "plot_physical_memory_layout_map",
 ]

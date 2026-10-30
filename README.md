@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-164%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-9.6%25%20(22%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-174%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-10.1%25%20(23%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -160,6 +160,7 @@ cmake --build build
 | [`2.4_UEFI_Memory_Map_Concept.ipynb`](2/2.4_UEFI_Memory_Map_Concept.ipynb) | 2.4 メモリマップ（メモリマップの概念と役割・EFI_MEMORY_DESCRIPTOR 40B構造体数理・EFI_MEMORY_TYPE全16種分類・ExitBootServices前後のメモリライフサイクル・属性フラグ・可変長ディスクリプタとポインタ演算の罠） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.4_UEFI_Memory_Map_Concept.ipynb) |
 | [`2.5_Getting_Memory_Map.ipynb`](2/2.5_Getting_Memory_Map.ipynb) | 2.5 メモリマップの取得（`osbook_day02b`・`gBS->GetMemoryMap()`引数仕様・`EFI_BUFFER_TOO_SMALL`・`struct MemoryMap`設計・16KiB固定バッファ vs 動的確保の動く標的問題・`MapKey`と`ExitBootServices()`整合性・可変長バイトポインタ走査） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.5_Getting_Memory_Map.ipynb) |
 | [`2.6_Saving_Memory_Map_to_File.ipynb`](2/2.6_Saving_Memory_Map_to_File.ipynb) | 2.6 メモリマップのファイルへの保存（`osbook_day02b`・`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`・`EFI_FILE_PROTOCOL`・`OpenRootDir`プロトコル解決チェーン・UTF-16LEパスとOpenモード・`SaveMemoryMap`・可変長バイトポインタ走査・属性マスク `& 0xffffflu`・`Close`フラッシュ） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.6_Saving_Memory_Map_to_File.ipynb) |
+| [`2.7_Analyzing_Memory_Map_Output.ipynb`](2/2.7_Analyzing_Memory_Map_Output.ipynb) | 2.7 メモリマップの確認（出力CSVのパース・EfiConventionalMemory空きRAM集計・ExitBootServices後のBootServicesCode/Data回収可能メモリ数理・物理アドレス断片化・MMIOホール・カーネル配置アドレス0x100000の必然性・C++20/Pythonシミュレーション） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.7_Analyzing_Memory_Map_Output.ipynb) |
 
 
 
