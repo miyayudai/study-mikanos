@@ -153,6 +153,10 @@ from common.os_sim import (
     EFI_MEMORY_RUNTIME,
     plot_efi_memory_descriptor_layout_and_attributes,
     plot_uefi_memory_types_classification_and_lifecycle,
+    MemoryMap,
+    UefiBootServicesSimulator,
+    plot_uefi_get_memory_map_protocol_and_buffer_flow,
+    plot_uefi_mapkey_lifecycle_and_exit_boot_services_consistency,
 )
 
 __all__ = [
@@ -308,4 +312,8 @@ __all__ = [
     "EFI_MEMORY_RUNTIME",
     "plot_efi_memory_descriptor_layout_and_attributes",
     "plot_uefi_memory_types_classification_and_lifecycle",
+    "MemoryMap",
+    "UefiBootServicesSimulator",
+    "plot_uefi_get_memory_map_protocol_and_buffer_flow",
+    "plot_uefi_mapkey_lifecycle_and_exit_boot_services_consistency",
 ]

@@ -89,7 +89,7 @@ cmake --build build
 |:---:|---|:---:|:---:|---|:---:|:---:|
 | **第0章** | OSって個人で作れるの？ | 5 | - | OSの作り方、POSIX、ブート手順、MikanOS全体像 | [`0_Exercises.ipynb`](0/0_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | [`1_Exercises.ipynb`](1/1_Exercises.ipynb) | `[x]` 完了 (10/10) |
-| **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[-]` 進行中 (4/10) |
+| **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | `2_Exercises.ipynb` | `[-]` 進行中 (5/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | `3_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
@@ -158,6 +158,7 @@ cmake --build build
 | [`2.2_Hello_World_with_EDK2.ipynb`](2/2.2_Hello_World_with_EDK2.ipynb) | 2.2 EDK IIでハローワールド（`osbook_day02a`・`MikanLoaderPkg`構成・`UefiMain`とABI・UTF-16LE・コラム2.1 プリプロセッサ展開と探索パス・インクルードガード） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.2_Hello_World_with_EDK2.ipynb) |
 | [`2.3_Main_Memory_Architecture.ipynb`](2/2.3_Main_Memory_Architecture.ipynb) | 2.3 メインメモリ（物理アドレス空間とバス幅数理・RAM vs MMIOのメカニズム・PCIホールとメモリスパース性・レガシー1MB PCマップ・C++20/Pythonシミュレーション） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.3_Main_Memory_Architecture.ipynb) |
 | [`2.4_UEFI_Memory_Map_Concept.ipynb`](2/2.4_UEFI_Memory_Map_Concept.ipynb) | 2.4 メモリマップ（メモリマップの概念と役割・EFI_MEMORY_DESCRIPTOR 40B構造体数理・EFI_MEMORY_TYPE全16種分類・ExitBootServices前後のメモリライフサイクル・属性フラグ・可変長ディスクリプタとポインタ演算の罠） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.4_UEFI_Memory_Map_Concept.ipynb) |
+| [`2.5_Getting_Memory_Map.ipynb`](2/2.5_Getting_Memory_Map.ipynb) | 2.5 メモリマップの取得（`osbook_day02b`・`gBS->GetMemoryMap()`引数仕様・`EFI_BUFFER_TOO_SMALL`・`struct MemoryMap`設計・16KiB固定バッファ vs 動的確保の動く標的問題・`MapKey`と`ExitBootServices()`整合性・可変長バイトポインタ走査） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/2/2.5_Getting_Memory_Map.ipynb) |
 
 
 

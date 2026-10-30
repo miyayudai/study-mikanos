@@ -7467,3 +7467,318 @@ def plot_uefi_memory_types_classification_and_lifecycle(
     plt.close()
     return output_path
 
+
+@dataclass
+class MemoryMap:
+    """Python representation of MikanOS 'struct MemoryMap'.
+
+    struct MemoryMap {
+      UINTN buffer_size;
+      VOID* buffer;
+      UINTN map_size;
+      UINTN map_key;
+      UINTN descriptor_size;
+      UINT32 descriptor_version;
+    };
+    """
+    buffer_size: int
+    buffer: Optional[bytearray] = None
+    map_size: int = 0
+    map_key: int = 0
+    descriptor_size: int = 48
+    descriptor_version: int = 1
+
+    @classmethod
+    def allocate(cls, size_in_bytes: int = 16384) -> "MemoryMap":
+        """Allocates a buffer of given size (default: 16KiB = 4096 * 4)."""
+        return cls(buffer_size=size_in_bytes, buffer=bytearray(size_in_bytes))
+
+    def get_descriptor(self, index: int) -> UefiMemoryDescriptor:
+        """Returns the descriptor at the given index using descriptor_size pointer stepping."""
+        if self.buffer is None:
+            raise ValueError("Buffer is null")
+        offset = index * self.descriptor_size
+        if offset + self.descriptor_size > self.map_size:
+            raise IndexError(f"Descriptor index {index} out of range (offset {offset} exceeds map_size {self.map_size})")
+        return UefiMemoryDescriptor.from_bytes(
+            bytes(self.buffer[offset : offset + self.descriptor_size]),
+            descriptor_size=self.descriptor_size,
+        )
+
+    def __iter__(self):
+        """Iterates over all descriptors in the buffer with descriptor_size stepping."""
+        if self.buffer is None or self.descriptor_size == 0:
+            return
+        offset = 0
+        while offset + self.descriptor_size <= self.map_size:
+            chunk = bytes(self.buffer[offset : offset + self.descriptor_size])
+            yield UefiMemoryDescriptor.from_bytes(chunk, descriptor_size=self.descriptor_size)
+            offset += self.descriptor_size
+
+    @property
+    def entry_count(self) -> int:
+        if self.descriptor_size == 0:
+            return 0
+        return self.map_size // self.descriptor_size
+
+
+class UefiBootServicesSimulator:
+    """Simulates UEFI Boot Services (gBS) table operations related to memory management,
+    specifically GetMemoryMap(), AllocatePages(), and ExitBootServices().
+    Tracks MapKey state and validates memory map consistency across lifecycle changes.
+    """
+
+    def __init__(
+        self,
+        memory_map_sim: Optional[UefiMemoryMapSimulator] = None,
+        initial_map_key: int = 100,
+    ) -> None:
+        if memory_map_sim is None:
+            self.memory_map = UefiMemoryMapSimulator.create_standard_uefi_map()
+        else:
+            self.memory_map = memory_map_sim
+        self.map_key = initial_map_key
+        self.boot_services_exited = False
+        self.allocation_history: List[str] = []
+
+    def get_memory_map(self, map_struct: MemoryMap) -> int:
+        """Implements gBS->GetMemoryMap() behavior.
+
+        EFI_STATUS GetMemoryMap(
+            IN OUT UINTN                  *MemoryMapSize,
+            OUT    EFI_MEMORY_DESCRIPTOR  *MemoryMap,
+            OUT    UINTN                  *MapKey,
+            OUT    UINTN                  *DescriptorSize,
+            OUT    UINT32                 *DescriptorVersion
+        );
+        """
+        if self.boot_services_exited:
+            return UefiStatus.UNSUPPORTED
+
+        needed_size = self.memory_map.map_size_bytes
+
+        # If buffer is None or too small, UEFI returns EFI_BUFFER_TOO_SMALL
+        # and writes the required size into MemoryMapSize.
+        if map_struct.buffer is None or map_struct.buffer_size < needed_size:
+            map_struct.map_size = needed_size
+            return UefiStatus.BUFFER_TOO_SMALL
+
+        # Successful copy
+        raw_bytes = self.memory_map.serialize()
+        map_struct.buffer[:len(raw_bytes)] = raw_bytes
+        map_struct.map_size = needed_size
+        map_struct.map_key = self.map_key
+        map_struct.descriptor_size = self.memory_map.descriptor_size
+        map_struct.descriptor_version = self.memory_map.descriptor_version
+        return UefiStatus.SUCCESS
+
+    def allocate_pages(self, memory_type: UefiMemoryType, pages: int) -> int:
+        """Simulates gBS->AllocatePages(). Alters memory map and increments MapKey."""
+        if self.boot_services_exited:
+            raise RuntimeError("Cannot allocate pages after ExitBootServices")
+
+        # Find first conventional memory chunk with enough pages
+        for idx, desc in enumerate(self.memory_map.descriptors):
+            if desc.type == UefiMemoryType.EfiConventionalMemory and desc.number_of_pages >= pages:
+                allocated_start = desc.physical_start
+                new_allocated = UefiMemoryDescriptor(
+                    type=memory_type,
+                    physical_start=allocated_start,
+                    virtual_start=0,
+                    number_of_pages=pages,
+                    attribute=desc.attribute,
+                )
+                if desc.number_of_pages == pages:
+                    self.memory_map.descriptors[idx] = new_allocated
+                else:
+                    remaining = UefiMemoryDescriptor(
+                        type=UefiMemoryType.EfiConventionalMemory,
+                        physical_start=allocated_start + pages * 4096,
+                        virtual_start=0,
+                        number_of_pages=desc.number_of_pages - pages,
+                        attribute=desc.attribute,
+                    )
+                    self.memory_map.descriptors[idx] = new_allocated
+                    self.memory_map.descriptors.insert(idx + 1, remaining)
+
+                self.map_key += 1
+                self.allocation_history.append(
+                    f"AllocatePages: {pages} pages ({pages * 4096} B) at 0x{allocated_start:08X}, new MapKey={self.map_key}"
+                )
+                return allocated_start
+
+        raise RuntimeError("Out of conventional memory in simulator")
+
+    def exit_boot_services(self, image_handle: int, map_key: int) -> int:
+        """Simulates gBS->ExitBootServices(ImageHandle, MapKey).
+        Returns EFI_SUCCESS if MapKey matches; otherwise EFI_INVALID_PARAMETER.
+        """
+        if self.boot_services_exited:
+            return UefiStatus.INVALID_PARAMETER
+        if map_key != self.map_key:
+            return UefiStatus.INVALID_PARAMETER
+        self.boot_services_exited = True
+        return UefiStatus.SUCCESS
+
+
+def plot_uefi_get_memory_map_protocol_and_buffer_flow(
+    output_path: str = "2/result/fig2_09_uefi_get_memory_map_protocol_and_buffer_flow.png",
+) -> str:
+    """Renders high-DPI diagram of GetMemoryMap() argument protocol, buffer sizing, and pointer iteration."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_proto, ax_flow, ax_ptr) = plt.subplots(1, 3, figsize=(18, 8.5), gridspec_kw={"width_ratios": [1.1, 1.0, 1.1], "wspace": 0.26})
+
+    # Subplot 1: Protocol Signature & Parameter Semantics
+    ax_proto.set_title("1. gBS->GetMemoryMap() 引数仕様と IN/OUT 変換", fontsize=11, fontweight="bold", pad=12)
+    ax_proto.set_xlim(0, 100)
+    ax_proto.set_ylim(0, 100)
+    ax_proto.axis("off")
+
+    params = [
+        ("IN OUT UINTN *MemoryMapSize", 80, 16, "#BBDEFB", "#0D47A1",
+         "【IN】 呼び出し元が確保したバッファのバイトサイズ\n【OUT 成功時】 実際に書き込まれたメモリマップサイズ\n【OUT 容量不足】 必要な最小バイトサイズ (EFI_BUFFER_TOO_SMALL)"),
+        ("OUT EFI_MEMORY_DESCRIPTOR *MemoryMap", 60, 16, "#C8E6C9", "#2E7D32",
+         "【OUT】 ディスクリプタ配列を書き込むバッファの先頭アドレス\nNULL またはサイズ不足時は何も書き込まれない"),
+        ("OUT UINTN *MapKey", 42, 14, "#FFE082", "#E65100",
+         "【OUT】 現在のメモリマップ識別キー (Revision Key)\nExitBootServices() 呼び出し時の整合性検証に必須！"),
+        ("OUT UINTN *DescriptorSize", 24, 14, "#E1BEE7", "#4A148C",
+         "【OUT】 1つのディスクリプタのバイトサイズ (>= sizeof(DESC))\nパディングや将来の拡張に対応するため、ポインタ加算で使用！"),
+        ("OUT UINT32 *DescriptorVersion", 6, 14, "#CFD8DC", "#37474F",
+         "【OUT】 ディスクリプタ構造体のバージョン (UEFI Spec では 1)"),
+    ]
+
+    for name, y, h, c, bc, desc in params:
+        box = FancyBboxPatch((2, y), 96, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_proto.add_patch(box)
+        ax_proto.text(5, y + h * 0.75, name, fontsize=8.0, va="center", family="monospace", fontweight="bold", color=bc)
+        ax_proto.text(5, y + h * 0.35, desc, fontsize=6.8, va="center", color="#212121")
+
+    # Subplot 2: Buffer Allocation Strategies: Fixed vs Dynamic
+    ax_flow.set_title("2. バッファ確保方針の比較 (固定 vs 動的)", fontsize=11, fontweight="bold", pad=12)
+    ax_flow.set_xlim(0, 100)
+    ax_flow.set_ylim(0, 100)
+    ax_flow.axis("off")
+
+    # MikanOS Fixed Buffer
+    box_fixed = FancyBboxPatch((2, 53), 96, 43, boxstyle="round,pad=0.3", facecolor="#E8F5E9", edgecolor="#2E7D32", lw=1.5)
+    ax_flow.add_patch(box_fixed)
+    ax_flow.text(50, 91, "【MikanOS 採用】 固定バッファ (16 KiB)", fontsize=9.0, ha="center", fontweight="bold", color="#1B5E20")
+    ax_flow.text(50, 77, "CHAR8 memmap_buf[4096 * 4];\nstruct MemoryMap memmap = {sizeof(memmap_buf), ...};", fontsize=7.2, ha="center", family="monospace", color="#0D47A1")
+    ax_flow.text(50, 62, "[OK] 利点: 事前静的確保のため UEFIメモリ確保API 不要\n[OK] メモリマップを自ら変質させない (ゼロ副作用)\n[OK] 一般的なPCで数十〜百数十エントリ (~8KiB) に対し\n16KiB (約341エントリ分) で十分な安全域を確保", fontsize=6.8, ha="center", color="#212121")
+
+    # Dynamic Allocation Pitfall
+    box_dyn = FancyBboxPatch((2, 4), 96, 44, boxstyle="round,pad=0.3", facecolor="#FFF3E0", edgecolor="#E65100", lw=1.5)
+    ax_flow.add_patch(box_dyn)
+    ax_flow.text(50, 43, "【動的確保方式】 二段階問い合わせの落とし穴", fontsize=9.0, ha="center", fontweight="bold", color="#BF360C")
+    ax_flow.text(50, 31, "1. GetMemoryMap(size=0) -> EFI_BUFFER_TOO_SMALL\n2. gBS->AllocatePool(needed_size)\n3. GetMemoryMap(allocated_buf) -> 再び失敗！？", fontsize=7.0, ha="center", color="#37474F")
+    ax_flow.text(50, 13, "[!] 動く標的問題 (Moving Target Problem):\nAllocatePool 自体がメモリマップを分割・変更し、\nエントリ数が増加してバッファが再オーバーフロー！\n→ 余裕を持たせた再試行ループ (+マージン) が必須", fontsize=6.6, ha="center", color="#B71C1C")
+
+    # Subplot 3: Variable-size Descriptor Iteration & Pointer Math
+    ax_ptr.set_title("3. 可変長ディスクリプタ走査とポインタ演算", fontsize=11, fontweight="bold", pad=12)
+    ax_ptr.set_xlim(0, 100)
+    ax_ptr.set_ylim(0, 100)
+    ax_ptr.axis("off")
+
+    # Buffer layout visualization
+    buf_box = FancyBboxPatch((4, 60), 92, 35, boxstyle="round,pad=0.2", facecolor="#F5F5F5", edgecolor="#616161", lw=1.2)
+    ax_ptr.add_patch(buf_box)
+    ax_ptr.text(50, 90, "MemoryMap.buffer (バイト列メモリ配置)", fontsize=8.2, ha="center", fontweight="bold", color="#37474F")
+
+    entries = [
+        ("Desc [0]\n(48B+pad)", 8, 26, "#90CAF9"),
+        ("Desc [1]\n(48B+pad)", 38, 26, "#A5D6A7"),
+        ("Desc [2]\n(48B+pad)", 68, 26, "#FFE082"),
+    ]
+    for label, x, w, c in entries:
+        box_e = FancyBboxPatch((x, 65), w, 18, boxstyle="square,pad=0", facecolor=c, edgecolor="#424242", lw=1.0)
+        ax_ptr.add_patch(box_e)
+        ax_ptr.text(x + w / 2, 74, label, fontsize=6.8, ha="center", va="center", fontweight="bold")
+
+    # Pointer stepping arrows
+    ax_ptr.annotate("iter", xy=(8, 62), xytext=(8, 52),
+                    arrowprops=dict(arrowstyle="->", lw=1.5, color="#1565C0"))
+    ax_ptr.annotate("+ descriptor_size", xy=(38, 62), xytext=(20, 52),
+                    arrowprops=dict(arrowstyle="->", lw=1.5, color="#2E7D32"))
+    ax_ptr.annotate("+ descriptor_size", xy=(68, 62), xytext=(50, 52),
+                    arrowprops=dict(arrowstyle="->", lw=1.5, color="#E65100"))
+
+    # C code correct vs incorrect comparison
+    code_box = FancyBboxPatch((4, 4), 92, 42, boxstyle="round,pad=0.3", facecolor="#EDE7F6", edgecolor="#512DA8", lw=1.2)
+    ax_ptr.add_patch(code_box)
+    ax_ptr.text(50, 41, "C言語における正しいポインタ加算 (MikanOS実装)", fontsize=8.0, ha="center", fontweight="bold", color="#311B92")
+    ax_ptr.text(6, 27, "[OK] 正解 (バイトポインタ加算):\nEFI_PHYSICAL_ADDRESS iter;\nfor (iter = (EFI_PHYSICAL_ADDRESS)map->buffer;\n     iter < (EFI_PHYSICAL_ADDRESS)map->buffer + map->map_size;\n     iter += map->descriptor_size) { ... }",
+                fontsize=6.5, color="#1B5E20")
+    ax_ptr.text(6, 9, "[NG] 誤り: desc++ (C言語の型ポインタ加算)\nsizeof(EFI_MEMORY_DESCRIPTOR) 分しか進まず、\nファームウェアがパディングを持つ環境で全データがズレて破壊！",
+                fontsize=6.5, color="#B71C1C")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_uefi_mapkey_lifecycle_and_exit_boot_services_consistency(
+    output_path: str = "2/result/fig2_10_uefi_mapkey_lifecycle_and_exit_boot_services_consistency.png",
+) -> str:
+    """Renders high-DPI diagram of MapKey state machine and ExitBootServices consistency verification."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_seq, ax_why) = plt.subplots(2, 1, figsize=(15, 10.0), gridspec_kw={"height_ratios": [1.2, 0.9], "hspace": 0.28})
+
+    # Upper Subplot: MapKey Lifecycle Sequence
+    ax_seq.set_title("1. MapKey ライフサイクル推移と ExitBootServices() 整合性検証シーケンス", fontsize=11, fontweight="bold", pad=12)
+    ax_seq.set_xlim(0, 100)
+    ax_seq.set_ylim(0, 100)
+    ax_seq.axis("off")
+
+    steps = [
+        ("① 初期状態 (ファームウェア稼働)", 81, 14, "#E3F2FD", "#1565C0",
+         "UEFI ファームウェア内部の MapKey カウンタ = 42\nシステムメモリ状態: 安定"),
+        ("② OSブートローダ: GetMemoryMap() 呼び出し", 63, 14, "#C8E6C9", "#2E7D32",
+         "gBS->GetMemoryMap(&map) 成功！\nOSローダが取得した map.map_key = 42 (現時点の最新状態と一致)"),
+        ("③ 【割り込み/イベント】 バックグラウンドでのメモリ確保発生！", 45, 14, "#FFCDD2", "#C62828",
+         "タイマ・USBドライバ等が gBS->AllocatePool() を実行\nファームウェアが内部の MapKey を 43 にインクリメント！ ⚠️ OSの持つキー(42)と乖離！"),
+        ("④ OSブートローダ: ExitBootServices(handle, 42) 実行", 27, 14, "#FFE082", "#E65100",
+         "ファームウェア判定: 入力キー(42) != 内部キー(43)\n→ EFI_INVALID_PARAMETER で拒否！ OSへの制御移行を緊急停止"),
+        ("⑤ 再試行: GetMemoryMap() 再取得 & ExitBootServices(handle, 43)", 7, 16, "#D1C4E9", "#4A148C",
+         "1. GetMemoryMap() を即座に再呼び出し -> 最新 map_key=43 を取得\n2. メモリ確保を行わずに直ちに ExitBootServices(handle, 43) を実行\n→ EFI_SUCCESS！ ブートサービス完全停止・OSカーネルへ制御移行！"),
+    ]
+
+    for title, y, h, c, bc, desc in steps:
+        box = FancyBboxPatch((2, y), 96, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_seq.add_patch(box)
+        ax_seq.text(5, y + h * 0.75, title, fontsize=7.8, fontweight="bold", color=bc)
+        ax_seq.text(5, y + h * 0.35, desc, fontsize=6.8, color="#212121")
+
+    # Downward sequence arrows
+    for y_arrow in [81, 63, 45, 27]:
+        ax_seq.annotate("", xy=(50, y_arrow), xytext=(50, y_arrow + 2),
+                        arrowprops=dict(arrowstyle="->", lw=2.0, color="#37474F"))
+
+    # Lower Subplot: Why UEFI enforces MapKey Consistency
+    ax_why.set_title("2. なぜ MapKey による整合性保証がカーネル保護に必須なのか？", fontsize=11, fontweight="bold", pad=12)
+    ax_why.set_xlim(0, 100)
+    ax_why.set_ylim(0, 100)
+    ax_why.axis("off")
+
+    reasons = [
+        ("A. カーネル展開領域の誤破壊防止", 2, 46, 50, 42, "#E8F5E9", "#1B5E20",
+         "もし MapKey 検証がなければ:\nOS は『ここは空きメモリ (ConventionalMemory) だ』\nと思い込んでカーネルコードを展開する。\nしかし直前にファームウェアが ACPI や Runtime 領域として\n再割り当てしていた場合、OS がファームウェアの生きた\nデータを上書き破壊し、起動不能 (Triple Fault / ハング) に陥る。"),
+        ("B. 仮想メモリ (ページング) 構築の完全性", 52, 46, 50, 42, "#EDE7F6", "#311B92",
+         "OS カーネルはメモリマップを元にページテーブルを構築する:\nRuntimeServices や MMIO は 1:1 アイデンティティマップまたは\nカーネル専用仮想アドレスに正しくマップされなければならない。\nマップ取得後に境界が変化していると、間違った属性 (キャッシュ無効等)\nが適用され、MMIO や ACPI アクセス時に CPU 例外が発生する。"),
+    ]
+
+    for title, x, w, y, h, c, bc, desc in reasons:
+        box = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_why.add_patch(box)
+        ax_why.text(x + w / 2, y + h * 0.85, title, fontsize=8.2, ha="center", fontweight="bold", color=bc)
+        ax_why.text(x + 2, y + h * 0.45, desc, fontsize=6.8, va="center", color="#212121")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
