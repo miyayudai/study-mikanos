@@ -5063,3 +5063,420 @@ def plot_pe32plus_coff_elf_comparison(output_path: str = "1/result/fig1_18_pe32p
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# =============================================================================
+# Chapter 1 Comprehensive Exercises Simulation & Verification
+# =============================================================================
+
+class Chapter1Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 1.1 to 1.9."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="1.1",
+                topic="PE32+ バイナリ構造とマジックナンバー",
+                question="64ビットUEFIアプリケーション（PE32+ / x86-64）のバイナリにおいて、DOSヘッダのe_magic、PEシグネチャ、Optional Header Magicの組み合わせとして正しいものはどれか？",
+                options=[
+                    "e_magic: 0x7F45 ('\\x7fE'), PEシグネチャ: 0x464C457F ('ELF'), Magic: 0x010B (PE32)",
+                    "e_magic: 0x5A4D ('MZ'), PEシグネチャ: 0x00004550 ('PE\\0\\0'), Magic: 0x020B (PE32+)",
+                    "e_magic: 0xEB58 ('\\xebX'), PEシグネチャ: 0xAA55, Magic: 0x8664 (x86-64)",
+                    "e_magic: 0x5A4D ('MZ'), PEシグネチャ: 0x00004550 ('PE\\0\\0'), Magic: 0x010B (PE32)",
+                ],
+                correct_index=1,
+                explanation="PE32+バイナリは先頭2バイトがDOSヘッダマジック 'MZ' (0x5A4D)、オフセット0x3Cが指す位置に 'PE\\0\\0' (0x00004550)、COFFヘッダ直後のOptional HeaderのMagicが0x020B（64-bit PE32+）となります（32-bit PE32は0x010B）。",
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="1.1",
+                topic="Microsoft x64 呼出規約とスタック整列",
+                question="UEFIファームウェアが採用する Microsoft x64 呼出規約において、整数第1〜第4引数を渡すレジスタとスタック整列の要件として正しいものはどれか？",
+                options=[
+                    "引数: RDI, RSI, RDX, RCX / スタックは 8バイト境界で整列",
+                    "引数: RCX, RDX, R8, R9 / 32バイトのシャドウスペース確保 & call直前にRSPを16バイト境界に整列",
+                    "引数: RAX, RBX, RCX, RDX / スタック渡しのみ使用しレジスタは使わない",
+                    "引数: RCX, RDX, RSI, RDI / 64バイトのシャドウスペース確保 & 32バイト整列",
+                ],
+                correct_index=1,
+                explanation="Microsoft x64 ABIでは、先頭4引数をRCX, RDX, R8, R9で渡し、呼び出し側は関数呼び出し直前に32バイト（4引数分）のシャドウスペースをスタックに確保し、かつCALL命令発行時点でRSPが16バイト境界（整列）になっている必要があります。",
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="1.2",
+                topic="Linux ブロックデバイス管理",
+                question="Linuxカーネルにおけるブロックデバイス（/dev/sdX 等）の管理において、メジャー番号（Major）とマイナー番号（Minor）の役割として正しいものはどれか？",
+                options=[
+                    "メジャー番号はファイルシステム種別（ext4/FAT）を表し、マイナー番号はマウントポイントIDを表す",
+                    "メジャー番号はブロックサイズを表し、マイナー番号はセクタ総数を表す",
+                    "メジャー番号は対応するデバイスドライバ（SCSIディスク等）を識別し、マイナー番号はそのドライバ配下の特定ドライブやパーティションを識別する",
+                    "メジャー番号はUSBバスポート番号を表し、マイナー番号は転送速度（MB/s）を表す",
+                ],
+                correct_index=2,
+                explanation="Linuxのdev_tはメジャー番号（ドライバ識別子、例: 8はSCSIディスクドライバ）とマイナー番号（ドライブsda, sdbやパーティションsda1等を区別するID）で構成されています。",
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="1.3",
+                topic="WSL1 vs WSL2 アーキテクチャ",
+                question="WSL2上で自作OSやUEFI開発を行う際、WSL1と比較した内部アーキテクチャ上の決定的な特徴として最も適切なものはどれか？",
+                options=[
+                    "WSL2はWindows NTカーネルがLinuxシステムコールを直接トランスレーションしている",
+                    "WSL2はHyper-Vベースの軽量仮想マシン上で完全なLinuxカーネルが動作しており、USBデバイスの直結にはUSB/IPが必要である",
+                    "WSL2ではWindowsホストのCドライブへのアクセス速度がWSL1よりも常に高速である",
+                    "WSL2は64ビットLong Modeをサポートしておらず32ビット専用である",
+                ],
+                correct_index=1,
+                explanation="WSL1はNTカーネル上のLXCoreトランスレーション層でしたが、WSL2はHyper-V Utility VM上で本物のLinuxカーネルが動作しています。そのためUSB物理ドライブのパススルーにはusbipd-win等のUSB/IPツールが必要です。",
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="1.4",
+                topic="QEMU と OVMF UEFI ブート",
+                question="QEMU仮想マシン上でMikanOSのブートローダをテストする際、ファームウェアとして指定する OVMF (Open Virtual Machine Firmware) の役割は何か？",
+                options=[
+                    "LinuxカーネルのbzImageを直接メモリに展開するGRUB互換ローダ",
+                    "EDK IIベースのオープンソースUEFIファームウェアであり、仮想PCハードウェアの初期化、GOP画面提供、FAT32からのBOOTX64.EFI探索を実行する",
+                    "CPU命令を1命令ずつインタープリタ実行するソフトウェアJITコンパイラ",
+                    "FATファイルシステムをNTFSにリアルタイム変換するファイルシステムドライバ",
+                ],
+                correct_index=1,
+                explanation="OVMFはTianoCore EDK IIの仮想マシン向けUEFIファームウェア実装です。QEMUに`-bios OVMF.fd`またはpflashで与えることで、実機UEFI PCと全く同じブートシーケンスを仮想環境上で再現できます。",
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="1.5",
+                topic="CPUリセットベクタとUEFI PIフェーズ",
+                question="x86-64 CPUが電源投入された直後に最初に命令フェッチを開始する物理アドレス（リセットベクタ）と、UEFI Platform Initialization (PI) の実行順序として正しいものはどれか？",
+                options=[
+                    "リセットベクタ: 0x00000000 / フェーズ: DXE → PEI → SEC → BDS",
+                    "リセットベクタ: 0xFFFFFFF0 / フェーズ: SEC (Security) → PEI (Pre-EFI) → DXE (Driver Execution) → BDS (Boot Device Select)",
+                    "リセットベクタ: 0x00007C00 / フェーズ: MBR → VBR → IPL → Kernel",
+                    "リセットベクタ: 0x00100000 / フェーズ: TSL → RT → AL → OS",
+                ],
+                correct_index=1,
+                explanation="CPUリセットベクタは物理アドレス 0xFFFFFFF0（4GB直下の16バイト前）です。UEFIファームウェアはSEC（セキュリティ・CPUキャッシュのRAM化）→ PEI（主メモリ初期化）→ DXE（各種ドライバロード）→ BDS（起動デバイス探索とBOOTX64.EFI実行）の順で進行します。",
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="1.6",
+                topic="UTF-16LE 文字コードとバイナリ改変",
+                question="UEFIのConOut->OutputString関数が受け取る文字列ポインタの仕様として正しいものはどれか？",
+                options=[
+                    "ASCIIコード（1文字1バイト）で表現され、0x00で終端する",
+                    "UTF-8コード（1〜4バイト可変長）で表現され、改行はLF (0x0A) 単独である",
+                    "UTF-16LE（1文字2バイトの小端）で表現され、2バイトの0x0000で終端し、改行はCR+LF (0x000D, 0x000A) である",
+                    "Shift-JISコード（2バイト）で表現され、EOT (0x04) で終端する",
+                ],
+                correct_index=2,
+                explanation="UEFI仕様書において、画面出力用文字列（CHAR16*）はUCS-2/UTF-16LEで規定されています。1文字2バイト（リトルエンディアン）であり、終端は2バイトのヌル文字（0x0000）、改行はCR+LF (L\"\\r\\n\") となります。",
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="1.7",
+                topic="MBR vs GPT ディスクパーティション数理",
+                question="レガシーMBRの最大ディスク容量制限が約2TiBであるのに対し、UEFIで標準採用されるGPT（GUID Partition Table）の最大容量制限の理論値はどれか？",
+                options=[
+                    "MBR: 16ビットセクタ（32MiB） / GPT: 32ビットセクタ（2TiB）",
+                    "MBR: 32ビットLBA × 512B（2TiB） / GPT: 64ビットLBA × 512B（8ZiB = 約 9.44 × 10^21 バイト）",
+                    "MBR: 48ビットLBA × 512B（128PiB） / GPT: 128ビットLBA（無限）",
+                    "MBR: 32ビットLBA × 4KiB（16TiB） / GPT: 64ビットLBA × 4KiB（64ZiB）",
+                ],
+                correct_index=1,
+                explanation="MBRはLBAセクタ番号が32ビット（2^32 × 512B = 2TiB）に制限されていました。一方GPTは64ビットLBAを採用しており、2^64 × 512B = 8 ZiB（ゼビバイト = 9.44 × 10^21 バイト）という膨大な容量を扱えます。",
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="1.8",
+                topic="Clang フリースタンディング 4大フラグ",
+                question="ClangでベアメタルUEFIバイナリをビルドする際、-mno-red-zone を指定する決定的な理由はどれか？",
+                options=[
+                    "Red Zoneを使用するとコンパイル後のバイナリサイズが128KB増大してしまうため",
+                    "System V AMD64 ABIで許容されているRSP下方の128バイト保護領域（Red Zone）を、非同期割り込みやUEFIファームウェア呼出によるスタック破壊から防ぐため",
+                    "Red Zoneは32ビット保護モード専用のレガシー機能でありx86-64では未定義命令例外を発生させるため",
+                    "Red Zoneを有効にするとCPUのキャッシュミス率が跳ね上がるため",
+                ],
+                correct_index=1,
+                explanation="x86-64 ABIのRed Zone（スタックポインタRSPより下方の128バイト）は、割り込みハンドラが同一スタックを使用する場合にスタック破壊を引き起こす致命的リスクがあります。ベアメタルOS開発では `-mno-red-zone` が不可欠です。",
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="1.9",
+                topic="最小C言語UEFIアプリとEFI_SYSTEM_TABLE",
+                question="64ビットUEFIにおける EFI_SYSTEM_TABLE 構造体から ConOut ポインタを取得し、OutputString を呼び出す際のポインタ演算・呼び出し規約として正しいものはどれか？",
+                options=[
+                    "ConOut は先頭オフセット 0バイトにあり、第一引数には出力文字列のみを渡す",
+                    "EFI_TABLE_HEADER (24B) とファームウェア情報の後、オフセット 64バイト (0x40) に ConOut があり、OutputString の第一引数には This ポインタ (ConOut 自身) を渡す",
+                    "ConOut はオフセット 52バイトにあり、32ビットポインタであるため64ビットレジスタの上位半分をクリアして呼ぶ",
+                    "EFI_SYSTEM_TABLE はスタックに値渡しされるため、レジスタ RAX のオフセット 16バイトを参照する",
+                ],
+                correct_index=1,
+                explanation="64ビットUEFIではポインタが8バイト整列されます。EFI_TABLE_HEADERが24バイト、FirmwareVendor(8B)＋FirmwareRevision(4B+4Bパディング)＋ConsoleInHandle(8B)＋ConIn(8B)＋ConsoleOutHandle(8B)の計64バイト位置にConOutが存在します。またインターフェース関数第1引数には必ずThisポインタを渡します。",
+            ),
+        ]
+
+    def evaluate(self, answers: dict[int, int]) -> dict[str, any]:
+        """Evaluate user answers and return comprehensive scores, explanations, and mastery breakdown."""
+        details = []
+        correct_count = 0
+        section_scores: dict[str, dict[str, int]] = {
+            "1.1": {"correct": 0, "total": 0},
+            "1.2": {"correct": 0, "total": 0},
+            "1.3": {"correct": 0, "total": 0},
+            "1.4": {"correct": 0, "total": 0},
+            "1.5": {"correct": 0, "total": 0},
+            "1.6": {"correct": 0, "total": 0},
+            "1.7": {"correct": 0, "total": 0},
+            "1.8": {"correct": 0, "total": 0},
+            "1.9": {"correct": 0, "total": 0},
+        }
+
+        for q in self.questions:
+            user_ans = answers.get(q.question_id, -1)
+            is_correct = (user_ans == q.correct_index)
+            if is_correct:
+                correct_count += 1
+                section_scores[q.section]["correct"] += 1
+            section_scores[q.section]["total"] += 1
+
+            details.append({
+                "question_id": q.question_id,
+                "section": q.section,
+                "topic": q.topic,
+                "question": q.question,
+                "user_answer": user_ans,
+                "correct_answer": q.correct_index,
+                "is_correct": is_correct,
+                "explanation": q.explanation,
+            })
+
+        total = len(self.questions)
+        percentage = (correct_count / total) * 100.0 if total > 0 else 0.0
+
+        mastery_rates: dict[str, float] = {}
+        for sec, stat in section_scores.items():
+            rate = (stat["correct"] / stat["total"]) * 100.0 if stat["total"] > 0 else 0.0
+            mastery_rates[sec] = rate
+
+        return {
+            "total_questions": total,
+            "correct_count": correct_count,
+            "percentage": percentage,
+            "details": details,
+            "mastery_rates": mastery_rates,
+            "passed": percentage >= 80.0,
+        }
+
+
+class Chapter1TheoryValidator:
+    """Validator for Chapter 1 fill-in-the-blank theory and math exercises."""
+
+    @staticmethod
+    def validate_pe_headers(magic_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate PE32+ DOS, PE, and Optional header magic constants."""
+        expected = {
+            "dos_magic": 0x5A4D,          # 'MZ'
+            "pe_signature": 0x00004550,    # 'PE\0\0'
+            "optional_magic": 0x020B,      # PE32+ (64-bit)
+        }
+        errors = []
+        for key, exp_val in expected.items():
+            val = magic_dict.get(key)
+            if isinstance(val, str):
+                try:
+                    val = int(val, 0)
+                except ValueError:
+                    errors.append(f"{key}: 数値変換不能 '{val}'")
+                    continue
+            if val != exp_val:
+                errors.append(f"{key}: 期待値 0x{exp_val:X}, 入力値 {hex(val) if isinstance(val, int) else val}")
+
+        if not errors:
+            return True, "正解！PE32+ (64-bit UEFI) のヘッダマジック（MZ: 0x5A4D, PE: 0x4550, Optional: 0x020B）を正しく同定しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_uefi_calling_convention(conv_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate Microsoft x64 Calling Convention register parameters and stack alignment."""
+        expected_regs = {
+            "arg1": "rcx",
+            "arg2": "rdx",
+            "arg3": "r8",
+            "arg4": "r9",
+        }
+        errors = []
+        for k, exp in expected_regs.items():
+            u_val = str(conv_dict.get(k, "")).strip().lower()
+            if u_val != exp:
+                errors.append(f"{k}: 期待値 '{exp}', 入力値 '{u_val}'")
+
+        shadow = conv_dict.get("shadow_space_bytes")
+        if shadow != 32:
+            errors.append(f"shadow_space_bytes: 期待値 32, 入力値 {shadow}")
+
+        align = conv_dict.get("stack_alignment_bytes")
+        if align != 16:
+            errors.append(f"stack_alignment_bytes: 期待値 16, 入力値 {align}")
+
+        if not errors:
+            return True, "正解！Microsoft x64 呼出規約（RCX, RDX, R8, R9, 32Bシャドウスペース, 16Bスタック整列）に完全準拠しています。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_clang_uefi_flags(flags: list[str]) -> tuple[bool, str]:
+        """Validate essential Clang / LLD flags for freestanding UEFI executable generation."""
+        flag_set = {f.strip() for f in flags}
+        required = {"-target x86_64-unknown-windows", "-ffreestanding", "-mno-red-zone", "-fno-stack-protector", "-fshort-wchar"}
+        missing = required - flag_set
+        if not missing:
+            return True, "正解！Clang UEFIコンパイルの5大必須フラグが完璧に指定されています。"
+        return False, f"不正解です。不足している必須フラグ: {missing}"
+
+    @staticmethod
+    def validate_mbr_vs_gpt_math(math_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate MBR vs GPT addressing and theoretical capacity limits."""
+        mbr_bits = math_dict.get("mbr_lba_bits")
+        gpt_bits = math_dict.get("gpt_lba_bits")
+        errors = []
+        if mbr_bits != 32:
+            errors.append(f"mbr_lba_bits: 期待値 32, 入力値 {mbr_bits}")
+        if gpt_bits != 64:
+            errors.append(f"gpt_lba_bits: 期待値 64, 入力値 {gpt_bits}")
+
+        mbr_tib = math_dict.get("mbr_max_tib")
+        if mbr_tib not in (2, 2.0):
+            errors.append(f"mbr_max_tib: 期待値 2.0 TiB, 入力値 {mbr_tib}")
+
+        if not errors:
+            return True, "正解！MBR (32-bit LBA -> 2 TiB) と GPT (64-bit LBA -> 8 ZiB) のアドレッシング数理を正確に算出しました。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+    @staticmethod
+    def validate_system_table_layout(offsets: dict[str, int]) -> tuple[bool, str]:
+        """Validate 64-bit UEFI EFI_SYSTEM_TABLE and SIMPLE_TEXT_OUTPUT_INTERFACE offsets."""
+        con_out = offsets.get("con_out_offset")
+        out_str = offsets.get("output_string_offset")
+        errors = []
+        if con_out != 64:
+            errors.append(f"con_out_offset: 期待値 64 (0x40), 入力値 {con_out}")
+        if out_str != 8:
+            errors.append(f"output_string_offset: 期待値 8 (0x08), 入力値 {out_str}")
+
+        if not errors:
+            return True, "正解！64ビットUEFI EFI_SYSTEM_TABLE (ConOut: +64B) と OutputString (+8B) のオフセット構造に完全適合しています。"
+        return False, f"不正解です。不一致項目: {'; '.join(errors)}"
+
+
+def plot_chapter1_exercises_summary(output_path: Path | str) -> Path:
+    """Generate high-DPI summary diagram showing Chapter 1 exercise structure and learning taxonomy."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(12, 7.5))
+    ax.set_facecolor("#FAFAFA")
+
+    exercises = [
+        {"id": "Ex 1", "sec": "1.1 / 1.7", "title": "PE32+ / GPT 理論検証", "desc": "DOS/PE/Optionalマジック同定、MBR 2TiB vs GPT 8ZiB LBA数理導出", "color": "#1E88E5", "y": 0.84},
+        {"id": "Ex 2", "sec": "1.1 / 1.8", "title": "ABI & Clang フラグ検証", "desc": "Microsoft x64呼出規約（RCX/RDX/R8/R9/32B/16B）、4大必須フラグ判定", "color": "#43A047", "y": 0.67},
+        {"id": "Ex 3", "sec": "1.2 / 1.6", "title": "Linuxデバイス & 文字列", "desc": "dev_tメジャー・マイナー数理、UTF-16LEエンコード & ヌル終端検証", "color": "#FB8C00", "y": 0.50},
+        {"id": "Ex 4", "sec": "1.9", "title": "UEFI SystemTable 構造", "desc": "64-bit EFI_SYSTEM_TABLE (ConOut: +64B, OutputString: +8B) 構造体計算", "color": "#8E24AA", "y": 0.33},
+        {"id": "Ex 5", "sec": "1.1-1.9", "title": "C++20 コア検証 & 総合テスト", "desc": "x64 ABI/PEヘッダ C++シミュレータ、全節網羅10問自己採点クイズ & レーダー", "color": "#D81B60", "y": 0.16},
+    ]
+
+    import matplotlib.patches as patches
+
+    for ex in exercises:
+        y = ex["y"]
+        rect = patches.FancyBboxPatch(
+            (0.05, y - 0.06), 0.90, 0.12,
+            boxstyle="round,pad=0.015,rounding_size=0.02",
+            facecolor="white", edgecolor=ex["color"], linewidth=2, zorder=2
+        )
+        ax.add_patch(rect)
+
+        badge = patches.FancyBboxPatch(
+            (0.07, y - 0.04), 0.12, 0.08,
+            boxstyle="round,pad=0.01,rounding_size=0.01",
+            facecolor=ex["color"], edgecolor="none", zorder=3
+        )
+        ax.add_patch(badge)
+        ax.text(0.13, y, ex["id"], color="white", fontsize=11, fontweight="bold", ha="center", va="center", zorder=4)
+
+        ax.text(0.22, y + 0.02, f"[{ex['sec']}] {ex['title']}", color="#212121", fontsize=12, fontweight="bold", va="center")
+        ax.text(0.22, y - 0.025, ex["desc"], color="#555555", fontsize=9.5, va="center")
+
+        circle = plt.Circle((0.91, y), 0.025, facecolor="#E8F5E9", edgecolor="#4CAF50", linewidth=1.5, zorder=3)
+        ax.add_patch(circle)
+        ax.text(0.91, y, "✓", color="#2E7D32", fontsize=11, fontweight="bold", ha="center", va="center", zorder=4)
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0.05, 0.97)
+    ax.axis("off")
+    ax.set_title("MikanOS Study — Chapter 1 Exercises Curriculum & Assessment Map",
+                 fontsize=14, fontweight="bold", pad=20, color="#1A237E")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_chapter1_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float] | None = None) -> Path:
+    """Generate high-DPI 9-axis radar chart showing Chapter 1 concept mastery across all 9 sections."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    categories = [
+        "1.1 PE32+ バイナリ\n(PE32+ & x64 ABI)",
+        "1.2 ブロックデバイス\n(Block Devices & dev_t)",
+        "1.3 WSL2 環境\n(WSL2 & USB/IP)",
+        "1.4 QEMU & OVMF\n(QEMU & OVMF Boot)",
+        "1.5 リセット & PI\n(Reset & PI Phases)",
+        "1.6 UTF-16LE 観察\n(UTF-16LE & Mutation)",
+        "1.7 UEFI vs BIOS\n(MBR vs GPT 8ZiB)",
+        "1.8 Clang ツール\n(Freestanding Toolchain)",
+        "1.9 最小 C 実装\n(EFI_SYSTEM_TABLE)",
+    ]
+    num_vars = len(categories)
+
+    if mastery_rates is None:
+        mastery_rates = {f"1.{i}": 100.0 for i in range(1, 10)}
+
+    values = [mastery_rates.get(f"1.{i}", 100.0) for i in range(1, 10)]
+    values += values[:1]  # Close loop
+
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig, ax = plt.subplots(figsize=(9, 9), subplot_kw=dict(polar=True))
+    ax.set_facecolor("#FCFCFD")
+
+    # Grid lines and levels
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+    ax.set_rlabel_position(0)
+    plt.yticks([20, 40, 60, 80, 100], ["20%", "40%", "60%", "80%", "100%"], color="#757575", size=9)
+    plt.ylim(0, 105)
+
+    plt.xticks(angles[:-1], categories, color="#212121", size=9.5, fontweight="bold")
+
+    # Plot data
+    ax.plot(angles, values, color="#1976D2", linewidth=2.5, linestyle="solid", marker="o", markersize=6)
+    ax.fill(angles, values, color="#2196F3", alpha=0.25)
+
+    # Threshold circle (80%)
+    threshold_vals = [80.0] * (num_vars + 1)
+    ax.plot(angles, threshold_vals, color="#E53935", linewidth=1.2, linestyle="--", label="Pass Threshold (80%)")
+
+    avg_score = float(np.mean([mastery_rates.get(f"1.{i}", 100.0) for i in range(1, 10)]))
+    plt.title(f"Chapter 1 Concept Mastery Radar (Average: {avg_score:.1f}%)\n[x86-64 / UEFI / PE32+ / Freestanding Toolchain]",
+              size=13, fontweight="bold", pad=25, color="#0D47A1")
+    plt.legend(loc="upper right", bbox_to_anchor=(1.25, 1.1), fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path

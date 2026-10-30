@@ -57,6 +57,10 @@ add_test(NAME test_ch01_toolchain_inspector COMMAND ch01_toolchain_inspector)
 add_executable(ch01_uefi_c_hello_analyzer src/ch01/uefi_c_hello_analyzer.cpp)
 add_test(NAME test_ch01_uefi_c_hello_analyzer COMMAND ch01_uefi_c_hello_analyzer)
 
+add_executable(ch01_os_chapter1_exercises src/ch01/os_chapter1_exercises.cpp)
+add_test(NAME test_ch01_os_chapter1_exercises COMMAND ch01_os_chapter1_exercises)
+
+
 
 
 

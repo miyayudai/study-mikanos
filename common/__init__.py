@@ -109,6 +109,10 @@ from common.os_sim import (
     MinimalUefiCCompilerModel,
     plot_uefi_c_system_table_layout,
     plot_pe32plus_coff_elf_comparison,
+    Chapter1Quiz,
+    Chapter1TheoryValidator,
+    plot_chapter1_exercises_summary,
+    plot_chapter1_mastery_radar,
 )
 
 __all__ = [
@@ -220,4 +224,8 @@ __all__ = [
     "MinimalUefiCCompilerModel",
     "plot_uefi_c_system_table_layout",
     "plot_pe32plus_coff_elf_comparison",
+    "Chapter1Quiz",
+    "Chapter1TheoryValidator",
+    "plot_chapter1_exercises_summary",
+    "plot_chapter1_mastery_radar",
 ]
