@@ -10232,3 +10232,518 @@ def plot_chapter2_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     plt.close()
     return output_path
 
+
+# ==============================================================================
+# Chapter 3: QEMU Monitor & x86-64 Debugging Infrastructure
+# ==============================================================================
+
+@dataclass
+class CpuRegisterState:
+    """Represents x86-64 CPU registers dumped by QEMU Monitor `info registers`."""
+    rax: int = 0
+    rbx: int = 0
+    rcx: int = 0
+    rdx: int = 0
+    rsi: int = 0
+    rdi: int = 0
+    rbp: int = 0
+    rsp: int = 0x7ffffff0
+    r8: int = 0
+    r9: int = 0
+    r10: int = 0
+    r11: int = 0
+    r12: int = 0
+    r13: int = 0
+    r14: int = 0
+    r15: int = 0
+    rip: int = 0x100000
+    rflags: int = 0x00000202  # IF (bit 9), Reserved bit 1
+    cr0: int = 0x80010033     # PG, PE, WP, ET
+    cr2: int = 0
+    cr3: int = 0x00100000     # Page Table root (PML4) physical address
+    cr4: int = 0x000006f0     # PAE, OSFXSR, OSXMMEXCPT
+    cs: int = 0x0038
+    ds: int = 0x0030
+    es: int = 0x0030
+    fs: int = 0x0030
+    gs: int = 0x0030
+    ss: int = 0x0030
+
+    def format_qemu_info_registers(self) -> str:
+        """Format registers into realistic QEMU Monitor `info registers` string."""
+        lines = [
+            f"RAX={self.rax:016x} RBX={self.rbx:016x} RCX={self.rcx:016x} RDX={self.rdx:016x}",
+            f"RSI={self.rsi:016x} RDI={self.rdi:016x} RBP={self.rbp:016x} RSP={self.rsp:016x}",
+            f"R8 ={self.r8:016x} R9 ={self.r9:016x} R10={self.r10:016x} R11={self.r11:016x}",
+            f"R12={self.r12:016x} R13={self.r13:016x} R14={self.r14:016x} R15={self.r15:016x}",
+            f"RIP={self.rip:016x} RFL={self.rflags:08x} [----{ 'I' if self.rflags & 0x200 else '-' }---]",
+            f"CS={self.cs:04x} DS={self.ds:04x} ES={self.es:04x} FS={self.fs:04x} GS={self.gs:04x} SS={self.ss:04x}",
+            f"CR0={self.cr0:08x} CR2={self.cr2:016x} CR3={self.cr3:016x} CR4={self.cr4:08x}",
+        ]
+        return "\n".join(lines)
+
+    @classmethod
+    def parse_qemu_info_registers(cls, dump_str: str) -> "CpuRegisterState":
+        """Parse register values from a QEMU Monitor dump string."""
+        import re
+        state = cls()
+        reg_pattern = re.compile(r"([A-Z0-9]+)\s*=\s*([0-9a-fA-F]+)")
+        matches = reg_pattern.findall(dump_str)
+        for name, val_hex in matches:
+            name_lower = name.lower()
+            val = int(val_hex, 16)
+            if hasattr(state, name_lower):
+                setattr(state, name_lower, val)
+            elif name_lower == "rfl":
+                state.rflags = val
+        return state
+
+    @property
+    def is_paging_enabled(self) -> bool:
+        """Check if Paging (PG bit 31) is enabled in CR0."""
+        return bool(self.cr0 & (1 << 31))
+
+    @property
+    def is_protected_mode(self) -> bool:
+        """Check if Protection Enable (PE bit 0) is set in CR0."""
+        return bool(self.cr0 & 1)
+
+    @property
+    def is_interrupt_enabled(self) -> bool:
+        """Check if Interrupt Flag (IF bit 9) is set in RFLAGS."""
+        return bool(self.rflags & (1 << 9))
+
+
+class PhysicalMemoryInspector:
+    """Simulates physical RAM and QEMU monitor `xp` (examine physical memory) command."""
+    def __init__(self, size_bytes: int = 16 * 1024 * 1024):
+        self.size = size_bytes
+        self.ram = bytearray(size_bytes)
+
+    def write_bytes(self, physical_addr: int, data: bytes | bytearray | list[int]):
+        """Write raw bytes into simulated physical memory."""
+        if physical_addr + len(data) > self.size:
+            raise ValueError(f"Address 0x{physical_addr + len(data):x} exceeds RAM size 0x{self.size:x}")
+        self.ram[physical_addr:physical_addr + len(data)] = bytes(data)
+
+    def read_bytes(self, physical_addr: int, count: int) -> bytes:
+        """Read count bytes from simulated physical memory."""
+        if physical_addr + count > self.size:
+            raise ValueError(f"Read out of bounds: 0x{physical_addr + count:x} > 0x{self.size:x}")
+        return bytes(self.ram[physical_addr:physical_addr + count])
+
+    def execute_xp(self, format_spec: str, physical_addr: int) -> list[str]:
+        """
+        Execute QEMU `xp /nuf addr` command.
+        format_spec: e.g., '/16bx', '/4gx', '/8wd', '/10i'
+        - n: count (default 1)
+        - u: unit (b: 1 byte, h: 2 bytes, w: 4 bytes, g: 8 bytes giant word)
+        - f: format (x: hex, d: signed decimal, u: unsigned dec, c: char, i: instruction asm stub)
+        """
+        import re
+        import struct
+
+        spec = format_spec.lstrip("/")
+        match = re.match(r"^(\d*)([bhwg])?([xducis])?$", spec)
+        if not match:
+            count = 1
+            unit = "w"
+            fmt = "x"
+        else:
+            cnt_str, unit_str, fmt_str = match.groups()
+            count = int(cnt_str) if cnt_str else 1
+            unit = unit_str if unit_str else "w"
+            fmt = fmt_str if fmt_str else "x"
+
+        unit_sizes = {"b": 1, "h": 2, "w": 4, "g": 8}
+        unit_bytes = unit_sizes.get(unit, 4)
+
+        results = []
+        curr_addr = physical_addr
+
+        # Format elements per line
+        items_per_line = {1: 16, 2: 8, 4: 4, 8: 2}.get(unit_bytes, 4)
+
+        for line_start in range(0, count, items_per_line):
+            line_count = min(items_per_line, count - line_start)
+            line_addr = curr_addr + line_start * unit_bytes
+            tokens = [f"0x{line_addr:016x}:"]
+
+            for i in range(line_count):
+                item_addr = line_addr + i * unit_bytes
+                raw = self.read_bytes(item_addr, unit_bytes)
+
+                if unit == "b":
+                    val = raw[0]
+                    if fmt == "x":
+                        tokens.append(f"0x{val:02x}")
+                    elif fmt == "d":
+                        val_s = struct.unpack("b", raw)[0]
+                        tokens.append(f"{val_s}")
+                    elif fmt == "c":
+                        ch = chr(val) if 32 <= val <= 126 else "."
+                        tokens.append(f"'{ch}'")
+                    else:
+                        tokens.append(f"{val}")
+                elif unit == "h":
+                    val = struct.unpack("<H", raw)[0]
+                    if fmt == "x":
+                        tokens.append(f"0x{val:04x}")
+                    elif fmt == "d":
+                        val_s = struct.unpack("<h", raw)[0]
+                        tokens.append(f"{val_s}")
+                    else:
+                        tokens.append(f"{val}")
+                elif unit == "w":
+                    val = struct.unpack("<I", raw)[0]
+                    if fmt == "x":
+                        tokens.append(f"0x{val:08x}")
+                    elif fmt == "d":
+                        val_s = struct.unpack("<i", raw)[0]
+                        tokens.append(f"{val_s}")
+                    else:
+                        tokens.append(f"{val}")
+                elif unit == "g":
+                    val = struct.unpack("<Q", raw)[0]
+                    if fmt == "x":
+                        tokens.append(f"0x{val:016x}")
+                    elif fmt == "d":
+                        val_s = struct.unpack("<q", raw)[0]
+                        tokens.append(f"{val_s}")
+                    else:
+                        tokens.append(f"{val}")
+
+            results.append(" ".join(tokens))
+
+        return results
+
+
+class QemuMonitorEngine:
+    """Interactive QEMU monitor simulator engine for bare-metal OS debugging."""
+    def __init__(self, ram_size: int = 16 * 1024 * 1024):
+        self.regs = CpuRegisterState()
+        self.ram = PhysicalMemoryInspector(ram_size)
+        self.is_running = True
+
+    def execute_command(self, cmd_line: str) -> str:
+        """Parse and execute a QEMU monitor CLI command."""
+        tokens = cmd_line.strip().split()
+        if not tokens:
+            return ""
+
+        cmd = tokens[0]
+
+        if cmd in ("info", "i") and len(tokens) >= 2:
+            sub = tokens[1]
+            if sub in ("registers", "r"):
+                return self.regs.format_qemu_info_registers()
+            elif sub == "mem":
+                return f"Paging enabled: {self.regs.is_paging_enabled}, PML4 root: 0x{self.regs.cr3:016x}"
+            else:
+                return f"unknown sub-command: {sub}"
+
+        elif cmd == "xp":
+            if len(tokens) < 2:
+                return "Usage: xp [/nuf] addr"
+            if len(tokens) == 2:
+                format_spec = "/1xw"
+                addr = int(tokens[1], 0)
+            else:
+                format_spec = tokens[1]
+                addr = int(tokens[2], 0)
+            lines = self.ram.execute_xp(format_spec, addr)
+            return "\n".join(lines)
+
+        elif cmd in ("x",):
+            # Virtual memory dump (identity mapped in early boot)
+            if len(tokens) < 2:
+                return "Usage: x [/nuf] addr"
+            if len(tokens) == 2:
+                format_spec = "/1xw"
+                addr = int(tokens[1], 0)
+            else:
+                format_spec = tokens[1]
+                addr = int(tokens[2], 0)
+            # In simulated identity mapping, virtual == physical
+            lines = self.ram.execute_xp(format_spec, addr)
+            return "\n".join(lines)
+
+        elif cmd in ("p", "print"):
+            expr = " ".join(tokens[1:])
+            try:
+                val = eval(expr, {}, {"rax": self.regs.rax, "rip": self.regs.rip, "rsp": self.regs.rsp})
+                return f"${hex(val)}"
+            except Exception as e:
+                return f"Evaluation error: {e}"
+
+        elif cmd in ("c", "cont"):
+            self.is_running = True
+            return "Execution continued."
+
+        elif cmd in ("stop",):
+            self.is_running = False
+            return "CPU stopped."
+
+        elif cmd in ("q", "quit"):
+            return "QEMU exiting."
+
+        elif cmd in ("help", "h"):
+            return (
+                "QEMU Monitor commands:\n"
+                "  info registers  - Show CPU general/segment/control registers\n"
+                "  xp /nuf addr    - Examine physical memory at addr\n"
+                "  x /nuf addr     - Examine virtual memory at addr\n"
+                "  print <expr>    - Evaluate expression\n"
+                "  c               - Resume guest execution\n"
+                "  stop            - Stop guest execution\n"
+                "  quit            - Quit QEMU"
+            )
+
+        return f"Unknown command: {cmd}"
+
+
+def plot_qemu_monitor_architecture(output_path: Path | str) -> Path:
+    """Generate high-DPI architecture diagram of QEMU host process, Guest VM, and Monitor control plane."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(13, 8))
+    ax.set_facecolor("#FAFCFF")
+
+    import matplotlib.patches as patches
+
+    # Outer QEMU Host Process
+    host_box = patches.FancyBboxPatch(
+        (0.04, 0.05), 0.92, 0.88,
+        boxstyle="round,pad=0.02,rounding_size=0.03",
+        facecolor="#F0F4F8", edgecolor="#1565C0", linewidth=2.5, zorder=1
+    )
+    ax.add_patch(host_box)
+    ax.text(0.06, 0.90, "QEMU Hypervisor / Emulator Process (Host OS Userspace)",
+            fontsize=13, fontweight="bold", color="#0D47A1", va="center")
+
+    # Guest VM Execution Domain (Left)
+    guest_box = patches.FancyBboxPatch(
+        (0.07, 0.10), 0.48, 0.74,
+        boxstyle="round,pad=0.02,rounding_size=0.02",
+        facecolor="#FFFFFF", edgecolor="#2E7D32", linewidth=2, zorder=2
+    )
+    ax.add_patch(guest_box)
+    ax.text(0.09, 0.80, "Guest VM Domain (MikanOS / Bare Metal)",
+            fontsize=12, fontweight="bold", color="#1B5E20", va="center")
+
+    # Guest components
+    comp_defs = [
+        {"y": 0.64, "h": 0.12, "title": "Virtual CPU (x86-64 Core)", "desc": "RAX..R15, RIP, RSP, RFLAGS\nControl Registers CR0/CR3/CR4, TSS", "color": "#E8F5E9", "border": "#4CAF50"},
+        {"y": 0.44, "h": 0.16, "title": "Simulated Physical Memory (RAM)", "desc": "UEFI Bootloader (0x06000000)\nKernel Image (0x00100000)\nStack & Page Tables (PML4..PT)", "color": "#E1F5FE", "border": "#03A9F4"},
+        {"y": 0.24, "h": 0.15, "title": "Virtual Peripherals & MMIO", "desc": "GOP VRAM FrameBuffer (0xE0000000)\nLocal APIC (0xFEE00000)\nxHCI USB Controller (BAR0 MMIO)", "color": "#FFF3E0", "border": "#FF9800"},
+        {"y": 0.12, "h": 0.08, "title": "Guest Console Display (Ctrl+Alt+1)", "desc": "UEFI GOP Pixel output / MikanOS Desktop", "color": "#F3E5F5", "border": "#AB47BC"},
+    ]
+
+    for c in comp_defs:
+        b = patches.FancyBboxPatch(
+            (0.09, c["y"]), 0.44, c["h"],
+            boxstyle="round,pad=0.015,rounding_size=0.015",
+            facecolor=c["color"], edgecolor=c["border"], linewidth=1.5, zorder=3
+        )
+        ax.add_patch(b)
+        ax.text(0.11, c["y"] + c["h"] - 0.03, c["title"], fontsize=10.5, fontweight="bold", color="#212121")
+        lines = c["desc"].split("\n")
+        for idx, line in enumerate(lines):
+            ax.text(0.11, c["y"] + c["h"] - 0.065 - idx * 0.03, line, fontsize=9, color="#555555")
+
+    # QEMU Monitor & Debugging Plane (Right)
+    mon_box = patches.FancyBboxPatch(
+        (0.60, 0.10), 0.34, 0.74,
+        boxstyle="round,pad=0.02,rounding_size=0.02",
+        facecolor="#FFFFFF", edgecolor="#C2185B", linewidth=2, zorder=2
+    )
+    ax.add_patch(mon_box)
+    ax.text(0.62, 0.80, "QEMU Monitor Interface (Ctrl+Alt+2)",
+            fontsize=12, fontweight="bold", color="#880E4F", va="center")
+
+    mon_cmds = [
+        {"y": 0.63, "cmd": "info registers", "desc": "Inspect registers without intrusive probes\nReads vCPU structure in host memory", "color": "#FCE4EC"},
+        {"y": 0.46, "cmd": "xp /nuf <phys_addr>", "desc": "Directly dumps physical RAM bytes\nBypasses guest page tables & MMU", "color": "#EDE7F6"},
+        {"y": 0.32, "cmd": "x /nuf <virt_addr>", "desc": "Dumps virtual memory via CR3 paging\nTranslates 48-bit canonical addresses", "color": "#E0F2F1"},
+        {"y": 0.18, "cmd": "screendump <file.ppm>", "desc": "Saves raw GOP framebuffer to disk\nVerify graphics without physical display", "color": "#FFF8E1"},
+    ]
+
+    for m in mon_cmds:
+        b = patches.FancyBboxPatch(
+            (0.62, m["y"]), 0.30, 0.12,
+            boxstyle="round,pad=0.012,rounding_size=0.012",
+            facecolor=m["color"], edgecolor="#7E57C2", linewidth=1.2, zorder=3
+        )
+        ax.add_patch(b)
+        ax.text(0.635, m["y"] + 0.085, m["cmd"], fontsize=10.5, fontweight="bold", family="monospace", color="#311B92")
+        for idx, line in enumerate(m["desc"].split("\n")):
+            ax.text(0.635, m["y"] + 0.05 - idx * 0.028, line, fontsize=8.5, color="#424242")
+
+    # Arrows connecting Monitor to Guest Components
+    arrow1 = patches.FancyArrowPatch((0.62, 0.69), (0.53, 0.69),
+                                      arrowstyle="<->", mutation_scale=15, color="#E91E63", linewidth=2, zorder=4)
+    ax.add_patch(arrow1)
+    ax.text(0.575, 0.71, "vCPU State", fontsize=8.5, fontweight="bold", color="#AD1457", ha="center")
+
+    arrow2 = patches.FancyArrowPatch((0.62, 0.52), (0.53, 0.52),
+                                      arrowstyle="<->", mutation_scale=15, color="#3F51B5", linewidth=2, zorder=4)
+    ax.add_patch(arrow2)
+    ax.text(0.575, 0.54, "RAM Read", fontsize=8.5, fontweight="bold", color="#283593", ha="center")
+
+    arrow3 = patches.FancyArrowPatch((0.62, 0.24), (0.53, 0.28),
+                                      arrowstyle="<->", mutation_scale=15, color="#F57C00", linewidth=2, zorder=4)
+    ax.add_patch(arrow3)
+    ax.text(0.575, 0.29, "VRAM Dump", fontsize=8.5, fontweight="bold", color="#E65100", ha="center")
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0, 0.98)
+    ax.axis("off")
+    ax.set_title("MikanOS Chapter 3.1 — QEMU Hypervisor, Guest VM & Monitor Inspection Architecture",
+                 fontsize=14, fontweight="bold", pad=15, color="#0D47A1")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_qemu_registers_and_memory_dump(output_path: Path | str) -> Path:
+    """Generate high-DPI visual decoding of `info registers` and `xp` physical memory dump."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_reg, ax_mem) = plt.subplots(1, 2, figsize=(14, 8), gridspec_kw={"width_ratios": [1, 1]})
+    fig.patch.set_facecolor("#FCFDFD")
+
+    import matplotlib.patches as patches
+
+    # Subplot 1: Register Breakdown
+    ax_reg.set_facecolor("#F9FAFB")
+    ax_reg.set_title("1. QEMU `info registers` Output Decoding", fontsize=12.5, fontweight="bold", color="#1565C0", pad=12)
+
+    regs_data = [
+        {"cat": "General Purpose Registers (64-bit)", "items": [
+            ("RAX", "0x0000000000000000", "Syscall number / Return value"),
+            ("RBX", "0x00000000067a3018", "Callee-saved base register"),
+            ("RCX", "0x0000000000000002", "Counter / Syscall arg 4"),
+            ("RDX", "0x0000000000000000", "Data / Syscall arg 3"),
+            ("RSI", "0x00000000067b4100", "Source Index / Syscall arg 2"),
+            ("RDI", "0x00000000067a2f18", "Dest Index / Syscall arg 1"),
+            ("RBP", "0x0000000007fe3e20", "Base Pointer (Stack frame)"),
+            ("RSP", "0x0000000007fe3dc0", "Stack Pointer (Top of stack)"),
+        ]},
+        {"cat": "Instruction Pointer & Flags", "items": [
+            ("RIP", "0x000000000678f142", "Next instruction to execute"),
+            ("RFL", "0x00000206", "Flags: [IF=1, PF=1, Reserved=1]"),
+        ]},
+        {"cat": "Control Registers (CPU Operating Mode)", "items": [
+            ("CR0", "0x80010033", "PG=1 (Paging), PE=1 (Protected)"),
+            ("CR3", "0x0000000007fa0000", "Physical address of PML4 table"),
+            ("CR4", "0x000006f0", "PAE=1, OSFXSR=1 (SSE enabled)"),
+        ]},
+    ]
+
+    y = 0.94
+    for group in regs_data:
+        ax_reg.text(0.04, y, group["cat"], fontsize=10.5, fontweight="bold", color="#0D47A1")
+        y -= 0.04
+        for name, val, desc in group["items"]:
+            # Register card
+            rcard = patches.FancyBboxPatch(
+                (0.04, y - 0.045), 0.92, 0.05,
+                boxstyle="round,pad=0.008,rounding_size=0.01",
+                facecolor="#FFFFFF", edgecolor="#B0BEC5", linewidth=1, zorder=2
+            )
+            ax_reg.add_patch(rcard)
+            ax_reg.text(0.07, y - 0.02, name, fontsize=10, fontweight="bold", family="monospace", color="#D81B60")
+            ax_reg.text(0.22, y - 0.02, val, fontsize=9.5, family="monospace", color="#1E88E5")
+            ax_reg.text(0.60, y - 0.02, desc, fontsize=8.5, color="#424242")
+            y -= 0.058
+        y -= 0.02
+
+    ax_reg.set_xlim(0, 1.0)
+    ax_reg.set_ylim(0, 1.0)
+    ax_reg.axis("off")
+
+    # Subplot 2: Physical Memory Dump `xp /16bx` and `xp /4gx`
+    ax_mem.set_facecolor("#F9FAFB")
+    ax_mem.set_title("2. QEMU `xp /nuf addr` Physical Memory Examination", fontsize=12.5, fontweight="bold", color="#2E7D32", pad=12)
+
+    # Explanation of syntax
+    syntax_box = patches.FancyBboxPatch(
+        (0.04, 0.81), 0.92, 0.15,
+        boxstyle="round,pad=0.012,rounding_size=0.015",
+        facecolor="#E8F5E9", edgecolor="#4CAF50", linewidth=1.5, zorder=2
+    )
+    ax_mem.add_patch(syntax_box)
+    ax_mem.text(0.07, 0.92, "Syntax: xp /<count><unit><format> <physical_address>",
+                fontsize=10.5, fontweight="bold", color="#1B5E20")
+    ax_mem.text(0.07, 0.87, "• count (n): Number of units to dump (e.g., 4, 16)\n• unit (u):  b(1B), h(2B), w(4B), g(8B giant word)\n• format(f): x(hex), d(signed dec), u(unsigned dec), c(char), i(asm)",
+                fontsize=8.8, color="#2E7D32")
+
+    # Example 1: xp /16bx 0x100000
+    y_m = 0.74
+    ax_mem.text(0.04, y_m, "Example A: xp /16bx 0x00100000 (Byte Dump)", fontsize=10.5, fontweight="bold", color="#37474F")
+    y_m -= 0.035
+
+    hex_bytes = ["48", "83", "EC", "28", "E8", "12", "00", "00", "00", "48", "83", "C4", "28", "C3", "90", "90"]
+    # Draw byte boxes
+    for idx, b in enumerate(hex_bytes):
+        col = idx % 8
+        row = idx // 8
+        bx = 0.04 + col * 0.115
+        by = y_m - row * 0.065 - 0.045
+        box = patches.FancyBboxPatch(
+            (bx, by), 0.105, 0.055,
+            boxstyle="round,pad=0.005,rounding_size=0.008",
+            facecolor="#FFF9C4" if idx < 4 else "#E1F5FE", edgecolor="#FFA000" if idx < 4 else "#0288D1", linewidth=1.2, zorder=2
+        )
+        ax_mem.add_patch(box)
+        ax_mem.text(bx + 0.052, by + 0.032, b, fontsize=10, fontweight="bold", family="monospace", color="#212121", ha="center")
+        ax_mem.text(bx + 0.052, by + 0.012, f"+{idx:x}", fontsize=7.5, family="monospace", color="#757575", ha="center")
+
+    y_m -= 0.16
+    ax_mem.text(0.04, y_m, "Example B: xp /2gx 0x00100000 (64-bit Little-Endian Dump)", fontsize=10.5, fontweight="bold", color="#37474F")
+    y_m -= 0.04
+
+    # 64-bit word cards
+    words_64 = [
+        ("0x00100000", "0x000012e828ec8348", "sub rsp, 28h; call +12h"),
+        ("0x00100008", "0x9090c328c4834800", "add rsp, 28h; ret; nop; nop"),
+    ]
+
+    for addr_str, word_val, disasm in words_64:
+        wcard = patches.FancyBboxPatch(
+            (0.04, y_m - 0.065), 0.92, 0.06,
+            boxstyle="round,pad=0.008,rounding_size=0.01",
+            facecolor="#FFFFFF", edgecolor="#3949AB", linewidth=1.2, zorder=2
+        )
+        ax_mem.add_patch(wcard)
+        ax_mem.text(0.07, y_m - 0.025, addr_str + ":", fontsize=9.5, fontweight="bold", family="monospace", color="#283593")
+        ax_mem.text(0.32, y_m - 0.025, word_val, fontsize=9.5, fontweight="bold", family="monospace", color="#C2185B")
+        ax_mem.text(0.07, y_m - 0.052, f"Disassembly interpretation: {disasm}", fontsize=8.5, color="#555555")
+        y_m -= 0.08
+
+    # Note on Little Endianness
+    le_box = patches.FancyBboxPatch(
+        (0.04, 0.10), 0.92, 0.15,
+        boxstyle="round,pad=0.012,rounding_size=0.015",
+        facecolor="#FBE9E7", edgecolor="#FF5722", linewidth=1.2, zorder=2
+    )
+    ax_mem.add_patch(le_box)
+    ax_mem.text(0.07, 0.21, "⚠️ Little-Endian Byte Order Alert", fontsize=10.5, fontweight="bold", color="#D84315")
+    ax_mem.text(0.07, 0.14, "Bytes [48, 83, EC, 28] in memory appear as 0x28EC8348 when read as a\n32-bit word, or 0x000012E828EC8348 as a 64-bit quadword.\nLowest addressed byte holds least significant bits (LSB).",
+                fontsize=8.5, color="#BF360C")
+
+    ax_mem.set_xlim(0, 1.0)
+    ax_mem.set_ylim(0, 1.0)
+    ax_mem.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+

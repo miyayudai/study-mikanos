@@ -188,6 +188,11 @@ from common.os_sim import (
     Chapter2TheoryValidator,
     plot_chapter2_exercises_summary,
     plot_chapter2_mastery_radar,
+    CpuRegisterState,
+    PhysicalMemoryInspector,
+    QemuMonitorEngine,
+    plot_qemu_monitor_architecture,
+    plot_qemu_registers_and_memory_dump,
 )
 
 __all__ = [
@@ -378,4 +383,9 @@ __all__ = [
     "Chapter2TheoryValidator",
     "plot_chapter2_exercises_summary",
     "plot_chapter2_mastery_radar",
+    "CpuRegisterState",
+    "PhysicalMemoryInspector",
+    "QemuMonitorEngine",
+    "plot_qemu_monitor_architecture",
+    "plot_qemu_registers_and_memory_dump",
 ]

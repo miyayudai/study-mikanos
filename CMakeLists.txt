@@ -91,6 +91,11 @@ add_test(NAME test_ch02_arrow_operator_sim COMMAND ch02_arrow_operator_sim --tes
 add_executable(ch02_os_chapter2_exercises src/ch02/os_chapter2_exercises.cpp)
 add_test(NAME test_ch02_os_chapter2_exercises COMMAND ch02_os_chapter2_exercises --test)
 
+# Chapter 3
+add_executable(ch03_qemu_monitor_sim src/ch03/qemu_monitor_sim.cpp)
+add_test(NAME test_ch03_qemu_monitor_sim COMMAND ch03_qemu_monitor_sim --test)
+
+
 
 
 
