@@ -326,6 +326,12 @@ from common.os_sim import (
     create_day05b_object_files,
     plot_fig5_03_separate_compilation_and_linking_pipeline,
     plot_fig5_04_header_dependency_graph_and_odr,
+    HankakuFontParser,
+    ObjcopySymbol,
+    ObjcopyBinarySimulator,
+    create_day05c_object_files,
+    plot_fig5_05_objcopy_binary_to_elf_pipeline,
+    plot_fig5_06_hankaku_font_memory_and_symbol_resolution,
 )
 
 __all__ = [
@@ -654,4 +660,10 @@ __all__ = [
     "create_day05b_object_files",
     "plot_fig5_03_separate_compilation_and_linking_pipeline",
     "plot_fig5_04_header_dependency_graph_and_odr",
+    "HankakuFontParser",
+    "ObjcopySymbol",
+    "ObjcopyBinarySimulator",
+    "create_day05c_object_files",
+    "plot_fig5_05_objcopy_binary_to_elf_pipeline",
+    "plot_fig5_06_hankaku_font_memory_and_symbol_resolution",
 ]
