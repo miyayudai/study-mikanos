@@ -12636,3 +12636,532 @@ def plot_pixel_format_and_scanline_stride(output_path: Path | str) -> Path:
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 3 Section 3.5: Drawing Pixels from Kernel (osbook_day03c)
+# ==============================================================================
+
+class CallingConventionKind(Enum):
+    """x86-64 呼出規約の種別 (Calling Convention Kind)"""
+    MICROSOFT_X64 = "Microsoft x64 ABI (Windows / UEFI Default)"
+    SYSTEM_V_AMD64 = "System V AMD64 ABI (Linux / ELF / MikanOS Kernel)"
+
+
+@dataclass
+class KernelArgumentBridge:
+    """ブートローダからカーネルへの引数引き渡し・ABIブリッジシミュレータ
+
+    EDK II 環境 (Microsoft x64 ABI) から ELF カーネル (System V AMD64 ABI) へ
+    引数 (frame_buffer_base, frame_buffer_size) を渡す際のレジスタマッピングと
+    EFIAPI 修飾子の有無がもたらすコンパイラ挙動をシミュレートする。
+    """
+    frame_buffer_base: int
+    frame_buffer_size: int
+
+    def get_ms_x64_registers(self) -> dict[str, int]:
+        """Microsoft x64 ABI における第1〜第4引数レジスタマッピング
+
+        1st: RCX, 2nd: RDX, 3rd: R8, 4th: R9
+        """
+        return {
+            "RCX": self.frame_buffer_base,
+            "RDX": self.frame_buffer_size,
+            "R8": 0,
+            "R9": 0,
+        }
+
+    def get_system_v_registers(self) -> dict[str, int]:
+        """System V AMD64 ABI における第1〜第6引数レジスタマッピング
+
+        1st: RDI, 2nd: RSI, 3rd: RDX, 4th: RCX, 5th: R8, 6th: R9
+        """
+        return {
+            "RDI": self.frame_buffer_base,
+            "RSI": self.frame_buffer_size,
+            "RDX": 0,
+            "RCX": 0,
+            "R8": 0,
+            "R9": 0,
+        }
+
+    def simulate_call(self, use_efiapi: bool = False) -> dict[str, Any]:
+        """関数の呼び出し規約とレジスタ配置をシミュレートする
+
+        Parameters
+        ----------
+        use_efiapi : bool
+            関数ポインタ宣言に EFIAPI (__attribute__((ms_abi))) が付与されているか
+
+        Returns
+        -------
+        dict[str, Any]
+            呼び出し規約、渡されるレジスタ、カーネルが受け取るレジスタ、および成否
+        """
+        if use_efiapi:
+            caller_abi = CallingConventionKind.MICROSOFT_X64
+            caller_regs = self.get_ms_x64_registers()
+        else:
+            caller_abi = CallingConventionKind.SYSTEM_V_AMD64
+            caller_regs = self.get_system_v_registers()
+
+        # カーネル (System V ABI) が第1, 第2引数を期待するレジスタ
+        callee_expected_1st = "RDI"
+        callee_expected_2nd = "RSI"
+
+        received_base = caller_regs.get(callee_expected_1st, 0)
+        received_size = caller_regs.get(callee_expected_2nd, 0)
+
+        success = (
+            received_base == self.frame_buffer_base
+            and received_size == self.frame_buffer_size
+        )
+
+        return {
+            "use_efiapi": use_efiapi,
+            "caller_abi": caller_abi,
+            "caller_registers": caller_regs,
+            "callee_expected": (callee_expected_1st, callee_expected_2nd),
+            "received_base": received_base,
+            "received_size": received_size,
+            "success": success,
+            "explanation": (
+                "EFIAPI修飾子を省略したため、GCC/Clangはホスト(Linux ELF)の標準である"
+                "System V AMD64 ABIコード (mov rdi, base; mov rsi, size) を生成。"
+                "カーネル側の期待レジスタ (RDI, RSI) と完全に一致し、引数が正常に渡る。"
+                if not use_efiapi else
+                "EFIAPI修飾子を付与した場合、Microsoft x64 ABI (mov rcx, base; mov rdx, size) "
+                "で呼び出されるため、カーネル (RDI, RSI) は未定義のゴミ値を受け取り描画が破綻する。"
+            ),
+        }
+
+
+class MikanKernelDrawer:
+    """MikanOS 第3章 3.5節 (day03c) カーネルピクセル描画シミュレータ
+
+    KernelMain(uint64_t frame_buffer_base, uint64_t frame_buffer_size) による
+    frame_buffer[i] = i % 256 のピクセル描画アルゴリズム、色パッキング、
+    ストライドに応じたモアレ・縞模様パターンを完全再現する。
+    """
+
+    def __init__(
+        self,
+        frame_buffer_base: int = 0xFFFF_8000_0000,
+        width: int = 800,
+        height: int = 600,
+        pixels_per_scan_line: Optional[int] = None,
+        pixel_format: UefiGraphicsPixelFormat = UefiGraphicsPixelFormat.PixelBlueGreenRedReserved8BitPerColor,
+    ):
+        self.frame_buffer_base = frame_buffer_base
+        self.width = width
+        self.height = height
+        self.stride = pixels_per_scan_line if pixels_per_scan_line is not None else width
+        self.pixel_format = pixel_format
+        self.frame_buffer_size = self.stride * self.height * 4
+        self.buffer = bytearray(self.frame_buffer_size)
+
+    def execute_modulo256(self) -> None:
+        """KernelMain の核となる描画ループを実行する: frame_buffer[i] = i % 256"""
+        pattern = bytes(i % 256 for i in range(256))
+        full_cycles = self.frame_buffer_size // 256
+        remainder = self.frame_buffer_size % 256
+        self.buffer = bytearray(pattern * full_cycles + pattern[:remainder])
+
+    def get_byte_at(self, offset: int) -> int:
+        """指定オフセットのバイト値を取得する"""
+        if 0 <= offset < self.frame_buffer_size:
+            return self.buffer[offset]
+        raise IndexError(f"Offset 0x{offset:X} out of frame buffer range")
+
+    def get_pixel_bytes(self, x: int, y: int) -> tuple[int, int, int, int]:
+        """座標 (x, y) における 4 バイト (byte0, byte1, byte2, byte3) を取得する"""
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            raise IndexError(f"Coordinates ({x}, {y}) out of bounds")
+        offset = (y * self.stride + x) * 4
+        return (
+            self.buffer[offset],
+            self.buffer[offset + 1],
+            self.buffer[offset + 2],
+            self.buffer[offset + 3],
+        )
+
+    def get_pixel_rgb(self, x: int, y: int) -> tuple[int, int, int]:
+        """座標 (x, y) の描画色を (Red, Green, Blue) の 0〜255 タプルで取得する"""
+        b0, b1, b2, b3 = self.get_pixel_bytes(x, y)
+        if self.pixel_format == UefiGraphicsPixelFormat.PixelRedGreenBlueReserved8BitPerColor:
+            return (b0, b1, b2)
+        elif self.pixel_format == UefiGraphicsPixelFormat.PixelBlueGreenRedReserved8BitPerColor:
+            return (b2, b1, b0)
+        else:
+            return (b0, b1, b2)
+
+    def analyze_stride_periodicity(self) -> dict[str, Any]:
+        """ストライドと 256 バイト周期 (64 ピクセル周期) の幾何学的関係を解析する
+
+        1 ピクセルは 4 バイトであるため、256 バイトはちょうど 64 ピクセルに相当する。
+        offset(x, y) = 4 * (y * stride + x)
+        offset(x, y) mod 256 = (4 * y * stride + 4 * x) mod 256
+        """
+        pixel_period = 64
+        stride_pixel_mod = self.stride % pixel_period
+        stride_byte_mod = (self.stride * 4) % 256
+
+        line_shift_bytes = stride_byte_mod
+        line_shift_pixels = line_shift_bytes // 4
+
+        is_pure_vertical = (stride_byte_mod == 0)
+
+        return {
+            "width": self.width,
+            "height": self.height,
+            "stride": self.stride,
+            "bytes_per_pixel": 4,
+            "cycle_bytes": 256,
+            "cycle_pixels": pixel_period,
+            "stride_pixel_mod": stride_pixel_mod,
+            "stride_byte_mod": stride_byte_mod,
+            "line_shift_bytes": line_shift_bytes,
+            "line_shift_pixels": line_shift_pixels,
+            "is_pure_vertical": is_pure_vertical,
+            "pattern_type": (
+                "完全な垂直縦縞 (Pure Vertical Stripes)"
+                if is_pure_vertical else
+                f"斜め縞 / モアレ模様 (Slanted Stripes / Moire, 行シフト: {line_shift_pixels} ピクセル/行)"
+            ),
+        }
+
+    def render_to_numpy_array(self) -> np.ndarray:
+        """画面表示用の RGB uint8 NumPy 配列 (Height, Width, 3) を生成する"""
+        if len(self.buffer) == 0:
+            self.execute_modulo256()
+
+        img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        raw_arr = np.frombuffer(self.buffer, dtype=np.uint8)
+
+        stride_bytes = self.stride * 4
+        visible_bytes = self.width * 4
+
+        for y in range(self.height):
+            start = y * stride_bytes
+            end = start + visible_bytes
+            row_raw = raw_arr[start:end].reshape((self.width, 4))
+            if self.pixel_format == UefiGraphicsPixelFormat.PixelBlueGreenRedReserved8BitPerColor:
+                img[y, :, 0] = row_raw[:, 2]
+                img[y, :, 1] = row_raw[:, 1]
+                img[y, :, 2] = row_raw[:, 0]
+            else:
+                img[y, :, 0] = row_raw[:, 0]
+                img[y, :, 1] = row_raw[:, 1]
+                img[y, :, 2] = row_raw[:, 2]
+
+        return img
+
+
+def plot_bootloader_to_kernel_handoff(
+    output_path: str = "3/result/fig3_09_bootloader_to_kernel_handoff.png",
+) -> str:
+    """図 3-9: ブートローダからカーネルへの制御移譲とABIレジスタ引き渡し構造図を生成する"""
+    setup_plot_style()
+    fig = plt.figure(figsize=(15, 9.5), facecolor="#F8FAFC")
+
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.2, 1.0], hspace=0.35, wspace=0.25)
+
+    # 1. ブートローダからカーネルへの主権移譲シーケンス
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title(
+        "Figure 3-9 (A): Bootloader to Kernel Transition & ExitBootServices Architecture",
+        fontsize=12,
+        fontweight="bold",
+        pad=15,
+        color="#0F172A",
+    )
+
+    stages = [
+        ("1. EDK II Bootloader\n(MikanLoaderPkg)", "UEFI GOP Discovery\n& Resolution Acquisition", "#DBEAFE", "#2563EB"),
+        ("2. Save Framebuffer Info", "Base: 0x80000000\nSize: Stride * Height * 4", "#FEF3C7", "#D97706"),
+        ("3. ExitBootServices()", "UEFI API Shutdown\nMapKey Verification", "#FEE2E2", "#DC2626"),
+        ("4. Function Pointer Call", "entry_point(base, size)\nABI Bridge without EFIAPI", "#E0E7FF", "#4F46E5"),
+        ("5. MikanOS Kernel\n(KernelMain)", "Direct VRAM Access\nframe_buffer[i] = i % 256", "#DCFCE7", "#16A34A"),
+    ]
+
+    for i, (title, desc, bg, edge) in enumerate(stages):
+        x = 0.03 + i * 0.195
+        box = patches.FancyBboxPatch(
+            (x, 0.25),
+            0.16,
+            0.55,
+            boxstyle="round,pad=0.02,rounding_size=0.03",
+            facecolor=bg,
+            edgecolor=edge,
+            linewidth=2.0,
+        )
+        ax1.add_patch(box)
+        ax1.text(
+            x + 0.08,
+            0.62,
+            title,
+            ha="center",
+            va="center",
+            fontsize=10,
+            fontweight="bold",
+            color=edge,
+        )
+        ax1.text(
+            x + 0.08,
+            0.38,
+            desc,
+            ha="center",
+            va="center",
+            fontsize=8.5,
+            color="#334155",
+            family="monospace",
+        )
+
+        if i < len(stages) - 1:
+            ax1.annotate(
+                "",
+                xy=(x + 0.19, 0.525),
+                xytext=(x + 0.165, 0.525),
+                arrowprops=dict(arrowstyle="->", color="#64748B", lw=2.5),
+            )
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. ABI 呼び出し規約比較 (Microsoft x64 vs System V AMD64)
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title(
+        "Figure 3-9 (B): ABI Calling Convention Mismatch & Bridge",
+        fontsize=11,
+        fontweight="bold",
+        pad=10,
+        color="#0F172A",
+    )
+
+    abi_table = [
+        ["Argument", "Microsoft x64 (UEFI)", "System V AMD64 (ELF)", "Match?"],
+        ["1st Arg (Base)", "RCX", "RDI", "MISMATCH!"],
+        ["2nd Arg (Size)", "RDX", "RSI", "MISMATCH!"],
+        ["3rd Arg", "R8", "RDX", "MISMATCH!"],
+        ["4th Arg", "R9", "RCX", "MISMATCH!"],
+    ]
+    table = ax2.table(
+        cellText=abi_table[1:],
+        colLabels=abi_table[0],
+        loc="center",
+        cellLoc="center",
+        colColours=["#E2E8F0", "#DBEAFE", "#DCFCE7", "#FEE2E2"],
+    )
+    table.scale(1.0, 1.7)
+    table.auto_set_font_size(False)
+    table.set_fontsize(9.5)
+    for key, cell in table.get_celld().items():
+        cell.set_edgecolor("#94A3B8")
+        if key[1] == 3 and key[0] > 0:
+            cell.set_text_props(color="#DC2626", fontweight="bold")
+    ax2.axis("off")
+
+    # 3. EDK II の EFIAPI 省略による自然な解決メカニズム
+    ax3 = fig.add_subplot(gs[1, 1])
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title(
+        "Figure 3-9 (C): Why It Works — The EFIAPI Miracle",
+        fontsize=11,
+        fontweight="bold",
+        pad=10,
+        color="#0F172A",
+    )
+
+    mechanism_box = patches.FancyBboxPatch(
+        (0.04, 0.08),
+        0.92,
+        0.84,
+        boxstyle="round,pad=0.03,rounding_size=0.03",
+        facecolor="#F0FDF4",
+        edgecolor="#16A34A",
+        linewidth=1.8,
+    )
+    ax3.add_patch(mechanism_box)
+
+    code_text = (
+        "// In MikanLoaderPkg/Main.c:\n"
+        "typedef void EntryPointType(UINT64, UINT64);\n"
+        "EntryPointType* entry_point = (EntryPointType*)entry_addr;\n"
+        "entry_point(gop->Mode->FrameBufferBase,\n"
+        "            gop->Mode->FrameBufferSize);\n\n"
+        "[*] Notice: NO 'EFIAPI' modifier!\n"
+        "  - With EFIAPI: __attribute__((ms_abi)) -> passes in RCX, RDX (BROKEN!)\n"
+        "  - WITHOUT EFIAPI: GCC/Clang emits host default (System V AMD64)!\n"
+        "    -> Generates: 'mov rdi, base; mov rsi, size; call entry_addr'\n"
+        "  - Kernel expects: RDI, RSI -> PERFECT HARMONY!"
+    )
+    ax3.text(
+        0.08,
+        0.50,
+        code_text,
+        ha="left",
+        va="center",
+        fontsize=9.0,
+        color="#15803D",
+        family="monospace",
+        fontweight="bold",
+    )
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_kernel_pixel_stripe_pattern(
+    output_path: str = "3/result/fig3_10_kernel_pixel_stripe_pattern.png",
+) -> str:
+    """図 3-10: frame_buffer[i] = i % 256 のピクセルバイト配置とストライプ・モアレ描画再現図"""
+    setup_plot_style()
+    fig = plt.figure(figsize=(15, 10.0), facecolor="#F8FAFC")
+
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.3], hspace=0.35, wspace=0.25)
+
+    # 1. 256バイト周期と4バイトピクセルパッキング
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title(
+        "Figure 3-10 (A): 4-Byte Pixel Packing & 64-Pixel Modulo 256 Cycle",
+        fontsize=11,
+        fontweight="bold",
+        pad=10,
+        color="#0F172A",
+    )
+
+    bytes_data = [
+        ("Pixel 0", [("B: 0", "#93C5FD"), ("G: 1", "#86EFAC"), ("R: 2", "#FCA5A5"), ("Resv: 3", "#E2E8F0")]),
+        ("Pixel 1", [("B: 4", "#60A5FA"), ("G: 5", "#4ADE80"), ("R: 6", "#F87171"), ("Resv: 7", "#CBD5E1")]),
+        ("Pixel 2", [("B: 8", "#3B82F6"), ("G: 9", "#22C55E"), ("R: 10", "#EF4444"), ("Resv: 11", "#94A3B8")]),
+        ("...", [("...", "#F1F5F9"), ("...", "#F1F5F9"), ("...", "#F1F5F9"), ("...", "#F1F5F9")]),
+        ("Pixel 63", [("B: 252", "#1D4ED8"), ("G: 253", "#15803D"), ("R: 254", "#B91C1C"), ("Resv: 255", "#475569")]),
+    ]
+
+    for p_idx, (p_name, channels) in enumerate(bytes_data):
+        y = 0.82 - p_idx * 0.17
+        ax1.text(0.04, y + 0.05, p_name, fontsize=9.5, fontweight="bold", color="#1E293B")
+        for c_idx, (label, color) in enumerate(channels):
+            x = 0.22 + c_idx * 0.18
+            box = patches.FancyBboxPatch(
+                (x, y),
+                0.16,
+                0.10,
+                boxstyle="round,pad=0.01,rounding_size=0.02",
+                facecolor=color,
+                edgecolor="#475569",
+                linewidth=1.2,
+            )
+            ax1.add_patch(box)
+            ax1.text(
+                x + 0.08,
+                y + 0.05,
+                label,
+                ha="center",
+                va="center",
+                fontsize=8.5,
+                fontweight="bold",
+                color="#0F172A",
+                family="monospace",
+            )
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. 幾何学的ストライドと縞模様の数理
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title(
+        "Figure 3-10 (B): Mathematical Slant Analysis: Stride vs Periodicity",
+        fontsize=11,
+        fontweight="bold",
+        pad=10,
+        color="#0F172A",
+    )
+
+    math_box = patches.FancyBboxPatch(
+        (0.04, 0.06),
+        0.92,
+        0.88,
+        boxstyle="round,pad=0.02,rounding_size=0.03",
+        facecolor="#EFF6FF",
+        edgecolor="#3B82F6",
+        linewidth=1.5,
+    )
+    ax2.add_patch(math_box)
+
+    math_text = (
+        "[Mathematical Formulation of Pixel Color]\n"
+        "  offset(x, y) = 4 * (y * PixelsPerScanLine + x)\n"
+        "  byte_val(x, y) = offset(x, y) mod 256\n"
+        "                 = [4 * y * PixelsPerScanLine + 4 * x] mod 256\n\n"
+        "[*] Case 1: Stride is a multiple of 64 (e.g. 1024)\n"
+        "  - 4 * 1024 = 4096 = 256 * 16 (mod 256 == 0)\n"
+        "  -> byte_val(x, y) = (4 * x) mod 256 (Independent of y!)\n"
+        "  -> Result: PERFECT VERTICAL STRIPES\n\n"
+        "[*] Case 2: Stride is NOT a multiple of 64 (e.g. 800)\n"
+        "  - 4 * 800 = 3200 = 256 * 12 + 128 (mod 256 == 128)\n"
+        "  -> byte_val(x, y) = (128 * y + 4 * x) mod 256\n"
+        "  -> Result: 32-pixel horizontal phase shift per row\n"
+        "  -> Generates SLANTED / MOIRE PATTERN"
+    )
+    ax2.text(
+        0.08,
+        0.50,
+        math_text,
+        ha="left",
+        va="center",
+        fontsize=8.5,
+        color="#1E3A8A",
+        family="monospace",
+    )
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    # 3. 画面シミュレーション (Stride = 320 vs Stride = 350)
+    ax3 = fig.add_subplot(gs[1, 0])
+    drawer_vertical = MikanKernelDrawer(width=320, height=200, pixels_per_scan_line=320)
+    drawer_vertical.execute_modulo256()
+    img_v = drawer_vertical.render_to_numpy_array()
+    ax3.imshow(img_v)
+    ax3.set_title(
+        "Figure 3-10 (C): Stride = 320 (Multiple of 64: Vertical Stripes)",
+        fontsize=10.5,
+        fontweight="bold",
+        color="#0F172A",
+    )
+    ax3.set_xlabel("Pixel X (Width = 320)")
+    ax3.set_ylabel("Pixel Y (Height = 200)")
+
+    ax4 = fig.add_subplot(gs[1, 1])
+    drawer_slanted = MikanKernelDrawer(width=320, height=200, pixels_per_scan_line=350)
+    drawer_slanted.execute_modulo256()
+    img_s = drawer_slanted.render_to_numpy_array()
+    ax4.imshow(img_s)
+    ax4.set_title(
+        "Figure 3-10 (D): Stride = 350 (Non-multiple: Slanted / Moire Pattern)",
+        fontsize=10.5,
+        fontweight="bold",
+        color="#0F172A",
+    )
+    ax4.set_xlabel("Pixel X (Width = 320)")
+    ax4.set_ylabel("Pixel Y (Height = 200)")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+

@@ -214,6 +214,11 @@ from common.os_sim import (
     UefiGopSimulator,
     plot_uefi_gop_framebuffer_architecture,
     plot_pixel_format_and_scanline_stride,
+    CallingConventionKind,
+    KernelArgumentBridge,
+    MikanKernelDrawer,
+    plot_bootloader_to_kernel_handoff,
+    plot_kernel_pixel_stripe_pattern,
 )
 
 __all__ = [
@@ -430,4 +435,9 @@ __all__ = [
     "UefiGopSimulator",
     "plot_uefi_gop_framebuffer_architecture",
     "plot_pixel_format_and_scanline_stride",
+    "CallingConventionKind",
+    "KernelArgumentBridge",
+    "MikanKernelDrawer",
+    "plot_bootloader_to_kernel_handoff",
+    "plot_kernel_pixel_stripe_pattern",
 ]
