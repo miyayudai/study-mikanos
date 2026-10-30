@@ -242,6 +242,11 @@ from common.os_sim import (
     Chapter3TheoryValidator,
     plot_chapter3_exercises_summary,
     plot_chapter3_mastery_radar,
+    MakeRule,
+    MakeDependencyGraph,
+    CompilerFlagAnalyzer,
+    plot_fig4_01_make_dag_and_timestamp_evaluation,
+    plot_fig4_02_compiler_and_linker_flag_architecture,
 )
 
 __all__ = [
@@ -486,4 +491,9 @@ __all__ = [
     "Chapter3TheoryValidator",
     "plot_chapter3_exercises_summary",
     "plot_chapter3_mastery_radar",
+    "MakeRule",
+    "MakeDependencyGraph",
+    "CompilerFlagAnalyzer",
+    "plot_fig4_01_make_dag_and_timestamp_evaluation",
+    "plot_fig4_02_compiler_and_linker_flag_architecture",
 ]

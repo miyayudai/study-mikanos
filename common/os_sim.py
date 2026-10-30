@@ -14740,3 +14740,579 @@ def plot_chapter3_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 4 Section 4.1: Make & Bare-metal Build Automation Simulation
+# ==============================================================================
+
+@dataclass
+class MakeRule:
+    """Represents a single rule in a Makefile with target, prerequisites, and recipe."""
+    target: str
+    prerequisites: list[str] = field(default_factory=list)
+    recipes: list[str] = field(default_factory=list)
+    is_pattern: bool = False
+
+    def expand_recipe(self, target: str, prerequisites: list[str],
+                      newer_prerequisites: list[str] | None = None,
+                      stem: str = "") -> list[str]:
+        """Expand automatic variables ($@, $<, $^, $?, $*) in recipes."""
+        newer = newer_prerequisites if newer_prerequisites is not None else prerequisites
+        first_prereq = prerequisites[0] if prerequisites else ""
+        # Deduplicate while preserving order for $^
+        all_prereqs = " ".join(dict.fromkeys(prerequisites))
+        newer_str = " ".join(dict.fromkeys(newer))
+
+        expanded = []
+        for line in self.recipes:
+            cmd = line.replace("$@", target)
+            cmd = cmd.replace("$<", first_prereq)
+            cmd = cmd.replace("$^", all_prereqs)
+            cmd = cmd.replace("$?", newer_str)
+            cmd = cmd.replace("$*", stem)
+            expanded.append(cmd)
+        return expanded
+
+
+class MakeDependencyGraph:
+    """Simulates GNU Make dependency graph evaluation, topological sorting,
+
+    timestamp-based rebuild determination, and recipe execution.
+    """
+
+    def __init__(self) -> None:
+        self.rules: dict[str, MakeRule] = {}
+        self.pattern_rules: list[MakeRule] = []
+        self.phony_targets: set[str] = set()
+        self.timestamps: dict[str, float] = {}
+        self.virtual_files: dict[str, str] = {}
+        self.execution_log: list[dict[str, Any]] = []
+
+    def add_rule(self, target: str, prerequisites: list[str], recipes: list[str]) -> None:
+        """Add an explicit rule to the Makefile."""
+        rule = MakeRule(target=target, prerequisites=prerequisites, recipes=recipes, is_pattern=False)
+        self.rules[target] = rule
+
+    def add_pattern_rule(self, target_pattern: str, prereq_pattern: str, recipes: list[str]) -> None:
+        """Add a pattern rule (e.g. %.o: %.cpp) to the Makefile."""
+        rule = MakeRule(target=target_pattern, prerequisites=[prereq_pattern], recipes=recipes, is_pattern=True)
+        self.pattern_rules.append(rule)
+
+    def mark_phony(self, *targets: str) -> None:
+        """Register phony targets (.PHONY)."""
+        for t in targets:
+            self.phony_targets.add(t)
+
+    def set_file(self, name: str, mtime: float, content: str = "") -> None:
+        """Set or update a virtual file's timestamp and content."""
+        self.timestamps[name] = mtime
+        self.virtual_files[name] = content
+
+    def remove_file(self, name: str) -> None:
+        """Remove a virtual file from the environment."""
+        self.timestamps.pop(name, None)
+        self.virtual_files.pop(name, None)
+
+    def file_exists(self, name: str) -> bool:
+        """Check if a file exists in the virtual filesystem."""
+        return name in self.timestamps
+
+    def get_mtime(self, name: str) -> float:
+        """Get timestamp of a file; returns 0.0 if not exists."""
+        return self.timestamps.get(name, 0.0)
+
+    def _resolve_rule(self, target: str) -> tuple[MakeRule | None, list[str], str]:
+        """Find matching rule for target (explicit or via pattern rule)."""
+        if target in self.rules:
+            return self.rules[target], self.rules[target].prerequisites, ""
+
+        # Check pattern rules
+        for prule in self.pattern_rules:
+            # Pattern format e.g. %.o
+            if prule.target.startswith("%"):
+                suffix = prule.target[1:]
+                if target.endswith(suffix):
+                    stem = target[:-len(suffix)]
+                    prereqs = [p.replace("%", stem) for p in prule.prerequisites]
+                    return prule, prereqs, stem
+        return None, [], ""
+
+    def get_dependencies_dag(self, target: str) -> dict[str, list[str]]:
+        """Construct the dependency adjacency list starting from target."""
+        adj: dict[str, list[str]] = {}
+        visited: set[str] = set()
+
+        def dfs(node: str) -> None:
+            if node in visited:
+                return
+            visited.add(node)
+            rule, prereqs, _ = self._resolve_rule(node)
+            adj[node] = prereqs
+            for p in prereqs:
+                dfs(p)
+
+        dfs(target)
+        return adj
+
+    def topological_sort(self, target: str) -> list[str]:
+        """Return topological order of build evaluation (leaves first, target last).
+
+        Raises ValueError on cyclic dependencies.
+        """
+        adj = self.get_dependencies_dag(target)
+        visited: dict[str, int] = {}  # 0: unvisited, 1: visiting, 2: visited
+        order: list[str] = []
+
+        def visit(node: str) -> None:
+            state = visited.get(node, 0)
+            if state == 1:
+                raise ValueError(f"Cyclic dependency detected involving target: {node}")
+            if state == 2:
+                return
+            visited[node] = 1
+            for child in adj.get(node, []):
+                visit(child)
+            visited[node] = 2
+            order.append(node)
+
+        visit(target)
+        return order
+
+    def needs_rebuild(self, target: str) -> tuple[bool, str, list[str]]:
+        """Determine if target needs rebuilding based on timestamps and .PHONY.
+
+        Returns (needs_rebuild, reason, newer_prerequisites).
+        """
+        if target in self.phony_targets:
+            return True, "Phony target always runs", []
+
+        if not self.file_exists(target):
+            return True, f"Target '{target}' does not exist", []
+
+        target_mtime = self.get_mtime(target)
+        rule, prereqs, _ = self._resolve_rule(target)
+
+        newer_prereqs = [p for p in prereqs if self.get_mtime(p) > target_mtime]
+        if newer_prereqs:
+            return True, f"Prerequisites newer than target: {newer_prereqs}", newer_prereqs
+
+        return False, "Target is up to date", []
+
+    def build(self, target: str, current_time: float | None = None) -> list[str]:
+        """Execute build sequence for target, executing recipes when necessary.
+
+        Returns list of executed commands.
+        """
+        order = self.topological_sort(target)
+        executed_commands: list[str] = []
+        clock = current_time if current_time is not None else 1000.0
+
+        for node in order:
+            rule, prereqs, stem = self._resolve_rule(node)
+            if not rule:
+                # Leaf source file (no rule needed to produce it)
+                if not self.file_exists(node) and node not in self.phony_targets:
+                    raise FileNotFoundError(f"No rule to make target '{node}'")
+                continue
+
+            rebuild, reason, newer = self.needs_rebuild(node)
+            if rebuild:
+                clock += 1.0
+                expanded_cmds = rule.expand_recipe(node, prereqs, newer, stem)
+                executed_commands.extend(expanded_cmds)
+                # Update timestamp on successful recipe execution
+                if node not in self.phony_targets:
+                    self.set_file(node, clock, f"compiled binary of {node}")
+                self.execution_log.append({
+                    "target": node,
+                    "reason": reason,
+                    "commands": expanded_cmds,
+                    "new_mtime": clock
+                })
+
+        return executed_commands
+
+
+@dataclass(frozen=True)
+class CompilerFlag:
+    """Details of a C++ compiler / linker flag used in MikanOS kernel build."""
+    flag: str
+    category: str
+    purpose: str
+    baremetal_necessity: str
+    omission_risk: str
+
+
+class CompilerFlagAnalyzer:
+    """Provides detailed architectural inspection of MikanOS Day 04a compiler/linker flags."""
+
+    FLAGS: list[CompilerFlag] = [
+        CompilerFlag(
+            flag="-O2",
+            category="Optimization",
+            purpose="最適化レベル2（命令スケジューリング、レジスタ割り当て、インライン展開、SIMDベクトル化）",
+            baremetal_necessity="フレームバッファ描画やメモリ転送の性能を向上させ、不要なスタック読み書きを削減",
+            omission_risk="極端な描画遅延や実行バイナリサイズの肥大化を招く"
+        ),
+        CompilerFlag(
+            flag="-Wall",
+            category="Diagnostics",
+            purpose="主要なコンパイラ警告（型不一致、未初期化変数、未使用シンボル等）の全網羅的有効化",
+            baremetal_necessity="OSカーネルにはデバッガが初動で存在しないため、未然に潜在バグを検出する最重要砦",
+            omission_risk="未初期化ポインタ参照などのサイレントクラッシュを招く"
+        ),
+        CompilerFlag(
+            flag="-g",
+            category="Diagnostics",
+            purpose="DWARF形式のデバッグシンボル情報をバイナリ内に埋め込む",
+            baremetal_necessity="QEMU + GDB によるリモートデバッグ時に関数名や行番号、変数構造を直接可視化",
+            omission_risk="逆アセンブル時に生のアドレスしか見えずデバッグ効率が激減する"
+        ),
+        CompilerFlag(
+            flag="--target=x86_64-elf",
+            category="Target Architecture",
+            purpose="ホストOS（Linux/macOS）非依存のベアメタル x86-64 ELF64 ABI をクロスコンパイルターゲットに指定",
+            baremetal_necessity="ホスト環境固有の共有ライブラリ依存や動的ローダ参照（.interp）を排除",
+            omission_risk="ホストOS向けのLinuxバイナリが生成され、自作ブートローダで起動不能となる"
+        ),
+        CompilerFlag(
+            flag="-ffreestanding",
+            category="Runtime Environment",
+            purpose="OSや標準Cライブラリが存在しない自立（フリースタンディング）実行環境であることをコンパイラに宣言",
+            baremetal_necessity="main() を特別な関数とみなさず、暗黙のスタートアップコード（crt0.o）や標準ライブラリ呼び出しを禁止",
+            omission_risk="存在しない libc シンボル（memset, exit 等）の暗黙参照でリンクエラーが発生する"
+        ),
+        CompilerFlag(
+            flag="-mno-red-zone",
+            category="Target Architecture",
+            purpose="System V AMD64 ABI 規定のスタックポインタ下 128 バイトの一時退避領域（Red Zone）の利用を禁止",
+            baremetal_necessity="非同期割り込み（Interrupt）発生時にCPUハードウェアがRSP下にレジスタをプッシュしてRed Zoneを破壊する事故を防ぐ",
+            omission_risk="第7章以降で割り込みを有効化した瞬間にスタック破壊でカーネルが原因不明のパニックを起こす"
+        ),
+        CompilerFlag(
+            flag="-fno-exceptions",
+            category="C++ Feature Suppression",
+            purpose="C++ 例外処理（try, catch, throw）およびスタック巻き戻し（Stack Unwinding）ランタイムを無効化",
+            baremetal_necessity="例外ハンドラテーブル（.eh_frame）や libsupc++ / libc++abi の複雑なランタイムがベアメタルに存在しない",
+            omission_risk="リンク時に __gxx_personality_v0 等の巨大ランタイムシンボル未解決エラーが発生する"
+        ),
+        CompilerFlag(
+            flag="-fno-rtti",
+            category="C++ Feature Suppression",
+            purpose="ランタイム型情報（RTTI: dynamic_cast, typeid）および型情報記述子構造体を無効化",
+            baremetal_necessity="型情報メタデータや vtable 内の RTTI 記述ポインタを省き、純粋な仮想関数ポインタのみに絞る",
+            omission_risk="vtable から不要なランタイム型メタデータへの参照が発生しリンク不能となる"
+        ),
+        CompilerFlag(
+            flag="-std=c++17",
+            category="Language Standard",
+            purpose="ISO C++17 言語規格に準拠した最新機能（構造化束縛、constexpr if、std::byte 等）を有効化",
+            baremetal_necessity="高機能かつ型安全なモダンC++を活用した堅牢なカーネル設計を可能にする",
+            omission_risk="古いC++規格に縛られ、型の安全機構やコード記述の表現力が著しく制約される"
+        ),
+        CompilerFlag(
+            flag="--entry KernelMain",
+            category="Linker Specification",
+            purpose="ELF 実行可能ファイルのエントリポイント（実行開始アドレス）シンボルを KernelMain に指定",
+            baremetal_necessity="ブートローダ（MikanLoaderPkg）が ELF ヘッダ e_entry を読み取って直接ジャンプ可能にする",
+            omission_risk="リンカデフォルトの _start が期待され、リンク失敗または不正アドレスへジャンプする"
+        ),
+        CompilerFlag(
+            flag="-z norelro",
+            category="Linker Specification",
+            purpose="RELRO（Relocation Read-Only: 起動後再配置セクションの読み取り専用保護）セグメントの生成を無効化",
+            baremetal_necessity="動的ローダのいないベアメタル環境で ELF PT_LOAD セグメント構造を極限までシンプルに保つ",
+            omission_risk="GNU_RELRO ヘッダが生成され、自作ブートローダの ELF セグメントローダが複雑化・破損する"
+        ),
+        CompilerFlag(
+            flag="--image-base 0x100000",
+            category="Linker Specification",
+            purpose="カーネルプログラム全体の仮想/物理配置基準アドレスを 1MiB (0x100000) に固定",
+            baremetal_necessity="レガシーBIOS/UEFIの予約メモリ（0x0〜0xFFFFF）を避け、空きConventional RAMの先頭に正確に配置",
+            omission_risk="デフォルトの0x200000や0x400000にリンクされ、ブートローダが配置した1MiBと不整合を起こして即死する"
+        ),
+        CompilerFlag(
+            flag="--static",
+            category="Linker Specification",
+            purpose="すべての動的ライブラリ参照を排除し、完全な自己完結型静的バイナリを生成",
+            baremetal_necessity="ベアメタル環境には共有ライブラリ（.so）をロードする動的リンカが存在しない",
+            omission_risk="動的リンクシンボルが残り、ロード時に参照未解決で実行不能となる"
+        ),
+    ]
+
+    @classmethod
+    def get_flag(cls, flag_name: str) -> CompilerFlag:
+        """Find flag by its exact name."""
+        for f in cls.FLAGS:
+            if f.flag == flag_name:
+                return f
+        raise KeyError(f"Compiler flag '{flag_name}' not found.")
+
+    @classmethod
+    def get_flags_by_category(cls) -> dict[str, list[CompilerFlag]]:
+        """Group flags by category."""
+        res: dict[str, list[CompilerFlag]] = {}
+        for f in cls.FLAGS:
+            res.setdefault(f.category, []).append(f)
+        return res
+
+
+def plot_fig4_01_make_dag_and_timestamp_evaluation(output_path: Path | str) -> Path:
+    """Generate high-DPI architecture diagram showing Makefile Dependency DAG,
+
+    timestamp-based incremental build evaluation logic, and automatic variables mapping.
+    """
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 8.5), facecolor="#FAFAFA")
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.2, 1.0], height_ratios=[1.2, 0.9],
+                          wspace=0.25, hspace=0.30)
+
+    # Subplot 1: Dependency DAG Graph
+    ax_dag = fig.add_subplot(gs[0, 0])
+    ax_dag.set_facecolor("#FFFFFF")
+    ax_dag.set_title("(A) MikanOS kernel/Makefile Dependency DAG (有向非巡回グラフ)",
+                     fontsize=12, fontweight="bold", color="#1565C0", pad=12)
+
+    # Node definitions: (x, y, label, type, box_color, border_color)
+    nodes = [
+        ("all", 0.15, 0.85, ".PHONY: all\n(擬似ターゲット)", "#E8F5E9", "#2E7D32"),
+        ("kernel.elf", 0.50, 0.85, "Target: kernel.elf\n[0x100000 静的ELF64]", "#E3F2FD", "#1565C0"),
+        ("main.o", 0.35, 0.45, "Target: main.o\n[ELF64 Object]", "#FFF3E0", "#E65100"),
+        ("Makefile", 0.70, 0.45, "Prereq: Makefile\n[フラグ変更追従]", "#EDE7F6", "#4A148C"),
+        ("main.cpp", 0.20, 0.10, "Source: main.cpp\n[C++17 カーネル実装]", "#FCE4EC", "#C2185B"),
+    ]
+
+    for name, x, y, label, bg, border in nodes:
+        box = FancyBboxPatch((x - 0.11, y - 0.08), 0.22, 0.16,
+                             boxstyle="round,pad=0.02,rounding_size=0.03",
+                             facecolor=bg, edgecolor=border, linewidth=2, zorder=3)
+        ax_dag.add_patch(box)
+        ax_dag.text(x, y, label, ha="center", va="center", fontsize=9, fontweight="bold",
+                    color=border, zorder=4)
+
+    # Directed edges (dependencies): from parent to required child
+    edges = [
+        ((0.26, 0.85), (0.39, 0.85), "all -> kernel.elf"),
+        ((0.46, 0.77), (0.38, 0.53), "ld.lld $^ -o $@"),
+        ((0.54, 0.77), (0.66, 0.53), "rebuild if Makefile changes"),
+        ((0.32, 0.37), (0.23, 0.18), "clang++ -c $<"),
+        ((0.40, 0.37), (0.64, 0.43), "recompile if flags change"),
+    ]
+
+    for (x1, y1), (x2, y2), edge_label in edges:
+        ax_dag.annotate("", xy=(x2, y2), xytext=(x1, y1),
+                        arrowprops=dict(arrowstyle="->,head_width=0.4,head_length=0.6",
+                                        color="#37474F", lw=1.8, ls="solid"), zorder=2)
+
+    ax_dag.set_xlim(0.0, 0.90)
+    ax_dag.set_ylim(0.0, 1.0)
+    ax_dag.axis("off")
+
+    # Subplot 2: Timestamp Evaluation Decision Tree
+    ax_tree = fig.add_subplot(gs[0, 1])
+    ax_tree.set_facecolor("#FFFFFF")
+    ax_tree.set_title("(B) タイムスタンプ比較によるインクリメンタルビルド判定数理",
+                      fontsize=12, fontweight="bold", color="#2E7D32", pad=12)
+
+    flow_boxes = [
+        (0.5, 0.90, "ビルド対象ターゲット T の評価開始", "#E8EAF6", "#283593"),
+        (0.5, 0.72, "ターゲット T は存在するか？\n(file_exists(T) == true)", "#FFF8E1", "#F57F17"),
+        (0.18, 0.50, "【T 不存在】\n即座にレシピ実行\n(Full Build)", "#FFEBEE", "#C62828"),
+        (0.72, 0.50, "依存ファイル P の最新時刻チェック\nmax(mtime(P)) > mtime(T) ?", "#E0F2F1", "#00695C"),
+        (0.48, 0.22, "【P が新しい】\n依存先が更新されたため\nレシピ実行 (Incremental Build)", "#FFF3E0", "#E65100"),
+        (0.85, 0.22, "【T は最新】\n'T is up to date'\nレシピ実行スキップ！", "#E8F5E9", "#2E7D32"),
+    ]
+
+    for x, y, text, bg, border in flow_boxes:
+        box = FancyBboxPatch((x - 0.15, y - 0.07), 0.30, 0.14,
+                             boxstyle="round,pad=0.02,rounding_size=0.02",
+                             facecolor=bg, edgecolor=border, linewidth=1.8, zorder=3)
+        ax_tree.add_patch(box)
+        ax_tree.text(x, y, text, ha="center", va="center", fontsize=8.5, fontweight="bold",
+                    color=border, zorder=4)
+
+    # Decision tree connectors
+    tree_arrows = [
+        ((0.5, 0.83), (0.5, 0.79), ""),
+        ((0.35, 0.72), (0.18, 0.57), "No (不存在)"),
+        ((0.65, 0.72), (0.72, 0.57), "Yes (存在)"),
+        ((0.65, 0.43), (0.52, 0.29), "Yes (更新あり)"),
+        ((0.79, 0.43), (0.85, 0.29), "No (変化なし)"),
+    ]
+    for (x1, y1), (x2, y2), lbl in tree_arrows:
+        ax_tree.annotate(lbl, xy=(x2, y2), xytext=(x1, y1),
+                         ha="center", va="center", fontsize=8, fontweight="bold", color="#455A64",
+                         arrowprops=dict(arrowstyle="->,head_width=0.35,head_length=0.5",
+                                         color="#455A64", lw=1.5), zorder=2)
+
+    ax_tree.set_xlim(0.0, 1.0)
+    ax_tree.set_ylim(0.10, 1.0)
+    ax_tree.axis("off")
+
+    # Subplot 3: Automatic Variables Mapping Table
+    ax_tbl = fig.add_subplot(gs[1, 0])
+    ax_tbl.set_facecolor("#FFFFFF")
+    ax_tbl.set_title("(C) Make 自動変数 (Automatic Variables) の展開仕様",
+                     fontsize=12, fontweight="bold", color="#4A148C", pad=10)
+
+    table_data = [
+        ["変数", "名称", "Day 04a での展開例", "OS自作での実務的役割"],
+        ["$@", "ターゲット名 (Target)", "kernel.elf / main.o", "出力ファイル名の明示 (-o $@)"],
+        ["$<", "第1必須条件 (First Prereq)", "main.cpp", "単一ソースのコンパイル (-c $<)"],
+        ["$^", "全必須条件 (All Prereqs)", "main.o Makefile", "全オブジェクトのリンカ渡し"],
+        ["$?", "更新された必須条件", "main.o (修正時)", "差分再生成・アーカイブ更新"],
+        ["$*", "パターンの語幹 (Stem)", "main (from %.o: %.cpp)", "同名ヘッダや中間ファイルの特定"],
+    ]
+
+    col_widths = [0.10, 0.28, 0.26, 0.36]
+    y_pos = 0.88
+    for row_idx, row in enumerate(table_data):
+        x_curr = 0.02
+        is_hdr = (row_idx == 0)
+        bg = "#EDE7F6" if is_hdr else ("#F5F5F5" if row_idx % 2 == 1 else "#FFFFFF")
+        fg = "#311B92" if is_hdr else "#212121"
+        weight = "bold" if is_hdr else "normal"
+
+        for col_idx, cell in enumerate(row):
+            w = col_widths[col_idx]
+            rect = Rectangle((x_curr, y_pos - 0.13), w - 0.01, 0.12,
+                             facecolor=bg, edgecolor="#BDBDBD", linewidth=0.8, zorder=2)
+            ax_tbl.add_patch(rect)
+            ax_tbl.text(x_curr + (w - 0.01) / 2, y_pos - 0.07, cell,
+                        ha="center", va="center", fontsize=8.5, fontweight=weight, color=fg, zorder=3)
+            x_curr += w
+        y_pos -= 0.14
+
+    ax_tbl.set_xlim(0.0, 1.0)
+    ax_tbl.set_ylim(0.0, 1.0)
+    ax_tbl.axis("off")
+
+    # Subplot 4: Phony Target & Pattern Rule Mechanism
+    ax_mech = fig.add_subplot(gs[1, 1])
+    ax_mech.set_facecolor("#FFFFFF")
+    ax_mech.set_title("(D) 擬似ターゲット (.PHONY) とパターンルールの役割",
+                      fontsize=12, fontweight="bold", color="#C2185B", pad=10)
+
+    mech_text = (
+        "【1. .PHONY: all clean の絶対的必要性】\n"
+        "・もしカレントディレクトリに 'clean' という名前のファイルが誤って存在した場合、\n"
+        "  必須条件のない clean は『最新』とみなされ、rm -rf *.o が二度と実行されなくなる！\n"
+        "・.PHONY を宣言することで、ファイルシステムの同名実体ファイルを無視し、\n"
+        "  『常に無条件でレシピを実行すべきタスクコマンド』として Make に保証させる。\n\n"
+        "【2. パターンルール %.o: %.cpp Makefile の実務的意義】\n"
+        "・今後カーネルに graphics.cpp, font.cpp, pci.cpp が増えても Makefile の追記は\n"
+        "  OBJS += graphics.o の1行のみで完結する拡張性を確保。\n"
+        "・必須条件に 'Makefile' を含めることで、コンパイルフラグ（CXXFLAGS）を変更した際、\n"
+        "  全ソースが自動で再コンパイルされ、古いフラグのバイナリが残る致命的事故を防ぐ！"
+    )
+
+    box_mech = FancyBboxPatch((0.02, 0.05), 0.96, 0.88,
+                              boxstyle="round,pad=0.03,rounding_size=0.03",
+                              facecolor="#FCE4EC", edgecolor="#C2185B", linewidth=1.5, zorder=2)
+    ax_mech.add_patch(box_mech)
+    ax_mech.text(0.05, 0.49, mech_text, ha="left", va="center", fontsize=8.2,
+                 color="#880E4F", linespacing=1.45, zorder=3)
+
+    ax_mech.set_xlim(0.0, 1.0)
+    ax_mech.set_ylim(0.0, 1.0)
+    ax_mech.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig4_02_compiler_and_linker_flag_architecture(output_path: Path | str) -> Path:
+    """Generate high-DPI technical architecture diagram showing Clang/LLD
+
+    bare-metal OS kernel build pipeline and flag roles.
+    """
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 8.5), facecolor="#FAFAFA")
+    ax = fig.add_subplot(1, 1, 1)
+    ax.set_facecolor("#FFFFFF")
+    ax.set_title("Figure 4-2: MikanOS ベアメタル C++ カーネル ビルドパイプライン & コンパイラ・リンカフラグ体系",
+                 fontsize=13, fontweight="bold", color="#0D47A1", pad=15)
+
+    # 3-Stage Pipeline: Source -> Clang++ (CXXFLAGS) -> main.o -> ld.lld (LDFLAGS) -> kernel.elf
+    stages = [
+        (0.08, 0.72, 0.16, 0.18, "ソースコード\nmain.cpp\n(C++17 カーネル)", "#E8EAF6", "#283593"),
+        (0.38, 0.72, 0.22, 0.18, "中間オブジェクト\nmain.o\n(ELF64 Relocatable)", "#FFF3E0", "#E65100"),
+        (0.76, 0.72, 0.18, 0.18, "カーネルバイナリ\nkernel.elf\n(ELF64 Executable\n@ 0x100000)", "#E8F5E9", "#2E7D32"),
+    ]
+
+    for x, y, w, h, text, bg, border in stages:
+        box = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.02,rounding_size=0.03",
+                             facecolor=bg, edgecolor=border, linewidth=2, zorder=3)
+        ax.add_patch(box)
+        ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=9.5,
+                fontweight="bold", color=border, zorder=4)
+
+    # Connectors between stages with tool names
+    ax.annotate("clang++ $(CXXFLAGS) -c $<", xy=(0.38, 0.81), xytext=(0.24, 0.81),
+                ha="center", va="bottom", fontsize=8.5, fontweight="bold", color="#1565C0",
+                arrowprops=dict(arrowstyle="->,head_width=0.4,head_length=0.6", lw=2, color="#1565C0"), zorder=2)
+
+    ax.annotate("ld.lld $(LDFLAGS) -o $@ $^", xy=(0.76, 0.81), xytext=(0.60, 0.81),
+                ha="center", va="bottom", fontsize=8.5, fontweight="bold", color="#D84315",
+                arrowprops=dict(arrowstyle="->,head_width=0.4,head_length=0.6", lw=2, color="#D84315"), zorder=2)
+
+    # Flags Breakdown Panels (Left: CXXFLAGS, Right: LDFLAGS)
+    cxx_text = (
+        "【CXXFLAGS: ベアメタル C++ コンパイル制御】\n"
+        "• -O2: 最適化Lv2 (インライン化・SIMDベクトル化・不要スタック退避削除)\n"
+        "• -Wall -g: 全警告有効化 + DWARF デバッグ情報 (QEMU GDB連携用)\n"
+        "• --target=x86_64-elf: ホストOS非依存の ELF64 ベアメタルABI指定\n"
+        "• -ffreestanding: libc や暗黙のスタートアップ (crt0) を完全排除\n"
+        "• -mno-red-zone: RSP下 128B 一時領域禁止 (非同期割り込み破損防止！)\n"
+        "• -fno-exceptions: C++ 例外 (try/catch/unwind) ランタイムを無効化\n"
+        "• -fno-rtti: dynamic_cast / typeid 関連の不要メタデータを排除\n"
+        "• -std=c++17: 構造化束縛・constexpr if を含む最新モダン C++17 規格"
+    )
+
+    box_cxx = FancyBboxPatch((0.05, 0.08), 0.42, 0.55,
+                             boxstyle="round,pad=0.03,rounding_size=0.025",
+                             facecolor="#F3E5F5", edgecolor="#6A1B9A", linewidth=1.8, zorder=3)
+    ax.add_patch(box_cxx)
+    ax.text(0.07, 0.35, cxx_text, ha="left", va="center", fontsize=8.8,
+            color="#4A148C", linespacing=1.4, zorder=4)
+
+    ld_text = (
+        "【LDFLAGS: ELF64 静的リンク & 物理配置制御】\n"
+        "• --entry KernelMain:\n"
+        "    ELF ヘッダ e_entry に登録する実行開始関数シンボルを指定。\n"
+        "    ブートローダ（MikanLoaderPkg）がここへジャンプ！\n\n"
+        "• -z norelro:\n"
+        "    RELRO (Relocation Read-Only) セグメントの生成を無効化。\n"
+        "    ページング未初期化のベアメタルでセグメント配置を極限単純化。\n\n"
+        "• --image-base 0x100000:\n"
+        "    カーネルの配置基準物理アドレスを 1MiB (0x100000) に固定。\n"
+        "    UEFI / BIOS 予約メモリ（0x0〜0xFFFFF）を安全に回避！\n\n"
+        "• --static:\n"
+        "    共有ライブラリ（.so）参照を完全遮断した自己完結型静的バイナリ。"
+    )
+
+    box_ld = FancyBboxPatch((0.53, 0.08), 0.42, 0.55,
+                            boxstyle="round,pad=0.03,rounding_size=0.025",
+                            facecolor="#E0F2F1", edgecolor="#00695C", linewidth=1.8, zorder=3)
+    ax.add_patch(box_ld)
+    ax.text(0.55, 0.35, ld_text, ha="left", va="center", fontsize=8.8,
+            color="#004D40", linespacing=1.35, zorder=4)
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+

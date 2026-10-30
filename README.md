@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-261%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-14.9%25%20(34%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-269%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-15.4%25%20(35%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -91,7 +91,7 @@ cmake --build build
 | **第1章** | PCの仕組みとハローワールド | 9 | - | UEFIブート、PE32+/COFFとELF、最小UEFIアプリ | [`1_Exercises.ipynb`](1/1_Exercises.ipynb) | `[x]` 完了 (10/10) |
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | [`2_Exercises.ipynb`](2/2_Exercises.ipynb) | `[x]` 完了 (10/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | `[x]` 完了 (8/8) |
-| **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
+| **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | `4_Exercises.ipynb` | `[-]` 進行中 (1/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[ ]` 未着手 (0/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 未着手 (0/11) |
@@ -177,6 +177,13 @@ cmake --build build
 | [`3.6_Error_Handling_and_Pointer_Casts.ipynb`](3/3.6_Error_Handling_and_Pointer_Casts.ipynb) | 3.6 エラー処理をしよう（`osbook_day03d`・サイレントクラッシュの撲滅・`EFI_STATUS` 64ビット構造・`EFI_ERROR` 2の補数数理・EDK II `%r` 書式指定・Graceful Degradation `\memmap` エラー無視・`HLT` 特権命令と CPU 省電力状態 `Halt()`・コラム3.2 ポインタのキャストと C++ 4大キャスト型安全性・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/3/3.6_Error_Handling_and_Pointer_Casts.ipynb) |
 | [`3.7_Pointers_Part2_Assembly_Level.ipynb`](3/3.7_Pointers_Part2_Assembly_Level.ipynb) | 3.7 ポインタ入門(2)：ポインタとアセンブリ言語（CPU物理アドレッシング・MOV命令と間接参照[...]・メモリアクセスサイズ指定子・SIBハードウェア数理・LEA vs MOVの決定的な違い・スタック相対アドレッシングとダングリングポインタ・ピクセルループ逆アセンブル解析・SIMD自動ベクトル化・volatileの不可欠性・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/3/3.7_Pointers_Part2_Assembly_Level.ipynb) |
 | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | 第3章 演習問題（QEMUモニタ・x86-64レジスタ・Red Zone・UEFI GOPストライド数理・引数引き渡しABI・アセンブリSIB・C++20検証・10問自己採点テスト・レーダーチャート） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/3/3_Exercises.ipynb) |
+
+### 第4章 ピクセル描画とmake入門 (`4/`)
+
+| ノートブック | 内容 | Colab で開く |
+|---|---|:---:|
+| [`4.1_Introduction_to_Make.ipynb`](4/4.1_Introduction_to_Make.ipynb) | 4.1 make入門（`osbook_day04a`・kernel/Makefile・依存関係DAGとトポロジカルソート数理・タイムスタンプ比較則・自動変数・.PHONY保護・ベアメタルC++ビルドフラグ完全解読） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/4/4.1_Introduction_to_Make.ipynb) |
+
 
 
 
