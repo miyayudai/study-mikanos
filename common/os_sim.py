@@ -6980,3 +6980,490 @@ def plot_x86_legacy_and_modern_memory_layout_comparison(
     plt.savefig(output_path, dpi=300)
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 2.4: UEFI Memory Map & EFI_MEMORY_DESCRIPTOR Classes & Visualization
+# ==============================================================================
+
+class UefiMemoryType(Enum):
+    """UEFI memory types defined in UEFI Specification Section 7.2 (EFI_MEMORY_TYPE)."""
+
+    EfiReservedMemoryType = 0
+    EfiLoaderCode = 1
+    EfiLoaderData = 2
+    EfiBootServicesCode = 3
+    EfiBootServicesData = 4
+    EfiRuntimeServicesCode = 5
+    EfiRuntimeServicesData = 6
+    EfiConventionalMemory = 7
+    EfiUnusableMemory = 8
+    EfiACPIReclaimMemory = 9
+    EfiACPIMemoryNVS = 10
+    EfiMemoryMappedIO = 11
+    EfiMemoryMappedIOPortSpace = 12
+    EfiPalCode = 13
+    EfiPersistentMemory = 14
+    EfiMaxMemoryType = 15
+
+    @property
+    def is_usable_by_os_initially(self) -> bool:
+        """Memory that is free and directly usable as RAM by the OS immediately."""
+        return self == UefiMemoryType.EfiConventionalMemory
+
+    @property
+    def is_reclaimable_after_exit_boot_services(self) -> bool:
+        """Memory that can be safely reclaimed and used as free RAM once ExitBootServices() is called."""
+        return self in (
+            UefiMemoryType.EfiBootServicesCode,
+            UefiMemoryType.EfiBootServicesData,
+            UefiMemoryType.EfiLoaderCode,
+            UefiMemoryType.EfiLoaderData,
+        )
+
+    @property
+    def is_runtime_required(self) -> bool:
+        """Memory that the OS kernel must preserve and map into virtual address space for UEFI Runtime Services."""
+        return self in (
+            UefiMemoryType.EfiRuntimeServicesCode,
+            UefiMemoryType.EfiRuntimeServicesData,
+            UefiMemoryType.EfiMemoryMappedIO,
+            UefiMemoryType.EfiACPIMemoryNVS,
+            UefiMemoryType.EfiPalCode,
+        )
+
+    @property
+    def category_name(self) -> str:
+        if self == UefiMemoryType.EfiConventionalMemory:
+            return "OS利用可能RAM (Conventional)"
+        elif self in (UefiMemoryType.EfiBootServicesCode, UefiMemoryType.EfiBootServicesData):
+            return "ブートサービス領域 (ExitBootServices後解放可能)"
+        elif self in (UefiMemoryType.EfiRuntimeServicesCode, UefiMemoryType.EfiRuntimeServicesData):
+            return "ランタイムサービス領域 (OS実行中保持必須)"
+        elif self in (UefiMemoryType.EfiLoaderCode, UefiMemoryType.EfiLoaderData):
+            return "ローダ領域 (ブートローダ自身)"
+        elif self in (UefiMemoryType.EfiACPIReclaimMemory, UefiMemoryType.EfiACPIMemoryNVS):
+            return "ACPIテーブル領域"
+        elif self in (UefiMemoryType.EfiMemoryMappedIO, UefiMemoryType.EfiMemoryMappedIOPortSpace):
+            return "MMIOデバイス領域"
+        elif self == UefiMemoryType.EfiPersistentMemory:
+            return "不揮発性メモリ (NVDIMM/PMEM)"
+        elif self == UefiMemoryType.EfiPalCode:
+            return "プロセッサ抽象化レイヤ (PAL)"
+        else:
+            return "予約・使用不可領域"
+
+
+# UEFI Memory Attributes (UEFI 2.9 / 2.10 Spec Section 7.2 Table 7.3)
+EFI_MEMORY_UC = 0x0000000000000001
+EFI_MEMORY_WC = 0x0000000000000002
+EFI_MEMORY_WT = 0x0000000000000004
+EFI_MEMORY_WB = 0x0000000000000008
+EFI_MEMORY_UCE = 0x0000000000000010
+EFI_MEMORY_WP = 0x0000000000001000
+EFI_MEMORY_RP = 0x0000000000002000
+EFI_MEMORY_XP = 0x0000000000004000
+EFI_MEMORY_NV = 0x0000000000008000
+EFI_MEMORY_MORE_RELIABLE = 0x0000000000010000
+EFI_MEMORY_RO = 0x0000000000020000
+EFI_MEMORY_SP = 0x0000000000040000
+EFI_MEMORY_CPU_CRYPTO = 0x0000000000080000
+EFI_MEMORY_RUNTIME = 0x8000000000000000
+
+
+@dataclass
+class UefiMemoryDescriptor:
+    """Represents a single UEFI memory descriptor (EFI_MEMORY_DESCRIPTOR).
+
+    C layout in x86-64 EDK II:
+    typedef struct {
+        UINT32                Type;           // 0x00 - 0x03 (4 bytes)
+        UINT32                Pad;            // 0x04 - 0x07 (4 bytes alignment pad)
+        EFI_PHYSICAL_ADDRESS  PhysicalStart;  // 0x08 - 0x0F (8 bytes)
+        EFI_VIRTUAL_ADDRESS   VirtualStart;   // 0x10 - 0x17 (8 bytes)
+        UINT64                NumberOfPages;  // 0x18 - 0x1F (8 bytes, 4KiB pages)
+        UINT64                Attribute;      // 0x20 - 0x27 (8 bytes)
+    } EFI_MEMORY_DESCRIPTOR;                  // Total size: 48 bytes (0x30)
+    """
+
+    type: UefiMemoryType
+    physical_start: int
+    virtual_start: int
+    number_of_pages: int
+    attribute: int
+    pad: int = 0
+
+    PAGE_SIZE: int = 4096
+
+    @property
+    def size_bytes(self) -> int:
+        return self.number_of_pages * self.PAGE_SIZE
+
+    @property
+    def physical_end(self) -> int:
+        return self.physical_start + self.size_bytes
+
+    @property
+    def is_conventional(self) -> bool:
+        return self.type == UefiMemoryType.EfiConventionalMemory
+
+    @property
+    def is_reclaimable_after_exit_boot_services(self) -> bool:
+        return self.type in (
+            UefiMemoryType.EfiBootServicesCode,
+            UefiMemoryType.EfiBootServicesData,
+            UefiMemoryType.EfiLoaderCode,
+            UefiMemoryType.EfiLoaderData,
+        )
+
+    @property
+    def is_runtime_service(self) -> bool:
+        return self.type in (
+            UefiMemoryType.EfiRuntimeServicesCode,
+            UefiMemoryType.EfiRuntimeServicesData,
+        )
+
+    @property
+    def is_runtime_mapped_required(self) -> bool:
+        return bool(self.attribute & EFI_MEMORY_RUNTIME)
+
+    @property
+    def is_page_aligned(self) -> bool:
+        return (self.physical_start % self.PAGE_SIZE) == 0
+
+    def attribute_names(self) -> List[str]:
+        names = []
+        attrs = [
+            (EFI_MEMORY_UC, "UC"),
+            (EFI_MEMORY_WC, "WC"),
+            (EFI_MEMORY_WT, "WT"),
+            (EFI_MEMORY_WB, "WB"),
+            (EFI_MEMORY_UCE, "UCE"),
+            (EFI_MEMORY_WP, "WP"),
+            (EFI_MEMORY_RP, "RP"),
+            (EFI_MEMORY_XP, "XP"),
+            (EFI_MEMORY_NV, "NV"),
+            (EFI_MEMORY_MORE_RELIABLE, "MORE_RELIABLE"),
+            (EFI_MEMORY_RO, "RO"),
+            (EFI_MEMORY_SP, "SP"),
+            (EFI_MEMORY_CPU_CRYPTO, "CPU_CRYPTO"),
+            (EFI_MEMORY_RUNTIME, "RUNTIME"),
+        ]
+        for flag, name in attrs:
+            if self.attribute & flag:
+                names.append(name)
+        return names
+
+    def to_bytes(self, descriptor_size: int = 48) -> bytes:
+        if descriptor_size < 40:
+            raise ValueError(f"descriptor_size must be at least 40 bytes, got {descriptor_size}")
+        raw = struct.pack(
+            "<IIQQQQ",
+            self.type.value,
+            self.pad,
+            self.physical_start,
+            self.virtual_start,
+            self.number_of_pages,
+            self.attribute,
+        )
+        if descriptor_size > 40:
+            raw += b"\x00" * (descriptor_size - 40)
+        return raw
+
+    @classmethod
+    def from_bytes(cls, data: bytes, descriptor_size: int = 48) -> "UefiMemoryDescriptor":
+        if len(data) < 40:
+            raise ValueError(f"Data length must be at least 40 bytes, got {len(data)}")
+        mem_type_val, pad, phys, virt, pages, attr = struct.unpack("<IIQQQQ", data[:40])
+        try:
+            mtype = UefiMemoryType(mem_type_val)
+        except ValueError:
+            mtype = UefiMemoryType.EfiReservedMemoryType
+        return cls(
+            type=mtype,
+            pad=pad,
+            physical_start=phys,
+            virtual_start=virt,
+            number_of_pages=pages,
+            attribute=attr,
+        )
+
+
+class UefiMemoryMapSimulator:
+    """Simulates a complete UEFI memory map (array of EFI_MEMORY_DESCRIPTOR)
+    and demonstrates descriptor pointer stepping and memory lifecycle management.
+    """
+
+    def __init__(self, descriptor_size: int = 48, descriptor_version: int = 1):
+        self.descriptors: List[UefiMemoryDescriptor] = []
+        self.descriptor_size = descriptor_size
+        self.descriptor_version = descriptor_version
+
+    def add_descriptor(self, desc: UefiMemoryDescriptor) -> None:
+        self.descriptors.append(desc)
+
+    @property
+    def total_entries(self) -> int:
+        return len(self.descriptors)
+
+    @property
+    def map_size_bytes(self) -> int:
+        return len(self.descriptors) * self.descriptor_size
+
+    def total_bytes_by_type(self) -> Dict[UefiMemoryType, int]:
+        result = {t: 0 for t in UefiMemoryType}
+        for d in self.descriptors:
+            result[d.type] += d.size_bytes
+        return result
+
+    def total_pages_by_type(self) -> Dict[UefiMemoryType, int]:
+        result = {t: 0 for t in UefiMemoryType}
+        for d in self.descriptors:
+            result[d.type] += d.number_of_pages
+        return result
+
+    def total_conventional_bytes(self) -> int:
+        return sum(d.size_bytes for d in self.descriptors if d.is_conventional)
+
+    def total_boot_services_reclaimable_bytes(self) -> int:
+        return sum(d.size_bytes for d in self.descriptors if d.is_reclaimable_after_exit_boot_services)
+
+    def total_runtime_bytes(self) -> int:
+        return sum(d.size_bytes for d in self.descriptors if d.is_runtime_service)
+
+    def serialize(self) -> bytes:
+        return b"".join(d.to_bytes(self.descriptor_size) for d in self.descriptors)
+
+    @classmethod
+    def deserialize(cls, buffer: bytes, descriptor_size: int = 48, descriptor_version: int = 1) -> "UefiMemoryMapSimulator":
+        instance = cls(descriptor_size=descriptor_size, descriptor_version=descriptor_version)
+        offset = 0
+        while offset + descriptor_size <= len(buffer):
+            chunk = buffer[offset : offset + descriptor_size]
+            instance.add_descriptor(UefiMemoryDescriptor.from_bytes(chunk, descriptor_size))
+            offset += descriptor_size
+        return instance
+
+    @classmethod
+    def create_standard_uefi_map(cls) -> "UefiMemoryMapSimulator":
+        """Generates a realistic UEFI memory map reflecting QEMU OVMF execution with 4GB RAM."""
+        sim = cls(descriptor_size=48, descriptor_version=1)
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiBootServicesCode,
+            physical_start=0x00000000,
+            virtual_start=0,
+            number_of_pages=159,  # 0x00000 to 0x9F000 (636KB)
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiReservedMemoryType,
+            physical_start=0x0009F000,
+            virtual_start=0,
+            number_of_pages=1,    # EBDA
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiConventionalMemory,
+            physical_start=0x00100000,
+            virtual_start=0,
+            number_of_pages=32512,  # 1MB to ~128MB
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiLoaderCode,
+            physical_start=0x06000000,
+            virtual_start=0,
+            number_of_pages=128,   # 512KB for bootloader binary
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiLoaderData,
+            physical_start=0x06080000,
+            virtual_start=0,
+            number_of_pages=256,   # 1MB for loader stack/heap
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiConventionalMemory,
+            physical_start=0x06180000,
+            virtual_start=0,
+            number_of_pages=498816, # ~1.9GB main conventional RAM
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiACPIReclaimMemory,
+            physical_start=0x7FE00000,
+            virtual_start=0,
+            number_of_pages=128,   # 512KB ACPI tables
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiACPIMemoryNVS,
+            physical_start=0x7FE80000,
+            virtual_start=0,
+            number_of_pages=64,    # 256KB ACPI NVS
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiRuntimeServicesCode,
+            physical_start=0x7FEC0000,
+            virtual_start=0,
+            number_of_pages=128,   # 512KB Runtime Code
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC | EFI_MEMORY_RUNTIME,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiRuntimeServicesData,
+            physical_start=0x7FF40000,
+            virtual_start=0,
+            number_of_pages=192,   # 768KB Runtime Data
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC | EFI_MEMORY_RUNTIME,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiMemoryMappedIO,
+            physical_start=0xC0000000,
+            virtual_start=0,
+            number_of_pages=4096,  # 16MB GOP Framebuffer
+            attribute=EFI_MEMORY_UC | EFI_MEMORY_WC | EFI_MEMORY_RUNTIME,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiMemoryMappedIO,
+            physical_start=0xFEE00000,
+            virtual_start=0,
+            number_of_pages=1,     # Local APIC MMIO
+            attribute=EFI_MEMORY_UC | EFI_MEMORY_RUNTIME,
+        ))
+        sim.add_descriptor(UefiMemoryDescriptor(
+            type=UefiMemoryType.EfiConventionalMemory,
+            physical_start=0x100000000,  # 4GB+ High RAM
+            virtual_start=0,
+            number_of_pages=524288,      # 2GB High RAM
+            attribute=EFI_MEMORY_WB | EFI_MEMORY_WT | EFI_MEMORY_WC | EFI_MEMORY_UC,
+        ))
+        return sim
+
+
+def plot_efi_memory_descriptor_layout_and_attributes(
+    output_path: str = "2/result/fig2_07_efi_memory_descriptor_layout_and_attributes.png",
+) -> str:
+    """Renders a high-DPI explanatory diagram of EFI_MEMORY_DESCRIPTOR struct memory layout and attribute bits."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_layout, ax_attr) = plt.subplots(1, 2, figsize=(15, 8.5), gridspec_kw={"wspace": 0.28})
+
+    # Left: EFI_MEMORY_DESCRIPTOR Struct Layout (40 bytes total)
+    ax_layout.set_title("EFI_MEMORY_DESCRIPTOR 構造体のメモリ配置 (40 bytes / x86-64 EDK II)", fontsize=11, fontweight="bold", pad=12)
+    ax_layout.set_xlim(0, 100)
+    ax_layout.set_ylim(0, 100)
+    ax_layout.axis("off")
+
+    desc_fields = [
+        ("0x00 - 0x03 (4B)", 82, 13, "#BBDEFB", "#1565C0", "Type (UINT32)\nメモリの種類 (EFI_MEMORY_TYPE: 0〜15)"),
+        ("0x04 - 0x07 (4B)", 67, 13, "#EEEEEE", "#757575", "Pad (UINT32 パディング)\n64bit変数アライメントのための4バイト空白"),
+        ("0x08 - 0x0F (8B)", 52, 13, "#C8E6C9", "#2E7D32", "PhysicalStart (EFI_PHYSICAL_ADDRESS / 64bit)\n領域の先頭物理アドレス (4KiB境界整列必須)"),
+        ("0x10 - 0x17 (8B)", 37, 13, "#E1BEE7", "#6A1B9A", "VirtualStart (EFI_VIRTUAL_ADDRESS / 64bit)\n領域の仮想アドレス (ブートローダ実行時は0)"),
+        ("0x18 - 0x1F (8B)", 22, 13, "#FFE0B2", "#E65100", "NumberOfPages (UINT64 / 64bit)\n領域に含まれる4KiBページ数 (サイズ = Pages × 4096)"),
+        ("0x20 - 0x27 (8B)", 7, 13, "#FFCDD2", "#C62828", "Attribute (UINT64 / 64bit)\nキャッシュ性・アクセス保護・ランタイム保持フラグ"),
+    ]
+
+    for addr, y, h, c, bc, label in desc_fields:
+        box = FancyBboxPatch((2, y), 50, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_layout.add_patch(box)
+        ax_layout.text(27, y + h / 2, label, fontsize=7.2, ha="center", va="center", fontweight="bold", color="#212121")
+        ax_layout.text(54, y + h / 2, addr, fontsize=7.2, va="center", family="monospace", color="#37474F")
+
+    # Header / total size indicator
+    ax_layout.text(50, 97, "sizeof(EFI_MEMORY_DESCRIPTOR) = 40 バイト (0x28) / descriptor_size >= 40", fontsize=8.8, ha="center", fontweight="bold", color="#0D47A1")
+
+    # Right: Memory Attributes Bitmask (Attribute 64-bit breakdown)
+    ax_attr.set_title("Attribute 属性フラグのビット定義と役割 (UEFI 2.10 Spec Table 7.3)", fontsize=11, fontweight="bold", pad=12)
+    ax_attr.set_xlim(0, 100)
+    ax_attr.set_ylim(0, 100)
+    ax_attr.axis("off")
+
+    attr_items = [
+        ("0x8000_0000_0000_0000", 82, 13, "#EF9A9A", "#B71C1C", "EFI_MEMORY_RUNTIME (ビット63)\nOSカーネル起動後も仮想アドレス空間へのマッピング必須"),
+        ("0x0000_0000_0002_0000", 67, 13, "#CE93D8", "#4A148C", "EFI_MEMORY_RO (Read-Only / ビット17)\n書き込み保護領域 (コードセクションやファームウェアROM)"),
+        ("0x0000_0000_0000_4000", 52, 13, "#B39DDB", "#311B92", "EFI_MEMORY_XP (Execute-Protect / ビット14)\nNX (No-Execute) 実行禁止領域 (データ領域・スタック)"),
+        ("0x0000_0000_0000_1000", 37, 13, "#90CAF9", "#0D47A1", "EFI_MEMORY_WP (Write-Protect / ビット12)\n書き込み保護可能属性"),
+        ("0x0000_0000_0000_0008", 22, 13, "#A5D6A7", "#1B5E20", "EFI_MEMORY_WB (Write-Back キャッシュ / ビット3)\n通常の物理RAMに対する標準キャッシュ動作 (最速)"),
+        ("0x0000_0000_0000_0002", 12, 8, "#FFE082", "#FF8F00", "EFI_MEMORY_WC (Write-Combining / ビット1)\nVRAM/フレームバッファ描画用のバースト書き込み"),
+        ("0x0000_0000_0000_0001", 2, 8, "#FFAB91", "#BF360C", "EFI_MEMORY_UC (Uncacheable / ビット0)\nMMIOデバイス制御レジスタ用のキャッシュ無効領域"),
+    ]
+
+    for bitmask, y, h, c, bc, label in attr_items:
+        box = FancyBboxPatch((2, y), 50, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_attr.add_patch(box)
+        ax_attr.text(27, y + h / 2, label, fontsize=6.8, ha="center", va="center", fontweight="bold", color="#212121")
+        ax_attr.text(54, y + h / 2, bitmask, fontsize=6.5, va="center", family="monospace", color="#37474F")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+
+
+def plot_uefi_memory_types_classification_and_lifecycle(
+    output_path: str = "2/result/fig2_08_uefi_memory_types_classification_and_lifecycle.png",
+) -> str:
+    """Renders a high-DPI technical figure detailing the 16 EFI_MEMORY_TYPE classifications and OS lifecycle transitions."""
+    setup_plot_style()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax_cat, ax_life) = plt.subplots(1, 2, figsize=(15, 9.0), gridspec_kw={"wspace": 0.28})
+
+    # Left: Classification of 16 EFI_MEMORY_TYPEs
+    ax_cat.set_title("EFI_MEMORY_TYPE 全16種と OS における分類", fontsize=11, fontweight="bold", pad=12)
+    ax_cat.set_xlim(0, 100)
+    ax_cat.set_ylim(0, 100)
+    ax_cat.axis("off")
+
+    categories = [
+        ("0x7: EfiConventionalMemory", 83, 13, "#A5D6A7", "#1B5E20", "① OS完全自由利用可能 RAM\nOSがカーネル・ヒープ・ページテーブル・アプリに直ちに割り当て可能"),
+        ("0x3: EfiBootServicesCode\n0x4: EfiBootServicesData\n0x1: EfiLoaderCode, 0x2: EfiLoaderData", 59, 21, "#BBDEFB", "#0D47A1", "② ブートローダ・ブートサービス領域\nブート中はUEFI/ローダが使用。\nExitBootServices() 呼び出し後にOSが完全回収・再利用可能！"),
+        ("0x5: EfiRuntimeServicesCode\n0x6: EfiRuntimeServicesData\n0x9: EfiACPIReclaimMemory\n0xA: EfiACPIMemoryNVS", 33, 23, "#FFE082", "#E65100", "③ ファームウェア実行・保持領域\nOS起動後もUEFIランタイム関数 (時刻・電源) や\nACPIテーブル解析のために保持・仮想マッピングが必要"),
+        ("0xB: EfiMemoryMappedIO\n0xC: EfiMemoryMappedIOPortSpace\n0x0: EfiReservedMemoryType\n0x8: EfiUnusableMemory, 0xE: EfiPersistentMemory", 3, 27, "#FFCDD2", "#B71C1C", "④ MMIOデバイス・予約・使用不可領域\nハードウェア制御レジスタ (GOP, APIC, PCIe BAR) や\n故障RAM・ファームウェア予約空間。RAMとして割り当て厳禁！"),
+    ]
+
+    for name, y, h, c, bc, label in categories:
+        box = FancyBboxPatch((2, y), 50, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_cat.add_patch(box)
+        ax_cat.text(27, y + h / 2, label, fontsize=6.8, ha="center", va="center", fontweight="bold", color="#212121")
+        ax_cat.text(54, y + h / 2, name, fontsize=6.8, va="center", family="monospace", color="#37474F")
+
+    # Right: OS Lifecycle Timeline before and after ExitBootServices()
+    ax_life.set_title("ExitBootServices() 前後のメモリ再利用ライフサイクル推移", fontsize=11, fontweight="bold", pad=12)
+    ax_life.set_xlim(0, 100)
+    ax_life.set_ylim(0, 100)
+    ax_life.axis("off")
+
+    phases = [
+        ("フェーズ 1: UEFI ブートローダ実行中", 78, 17, "#E3F2FD", "#1565C0",
+         "【gBS (Boot Services) 生存】\n・gBS->AllocatePages() / GetMemoryMap() 等のUEFI機能が全て使用可能\n・ブートローダ自身 (LoaderCode/Data) と UEFIがメモリの多くを専有\n・ConventionalMemory のみ空きRAMとして認識"),
+        ("=== gBS->ExitBootServices(image_handle, map_key) 実行 ===", 68, 6, "#FFD54F", "#F57F17",
+         "⚠️ 境界線: UEFIブートサービス消滅・ハードウェアタイマ等の停止"),
+        ("フェーズ 2: OS カーネル初期化 & メモリ回収", 45, 19, "#C8E6C9", "#2E7D32",
+         "【ブートサービス領域の回収 (Reclaim)】\n・BootServicesCode / BootServicesData (~数MB〜数十MB) を全回収\n・LoaderCode / LoaderData もカーネルジャンプ完了後に回収可能\n・OSのビットマップメモリマネージャ (BitmapMemoryManager) にマージ"),
+        ("フェーズ 3: OS 永続稼働 (ランタイムサービス連携)", 18, 23, "#FFF9C4", "#F57F17",
+         "【ランタイム領域の永続保護】\n・RuntimeServicesCode / RuntimeServicesData は破壊厳禁！\n・gRT->SetVirtualAddressMap() でカーネル仮想アドレス空間にマップ\n・gRT->ResetSystem() (シャットダウン) や gRT->GetTime() で利用"),
+    ]
+
+    for title, y, h, c, bc, desc in phases:
+        box = FancyBboxPatch((2, y), 96, h, boxstyle="round,pad=0.3", facecolor=c, edgecolor=bc, lw=1.2)
+        ax_life.add_patch(box)
+        ax_life.text(50, y + h * 0.75, title, fontsize=7.8, ha="center", va="center", fontweight="bold", color="#0D47A1")
+        ax_life.text(50, y + h * 0.35, desc, fontsize=6.8, ha="center", va="center", color="#212121")
+
+    # Arrow from Phase 1 to Phase 2 to Phase 3
+    ax_life.annotate("", xy=(50, 68), xytext=(50, 78),
+                    arrowprops=dict(arrowstyle="->", lw=2.0, color="#1565C0"))
+    ax_life.annotate("", xy=(50, 45), xytext=(50, 68),
+                    arrowprops=dict(arrowstyle="->", lw=2.0, color="#2E7D32"))
+    ax_life.annotate("", xy=(50, 18), xytext=(50, 45),
+                    arrowprops=dict(arrowstyle="->", lw=2.0, color="#E65100"))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return output_path
+

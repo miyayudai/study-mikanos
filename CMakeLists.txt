@@ -70,6 +70,10 @@ add_test(NAME test_ch02_uefi_hello_world_sim COMMAND ch02_uefi_hello_world_sim -
 add_executable(ch02_main_memory_architecture_sim src/ch02/main_memory_architecture_sim.cpp)
 add_test(NAME test_ch02_main_memory_architecture_sim COMMAND ch02_main_memory_architecture_sim --test)
 
+add_executable(ch02_uefi_memory_map_concept_sim src/ch02/uefi_memory_map_concept_sim.cpp)
+add_test(NAME test_ch02_uefi_memory_map_concept_sim COMMAND ch02_uefi_memory_map_concept_sim --test)
+
+
 
 
 
