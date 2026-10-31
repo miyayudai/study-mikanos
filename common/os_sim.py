@@ -21736,3 +21736,580 @@ def plot_fig6_02_desktop_layout_and_mouse_cursor_sprite(output_path: str = "6/re
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 6.2: USB 3.0 & xHCI Architecture Simulation & Visualization
+# ==============================================================================
+
+from enum import IntEnum
+
+class TRBType(IntEnum):
+    """xHCI Transfer Request Block (TRB) Types as defined in xHCI Specification 1.2."""
+    RESERVED = 0
+    NORMAL = 1
+    SETUP_STAGE = 2
+    DATA_STAGE = 3
+    STATUS_STAGE = 4
+    ISOCH = 5
+    LINK = 6
+    EVENT_DATA = 7
+    NO_OP = 8
+    ENABLE_SLOT_COMMAND = 9
+    DISABLE_SLOT_COMMAND = 10
+    ADDRESS_DEVICE_COMMAND = 11
+    CONFIGURE_ENDPOINT_COMMAND = 12
+    EVALUATE_CONTEXT_COMMAND = 13
+    RESET_ENDPOINT_COMMAND = 14
+    STOP_ENDPOINT_COMMAND = 15
+    SET_TR_DEQUEUE_POINTER_COMMAND = 16
+    RESET_DEVICE_COMMAND = 17
+    FORCE_EVENT = 18
+    NEGOTIATE_BANDWIDTH_COMMAND = 19
+    SET_LATENCY_TOLERANCE_VALUE_COMMAND = 20
+    GET_PORT_BANDWIDTH_COMMAND = 21
+    FORCE_HEADER_COMMAND = 22
+    NO_OP_COMMAND = 23
+    TRANSFER_EVENT = 32
+    COMMAND_COMPLETION_EVENT = 33
+    PORT_STATUS_CHANGE_EVENT = 34
+    BANDWIDTH_REQUEST_EVENT = 35
+    DOORBELL_EVENT = 36
+    HOST_CONTROLLER_EVENT = 37
+    DEVICE_NOTIFICATION_EVENT = 38
+    MFINDEX_WRAP_EVENT = 39
+
+
+class TRBCompletionCode(IntEnum):
+    """xHCI TRB Completion Codes as defined in xHCI Specification 1.2 Table 130."""
+    INVALID = 0
+    SUCCESS = 1
+    DATA_BUFFER_ERROR = 2
+    BABBLE_DETECTED_ERROR = 3
+    USB_TRANSACTION_ERROR = 4
+    TRB_ERROR = 5
+    STALL_ERROR = 6
+    RESOURCE_ERROR = 7
+    BANDWIDTH_ERROR = 8
+    NO_SLOTS_AVAILABLE_ERROR = 9
+    INVALID_STREAM_TYPE_ERROR = 10
+    SLOT_NOT_ENABLED_ERROR = 11
+    ENDPOINT_NOT_ENABLED_ERROR = 12
+    SHORT_PACKET = 13
+    RING_UNDERRUN = 14
+    RING_OVERRUN = 15
+    VF_EVENT_RING_FULL_ERROR = 16
+    PARAMETER_ERROR = 17
+    BANDWIDTH_OVERRUN_ERROR = 18
+    CONTEXT_STATE_ERROR = 19
+    NO_PING_RESPONSE_ERROR = 20
+    EVENT_RING_FULL_ERROR = 21
+    INCOMPATIBLE_DEVICE_ERROR = 22
+    MISSED_SERVICE_ERROR = 23
+    COMMAND_RING_STOPPED = 24
+    COMMAND_ABORTED = 25
+    STOPPED = 26
+    STOPPED_LENGTH_INVALID = 27
+    CONTROL_ABORT_ERROR = 28
+    ISOCH_BUFFER_OVERRUN = 31
+    EVENT_LOST_ERROR = 32
+    UNDEFINED_ERROR = 33
+    INVALID_STREAM_ID_ERROR = 34
+    SECONDARY_BANDWIDTH_ERROR = 35
+    SPLIT_TRANSACTION_ERROR = 36
+
+
+@dataclass
+class TRBSim:
+    """16-byte fixed-size Transfer Request Block (TRB) structure in xHCI."""
+    parameter: int = 0          # 64-bit (Data buffer pointer or command parameters)
+    status: int = 0             # 32-bit (Length, completion code, residual count)
+    cycle_bit: int = 0          # bit 0: Producer/Consumer Cycle State
+    evaluate_next_trb: int = 0  # bit 1: Evaluate next TRB
+    trb_type: int = 0           # bits 10..15: TRB Type
+    control_flags: int = 0      # other control bits (e.g. toggle_cycle, chain_bit, IOC)
+
+    def to_bytes(self) -> bytes:
+        """Pack 16-byte little-endian binary representation."""
+        control_dword = (self.cycle_bit & 0x1) | \
+                        ((self.evaluate_next_trb & 0x1) << 1) | \
+                        ((self.trb_type & 0x3F) << 10) | \
+                        ((self.control_flags & 0xFFFF) << 16)
+        return struct.pack("<QII", self.parameter & 0xFFFFFFFFFFFFFFFF,
+                           self.status & 0xFFFFFFFF,
+                           control_dword & 0xFFFFFFFF)
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> TRBSim:
+        """Unpack 16-byte binary into TRBSim."""
+        if len(data) != 16:
+            raise ValueError(f"TRB must be exactly 16 bytes, got {len(data)}")
+        param, stat, ctrl = struct.unpack("<QII", data)
+        cycle = ctrl & 0x1
+        eval_next = (ctrl >> 1) & 0x1
+        trb_type = (ctrl >> 10) & 0x3F
+        flags = (ctrl >> 16) & 0xFFFF
+        return cls(parameter=param, status=stat, cycle_bit=cycle,
+                   evaluate_next_trb=eval_next, trb_type=trb_type, control_flags=flags)
+
+    def summary(self) -> str:
+        type_name = TRBType(self.trb_type).name if self.trb_type in TRBType._value2member_map_ else f"UNKNOWN({self.trb_type})"
+        return f"TRB(type={type_name}, param=0x{self.parameter:016x}, cycle={self.cycle_bit}, status=0x{self.status:08x})"
+
+
+@dataclass
+class LinkTRBSim(TRBSim):
+    """Link TRB for chaining ring segments and toggling cycle bit."""
+    def __init__(self, ring_segment_pointer: int, toggle_cycle: bool = True):
+        # In xHCI specification bit 1 of control (after cycle bit) in Link TRB is Toggle Cycle
+        control_flags = 0x2 if toggle_cycle else 0x0
+        super().__init__(
+            parameter=ring_segment_pointer,
+            status=0,
+            cycle_bit=0,
+            evaluate_next_trb=0,
+            trb_type=int(TRBType.LINK),
+            control_flags=control_flags
+        )
+        self.toggle_cycle = toggle_cycle
+
+
+class RingSimulator:
+    """xHCI Transfer/Command Ring circular buffer simulator with Cycle Bit and Link TRB."""
+
+    def __init__(self, buf_size: int = 16, ring_address: int = 0x1000):
+        if buf_size < 2:
+            raise ValueError("Ring buffer size must be at least 2")
+        self.buf_size = buf_size
+        self.ring_address = ring_address
+        self.buf: List[TRBSim] = [TRBSim() for _ in range(buf_size)]
+        self.cycle_bit: bool = True   # Producer Cycle State (PCS)
+        self.write_index: int = 0
+
+    def push(self, trb: TRBSim) -> Tuple[int, Optional[int]]:
+        """
+        Push a TRB to the ring, setting its cycle bit.
+        When reaching buf_size - 1, automatically write a Link TRB, wrap to index 0,
+        and toggle cycle_bit.
+        Returns:
+            (pushed_index, link_trb_index_if_created)
+        """
+        trb_copy = TRBSim(
+            parameter=trb.parameter,
+            status=trb.status,
+            cycle_bit=1 if self.cycle_bit else 0,
+            evaluate_next_trb=trb.evaluate_next_trb,
+            trb_type=trb.trb_type,
+            control_flags=trb.control_flags
+        )
+        pushed_idx = self.write_index
+        self.buf[self.write_index] = trb_copy
+        self.write_index += 1
+
+        link_idx = None
+        if self.write_index == self.buf_size - 1:
+            # Place Link TRB at the end
+            link_trb = LinkTRBSim(self.ring_address, toggle_cycle=True)
+            link_trb.cycle_bit = 1 if self.cycle_bit else 0
+            self.buf[self.write_index] = link_trb
+            link_idx = self.write_index
+
+            self.write_index = 0
+            self.cycle_bit = not self.cycle_bit
+
+        return pushed_idx, link_idx
+
+
+@dataclass
+class SlotContextSim:
+    """32-byte Slot Context representing USB device parameters."""
+    route_string: int = 0          # 20 bits
+    speed: int = 4                 # 4 bits (1: Full, 2: Low, 3: High, 4: SuperSpeed)
+    context_entries: int = 1       # 5 bits (Number of endpoint contexts enabled)
+    root_hub_port_num: int = 1     # 8 bits
+    num_ports: int = 0             # 8 bits (for hubs)
+    slot_state: int = 0            # 5 bits (0: Disabled, 1: Default, 2: Addressed, 3: Configured)
+    usb_device_address: int = 0    # 8 bits assigned by xHCI
+
+    def to_bytes(self) -> bytes:
+        dw0 = (self.route_string & 0xFFFFF) | ((self.speed & 0xF) << 20) | ((self.context_entries & 0x1F) << 27)
+        dw1 = ((self.root_hub_port_num & 0xFF) << 16) | ((self.num_ports & 0xFF) << 24)
+        dw2 = 0
+        dw3 = (self.usb_device_address & 0xFF) | ((self.slot_state & 0x1F) << 27)
+        return struct.pack("<8I", dw0, dw1, dw2, dw3, 0, 0, 0, 0)
+
+
+@dataclass
+class EndpointContextSim:
+    """32-byte Endpoint Context."""
+    ep_state: int = 0              # 3 bits (0: Disabled, 1: Running, 2: Halted, 3: Stopped, 4: Error)
+    ep_type: int = 0               # 3 bits (0: Not valid, 1: Isoch Out, 2: Bulk Out, 3: Interrupt Out, 4: Control, 5: Isoch In, 6: Bulk In, 7: Interrupt In)
+    max_packet_size: int = 64      # 16 bits
+    tr_dequeue_pointer: int = 0    # 64-bit Transfer Ring Dequeue Pointer + DCS (bit 0)
+    interval: int = 0              # 8 bits
+    error_count: int = 3           # 2 bits (CErr)
+
+    def to_bytes(self) -> bytes:
+        dw0 = (self.ep_state & 0x7) | ((self.interval & 0xFF) << 16)
+        dw1 = ((self.error_count & 0x3) << 1) | ((self.ep_type & 0x7) << 3) | ((self.max_packet_size & 0xFFFF) << 16)
+        dw2 = self.tr_dequeue_pointer & 0xFFFFFFFF
+        dw3 = (self.tr_dequeue_pointer >> 32) & 0xFFFFFFFF
+        return struct.pack("<8I", dw0, dw1, dw2, dw3, 0, 0, 0, 0)
+
+
+class xHCIArchitectureSimulator:
+    """High-level architectural simulator of xHCI Controller operations."""
+
+    def __init__(self, max_slots: int = 8, command_ring_size: int = 8, event_ring_size: int = 16):
+        self.max_slots = max_slots
+        self.dcbaa: List[int] = [0] * (max_slots + 1) # Slot 0 is scratchpad
+        self.device_contexts: Dict[int, bytes] = {}
+        self.command_ring = RingSimulator(buf_size=command_ring_size, ring_address=0x2000)
+        self.event_ring_size = event_ring_size
+        self.event_ring: List[TRBSim] = [TRBSim() for _ in range(event_ring_size)]
+        self.event_cycle_bit = True  # Consumer Cycle State (CCS)
+        self.event_enqueue_idx = 0
+        self.doorbells: Dict[int, int] = {} # slot_id -> target
+        self.command_history: List[str] = []
+
+    def ring_doorbell(self, slot_id: int, target: int = 0) -> str:
+        """CPU rings Doorbell (target 0 = Command Ring, target > 0 = Endpoint)."""
+        self.doorbells[slot_id] = target
+        if slot_id == 0 and target == 0:
+            return self._process_command_ring()
+        return f"Doorbell rung for Slot {slot_id}, Target {target}"
+
+    def _process_command_ring(self) -> str:
+        processed_count = 0
+        for i in range(self.command_ring.buf_size):
+            trb = self.command_ring.buf[i]
+            if trb.trb_type == int(TRBType.ENABLE_SLOT_COMMAND):
+                slot_id = 1
+                self.dcbaa[slot_id] = 0x10000 + slot_id * 1024
+                # Emit CommandCompletionEvent to Event Ring
+                event = TRBSim(
+                    parameter=0x2000 + i * 16,
+                    status=(int(TRBCompletionCode.SUCCESS) << 24) | (slot_id << 24),
+                    cycle_bit=1 if self.event_cycle_bit else 0,
+                    trb_type=int(TRBType.COMMAND_COMPLETION_EVENT)
+                )
+                self.event_ring[self.event_enqueue_idx] = event
+                self.event_enqueue_idx = (self.event_enqueue_idx + 1) % self.event_ring_size
+                self.command_history.append(f"Processed EnableSlotCommand -> Allocated Slot ID {slot_id}")
+                processed_count += 1
+            elif trb.trb_type == int(TRBType.ADDRESS_DEVICE_COMMAND):
+                slot_id = (trb.control_flags >> 8) & 0xFF or 1
+                event = TRBSim(
+                    parameter=0x2000 + i * 16,
+                    status=(int(TRBCompletionCode.SUCCESS) << 24),
+                    cycle_bit=1 if self.event_cycle_bit else 0,
+                    trb_type=int(TRBType.COMMAND_COMPLETION_EVENT)
+                )
+                self.event_ring[self.event_enqueue_idx] = event
+                self.event_enqueue_idx = (self.event_enqueue_idx + 1) % self.event_ring_size
+                self.command_history.append(f"Processed AddressDeviceCommand for Slot {slot_id}")
+                processed_count += 1
+        return f"Controller executed {processed_count} command TRBs"
+
+
+def plot_fig6_03_xhci_data_structures_and_ring_hierarchy(output_path: str = "6/result/fig6_03_xhci_data_structures_and_ring_hierarchy.png") -> str:
+    """
+    Figure 6.03: Comprehensive Architecture of xHCI Data Structures, Contexts, Rings, and Doorbells.
+    Visualizes DCBAA, Slot/Endpoint Contexts, Command/Transfer/Event Rings, and MMIO Registers.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(15.5, 9.8), dpi=300)
+    ax.set_xlim(-0.5, 15.5)
+    ax.set_ylim(-0.5, 10.0)
+    ax.axis("off")
+
+    # Title
+    ax.text(7.5, 9.55, "xHCI (eXtensible Host Controller Interface) メモリ構造 & リング階層アーキテクチャ",
+            ha="center", va="center", fontsize=15, weight="bold", color="#1A237E")
+    ax.text(7.5, 9.20, "Intel xHCI 1.2 Specification / MikanOS Chapter 6.2 ハードウェア制御トポロジー",
+            ha="center", va="center", fontsize=9.5, color="#455A64")
+
+    # Group 1: MMIO Registers & Host Controller (Left, x: 0.2 to 3.8)
+    p_mmio = FancyBboxPatch((0.2, 0.5), 3.6, 8.3, boxstyle="round,pad=0.15",
+                            facecolor="#ECEFF1", edgecolor="#607D8B", lw=1.8)
+    ax.add_patch(p_mmio)
+    ax.text(2.0, 8.55, "【xHCI MMIO レジスタ空間】\n(Base Address: BAR0)",
+            ha="center", va="center", fontsize=11, weight="bold", color="#263238")
+
+    mmio_boxes = [
+        ("Capability Registers (0x00..)", "#CFD8DC", "CAPLENGTH, HCSPARAMS1..3,\nHCCPARAMS1..2, DBOFF, RTSOFF"),
+        ("Operational Registers (0x20..)", "#B0BEC5", "USBCMD, USBSTS, PAGESIZE,\nCRCR (Command Ring Control Reg),\nDCBAAP (DCBAA Pointer Reg)"),
+        ("Runtime Registers (RTSOFF..)", "#90A4AE", "Interrupter Register Set 0..n\n(IMAN, IMOD, ERSTSZ, ERSTBA, ERDP)"),
+        ("Doorbell Array (DBOFF..)", "#FFE082", "Doorbell Register 0..255\n・DB 0: Command Ring\n・DB 1..255: Slot / Endpoint")
+    ]
+    y_m = 7.5
+    for title, col, detail in mmio_boxes:
+        p = FancyBboxPatch((0.4, y_m - 1.1), 3.2, 1.2, boxstyle="round,pad=0.08",
+                           facecolor=col, edgecolor="#37474F", lw=1.2)
+        ax.add_patch(p)
+        ax.text(2.0, y_m - 0.25, title, ha="center", va="center", fontsize=9.2, weight="bold", color="#212121")
+        ax.text(2.0, y_m - 0.75, detail, ha="center", va="center", fontsize=7.6, color="#37474F")
+        y_m -= 1.6
+
+    # Group 2: Host Memory Data Structures (Center & Right)
+    # DCBAA (Center-Left, x: 4.6 to 7.8)
+    p_dcbaa = FancyBboxPatch((4.5, 4.4), 3.4, 4.4, boxstyle="round,pad=0.12",
+                             facecolor="#E8EAF6", edgecolor="#3F51B5", lw=1.8)
+    ax.add_patch(p_dcbaa)
+    ax.text(6.2, 8.55, "【DCBAA (Device Context Base Address Array)】\n(最大256エントリ / 64-bit 物理アドレス配列)",
+            ha="center", va="center", fontsize=9.8, weight="bold", color="#1A237E")
+
+    dcbaa_entries = [
+        ("Slot 0 : Scratchpad Buffer Pointer", "#C5CAE9"),
+        ("Slot 1 : Device Context Pointer (Device #1)", "#9FA8DA"),
+        ("Slot 2 : Device Context Pointer (Device #2)", "#C5CAE9"),
+        ("... (Slot 3 〜 255)", "#E8EAF6"),
+    ]
+    y_d = 7.6
+    for title, col in dcbaa_entries:
+        p = FancyBboxPatch((4.7, y_d - 0.55), 3.0, 0.65, boxstyle="round,pad=0.05",
+                           facecolor=col, edgecolor="#283593", lw=1.0)
+        ax.add_patch(p)
+        ax.text(6.2, y_d - 0.22, title, ha="center", va="center", fontsize=8.2, color="#1A237E")
+        y_d -= 0.85
+
+    # Device Context Structure (Center-Right, x: 8.6 to 11.8)
+    p_devctx = FancyBboxPatch((8.6, 3.6), 3.2, 5.2, boxstyle="round,pad=0.12",
+                              facecolor="#E0F2F1", edgecolor="#00796B", lw=1.8)
+    ax.add_patch(p_devctx)
+    ax.text(10.2, 8.55, "【Device Context (Slot 1)】\n(32エントリ × 各32バイト = 1024バイト)",
+            ha="center", va="center", fontsize=9.8, weight="bold", color="#004D40")
+
+    devctx_entries = [
+        ("Slot Context (32B)\n速度、ルート文字列、ポート番号、状態", "#B2DFDB"),
+        ("Endpoint Context 0 (Control EP 0)\n状態、EP種別、MaxPacketSize, TR Dequeue Ptr", "#80CBC4"),
+        ("Endpoint Context 1 (EP 1 Out)\nバルク/アイソクロナス転送用 TR Dequeue Ptr", "#B2DFDB"),
+        ("Endpoint Context 2 (EP 1 In)\n割り込み/マウス入力用 TR Dequeue Ptr", "#4DB6AC"),
+        ("... (Endpoint Context 3 〜 31)", "#E0F2F1")
+    ]
+    y_dc = 7.7
+    for title, col in devctx_entries:
+        p = FancyBboxPatch((8.8, y_dc - 0.65), 2.8, 0.75, boxstyle="round,pad=0.05",
+                           facecolor=col, edgecolor="#004D40", lw=1.0)
+        ax.add_patch(p)
+        ax.text(10.2, y_dc - 0.28, title, ha="center", va="center", fontsize=7.4, color="#004D40")
+        y_dc -= 0.95
+
+    # Group 3: Rings (Command Ring, Transfer Ring, Event Ring)
+    # Command Ring (x: 4.5 to 8.2, y: 0.5 to 3.8)
+    p_cmdring = FancyBboxPatch((4.5, 0.5), 3.8, 3.5, boxstyle="round,pad=0.12",
+                               facecolor="#FFF3E0", edgecolor="#E65100", lw=1.8)
+    ax.add_patch(p_cmdring)
+    ax.text(6.4, 3.75, "【Command Ring (環状バッファ)】\nCPU → コントローラへの制御要求 (CRCRレジスタが指す)",
+            ha="center", va="center", fontsize=9.2, weight="bold", color="#BF360C")
+    cmd_trbs = [
+        ("TRB 0: Enable Slot Command TRB", "#FFE0B2", "PCS=1"),
+        ("TRB 1: Address Device Command TRB", "#FFCC80", "PCS=1"),
+        ("TRB 2: Configure EP Command TRB", "#FFE0B2", "PCS=1"),
+        ("TRB 3 (End): Link TRB (Ring先頭へ, Toggle Cycle)", "#FFAB91", "TC=1")
+    ]
+    y_cr = 3.0
+    for name, col, badge in cmd_trbs:
+        p = FancyBboxPatch((4.7, y_cr - 0.48), 3.4, 0.55, boxstyle="round,pad=0.05",
+                           facecolor=col, edgecolor="#E65100", lw=1.0)
+        ax.add_patch(p)
+        ax.text(6.0, y_cr - 0.20, name, ha="center", va="center", fontsize=7.8, color="#BF360C")
+        ax.text(7.7, y_cr - 0.20, badge, ha="center", va="center", fontsize=7.2, weight="bold", color="#D84315")
+        y_cr -= 0.65
+
+    # Transfer Ring (x: 8.8 to 12.2, y: 0.5 to 3.0)
+    p_tfring = FancyBboxPatch((8.8, 0.5), 3.4, 2.7, boxstyle="round,pad=0.12",
+                              facecolor="#E8F5E9", edgecolor="#2E7D32", lw=1.8)
+    ax.add_patch(p_tfring)
+    ax.text(10.5, 2.95, "【Transfer Ring (EP 2 In / マウス)】\nデータ転送要求 TRB (Normal TRB等)",
+            ha="center", va="center", fontsize=8.8, weight="bold", color="#1B5E20")
+    tf_trbs = [
+        ("Normal TRB: マウス入力バッファ受信", "#C8E6C9"),
+        ("Normal TRB: 次期パケット受信用", "#A5D6A7"),
+        ("Link TRB: Ring先頭へのリンク", "#81C784")
+    ]
+    y_tf = 2.3
+    for name, col in tf_trbs:
+        p = FancyBboxPatch((9.0, y_tf - 0.45), 3.0, 0.52, boxstyle="round,pad=0.05",
+                           facecolor=col, edgecolor="#1B5E20", lw=1.0)
+        ax.add_patch(p)
+        ax.text(10.5, y_tf - 0.19, name, ha="center", va="center", fontsize=7.8, color="#1B5E20")
+        y_tf -= 0.62
+
+    # Event Ring (Right, x: 12.6 to 15.3, y: 0.5 to 8.8)
+    p_evring = FancyBboxPatch((12.5, 0.5), 2.8, 8.3, boxstyle="round,pad=0.12",
+                              facecolor="#F3E5F5", edgecolor="#7B1FA2", lw=1.8)
+    ax.add_patch(p_evring)
+    ax.text(13.9, 8.55, "【Event Ring】\nコントローラ → CPU\n完了・状態変化通知",
+            ha="center", va="center", fontsize=9.6, weight="bold", color="#4A148C")
+    ev_trbs = [
+        ("Command Completion Event\n(Slot 1 確保完了)", "#E1BEE7"),
+        ("Port Status Change Event\n(ポート接続・リセット完了)", "#CE93D8"),
+        ("Transfer Event\n(マウス移動データ受信完了)", "#BA68C8"),
+        ("Command Completion Event\n(Address Device 完了)", "#E1BEE7"),
+        ("未書込領域 (空きスロット)\nCycle Bit = 0 で待機", "#F3E5F5")
+    ]
+    y_ev = 7.5
+    for name, col in ev_trbs:
+        p = FancyBboxPatch((12.7, y_ev - 0.85), 2.4, 0.95, boxstyle="round,pad=0.05",
+                           facecolor=col, edgecolor="#6A1B9A", lw=1.0)
+        ax.add_patch(p)
+        ax.text(13.9, y_ev - 0.38, name, ha="center", va="center", fontsize=7.4, color="#4A148C")
+        y_ev -= 1.3
+
+    # Arrows indicating interactions & pointers
+    # DCBAAP -> DCBAA
+    ax.annotate("", xy=(4.5, 6.5), xytext=(3.6, 6.5),
+                arrowprops=dict(arrowstyle="->", lw=2.2, color="#303F9F"))
+    ax.text(4.05, 6.75, "DCBAAP", fontsize=7.8, weight="bold", color="#303F9F")
+
+    # DCBAA Slot 1 -> Device Context
+    ax.annotate("", xy=(8.6, 6.5), xytext=(7.7, 6.5),
+                arrowprops=dict(arrowstyle="->", lw=2.2, color="#00796B"))
+    ax.text(8.15, 6.75, "ポインタ", fontsize=7.8, weight="bold", color="#00796B")
+
+    # CRCR -> Command Ring
+    ax.annotate("", xy=(4.5, 2.2), xytext=(3.6, 2.2),
+                arrowprops=dict(arrowstyle="->", lw=2.2, color="#E65100"))
+    ax.text(4.05, 2.45, "CRCR", fontsize=7.8, weight="bold", color="#E65100")
+
+    # Endpoint Context 2 -> Transfer Ring
+    ax.annotate("", xy=(10.5, 3.2), xytext=(10.5, 4.4),
+                arrowprops=dict(arrowstyle="->", lw=2.2, color="#2E7D32"))
+    ax.text(10.6, 3.8, "TR Dequeue Ptr", fontsize=7.8, weight="bold", color="#2E7D32")
+
+    # Doorbell -> Controller kick
+    ax.annotate("", xy=(3.6, 1.2), xytext=(4.7, 1.2),
+                arrowprops=dict(arrowstyle="->", lw=2.0, color="#F57F17", linestyle="--"))
+    ax.text(4.15, 1.45, "Doorbell Kick", fontsize=7.5, weight="bold", color="#F57F17")
+
+    # Event Ring -> ERDP / Interrupt
+    ax.annotate("", xy=(3.6, 4.5), xytext=(12.5, 4.5),
+                arrowprops=dict(arrowstyle="->", lw=1.8, color="#7B1FA2", linestyle=":"))
+    ax.text(8.0, 4.65, "完了通知 / MSI割り込み & ERDP (Event Ring Dequeue Pointer)",
+            fontsize=7.8, weight="bold", color="#7B1FA2")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig6_04_trb_binary_layout_and_cycle_bit_transition(output_path: str = "6/result/fig6_04_trb_binary_layout_and_cycle_bit_transition.png") -> str:
+    """
+    Figure 6.04: TRB Binary Layout & Cycle Bit Transition Mechanism.
+    Visualizes the 16-byte fixed-size TRB bitfields and the lock-free Cycle Bit handshake.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15.5, 10.5), dpi=300)
+    gs = GridSpec(2, 1, height_ratios=[1.1, 1.3], hspace=0.35)
+
+    # Subplot 1: 16-byte TRB Binary Layout
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_xlim(-0.5, 32.5)
+    ax1.set_ylim(-0.8, 5.0)
+    ax1.axis("off")
+
+    ax1.text(16, 4.6, "【16バイト固定長 TRB (Transfer Request Block) のバイナリ構造】",
+             ha="center", va="center", fontsize=13.5, weight="bold", color="#0D47A1")
+
+    # Bit rulers 31 down to 0
+    for b in range(32):
+        ax1.text(31 - b + 0.5, 3.85, str(31 - b), ha="center", va="center", fontsize=6.5, color="#546E7A")
+
+    dwords = [
+        ("Dword 0: Parameter (bits 0..31 of 64-bit address / Data Buffer Pointer)", 3.0, "#BBDEFB", [
+            (0, 32, "Parameter [31:0] (Buffer Lower 32-bit Address)", "#90CAF9")
+        ]),
+        ("Dword 1: Parameter (bits 32..63 of 64-bit address / Data Buffer Pointer)", 2.0, "#BBDEFB", [
+            (0, 32, "Parameter [63:32] (Buffer Upper 32-bit Address)", "#90CAF9")
+        ]),
+        ("Dword 2: Status & Length (32-bit)", 1.0, "#C8E6C9", [
+            (0, 17, "TRB Transfer Length [16:0] (0〜64KB)", "#A5D6A7"),
+            (17, 5, "TD Size", "#C8E6C9"),
+            (22, 10, "Interrupter Target [9:0]", "#E8F5E9")
+        ]),
+        ("Dword 3: Control & TRB Type & Cycle Bit (32-bit)", 0.0, "#FFE082", [
+            (0, 1, "C", "#FF5252"),            # Cycle Bit (bit 0)
+            (1, 1, "ENT", "#FFD54F"),          # Evaluate Next TRB (bit 1)
+            (2, 8, "Flags (ISP, CH, IOC..)", "#FFE082"), # Bits 2..9
+            (10, 6, "TRB Type [5:0]", "#FFB300"),        # Bits 10..15
+            (16, 16, "Control Specific Bits", "#FFF9C4")  # Bits 16..31
+        ])
+    ]
+
+    for title, y_pos, bg, fields in dwords:
+        ax1.text(-0.2, y_pos + 0.35, title, ha="right", va="center", fontsize=8.0, weight="bold", color="#263238")
+        # Draw 32-bit bar
+        for bit_offset, bit_len, label, col in fields:
+            # bit_offset from right (bit 0 is at x=31)
+            x_start = 32 - (bit_offset + bit_len)
+            p = FancyBboxPatch((x_start, y_pos), bit_len, 0.7, boxstyle="round,pad=0.02",
+                               facecolor=col, edgecolor="#37474F", lw=1.1)
+            ax1.add_patch(p)
+            ax1.text(x_start + bit_len / 2.0, y_pos + 0.35, label,
+                     ha="center", va="center", fontsize=7.2, weight="bold", color="#212121")
+
+    # Subplot 2: Cycle Bit Transition & Lock-Free Ring Traverse
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_xlim(-0.5, 15.5)
+    ax2.set_ylim(-0.5, 7.5)
+    ax2.axis("off")
+
+    ax2.text(7.5, 7.2, "【Cycle Bit (PCS / CCS) によるロックフリー同期 & リング巡回遷移モデル】",
+             ha="center", va="center", fontsize=13, weight="bold", color="#BF360C")
+
+    phases = [
+        ("第1周回 (Phase 1): 初期状態", 0.5, 4.0, [
+            ("TRB 0", "C = 1", "#C8E6C9"),
+            ("TRB 1", "C = 1", "#C8E6C9"),
+            ("TRB 2", "C = 1", "#C8E6C9"),
+            ("Link TRB (N-1)", "C = 1, TC = 1", "#FFE082"),
+        ], "Producer Cycle State (PCS) = 1\nConsumer Cycle State (CCS) = 1\nCPUは C=1 を書き込み、コントローラは C==1 のTRBを実行。"),
+
+        ("第2周回 (Phase 2): 反転後", 8.0, 4.0, [
+            ("TRB 0", "C = 0", "#FFCDD2"),
+            ("TRB 1", "C = 0", "#FFCDD2"),
+            ("TRB 2", "C = 0", "#FFCDD2"),
+            ("Link TRB (N-1)", "C = 0, TC = 1", "#FFE082"),
+        ], "PCS = 0 に反転 (Toggle Cycle!)\nCCS = 0 に反転 (Link TRB通過時)\nCPUは今度は C=0 を書き込み、コントローラは C==0 のTRBを実行。")
+    ]
+
+    for title, x_base, y_base, slots, explanation in phases:
+        p_frame = FancyBboxPatch((x_base, y_base - 3.2), 6.8, 3.0, boxstyle="round,pad=0.1",
+                                 facecolor="#FAFAFA", edgecolor="#78909C", lw=1.5)
+        ax2.add_patch(p_frame)
+        ax2.text(x_base + 3.4, y_base - 0.4, title, ha="center", va="center", fontsize=10.5, weight="bold", color="#263238")
+
+        y_s = y_base - 1.0
+        for name, c_val, col in slots:
+            p = FancyBboxPatch((x_base + 0.4, y_s - 0.38), 6.0, 0.42, boxstyle="round,pad=0.03",
+                               facecolor=col, edgecolor="#455A64", lw=0.9)
+            ax2.add_patch(p)
+            ax2.text(x_base + 1.8, y_s - 0.17, name, ha="left", va="center", fontsize=8.0, weight="bold", color="#212121")
+            ax2.text(x_base + 5.8, y_s - 0.17, c_val, ha="right", va="center", fontsize=8.0, weight="bold", color="#B71C1C" if "0" in c_val else "#1B5E20")
+            y_s -= 0.52
+
+        ax2.text(x_base + 3.4, y_base - 3.0, explanation, ha="center", va="top", fontsize=7.6, color="#37474F")
+
+    # Math Note Box at bottom
+    note_box = (
+        "【数理的証明: なぜ 1 ビットの反転で排他ロック不要の同期が成立するのか？】\n"
+        "1. 排他ロック (Mutex) の排除: 一般的なキューは read/write ポインタ両方を共有メモリ上で同期する必要があるが、\n"
+        "   xHCI では CPU は write ポインタのみを管理し、ハードウェアは内部の read ポインタのみを管理する。\n"
+        "2. 単一方向の判定条件: コントローラは `TRB.CycleBit == Controller.CCS` を確認するだけで「新しい要求の有無」を判定。\n"
+        "3. 周回検出の完全性: Link TRB の `Toggle Cycle (TC) = 1` により、リング終端通過と同時に両者の期待値が 1 ↔ 0 反転。\n"
+        "   古い周回の TRB が誤って再実行されることは論理的に絶対に発生しない。"
+    )
+    p_note = FancyBboxPatch((0.5, -0.4), 14.5, 0.85, boxstyle="round,pad=0.08",
+                            facecolor="#FFF8E1", edgecolor="#FFA000", lw=1.2)
+    ax2.add_patch(p_note)
+    ax2.text(0.7, 0.05, note_box, ha="left", va="center", fontsize=7.6, color="#212121")
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

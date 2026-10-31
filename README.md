@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-385%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-21.1%25%20(48%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-394%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-21.5%25%20(49%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -93,7 +93,7 @@ cmake --build build
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | [`5_Exercises.ipynb`](5/5_Exercises.ipynb) | `[x]` 完了 (7/7) |
-| **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[-]` 進行中 (1/5) |
+| **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[-]` 進行中 (2/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 未着手 (0/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -206,6 +206,7 @@ cmake --build build
 | ノートブック | 内容 | Colab で開く |
 |---|---|:---:|
 | [`6.1_Rendering_Mouse_Cursor.ipynb`](6/6.1_Rendering_Mouse_Cursor.ipynb) | 6.1 マウスカーソル（`osbook_day06a`・2次元幾何ベクトル `Vector2D<T>` ゼロオーバーヘッド構造・外枠描画 `DrawRectangle` 重複排除最適化・塗りつぶし `FillRectangle` 走査線数理・デスクトップ領域分割・アスキーアートスプライト `mouse_cursor_shape`・白黒反転HCI視覚人間工学・透過色カラーキーイング・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/6/6.1_Rendering_Mouse_Cursor.ipynb) |
+| [`6.2_USB_3_0_xHCI_Architecture.ipynb`](6/6.2_USB_3_0_xHCI_Architecture.ipynb) | 6.2 USBホストドライバ（UHCI/OHCI/EHCIからxHCIへの進化・Companion Controller解消・USB階層トポロジー・4大転送モード・DCBAA・Device Context・Transfer/Command/Event 3大リング・Doorbellレジスタ・16バイト固定長TRB・Cycle Bit (PCS/CCS) ロックフリー同期数理・Link TRB Toggle Cycle・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/6/6.2_USB_3_0_xHCI_Architecture.ipynb) |
 
 
 

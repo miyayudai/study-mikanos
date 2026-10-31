@@ -160,6 +160,9 @@ add_test(NAME test_ch05_os_chapter5_exercises COMMAND ch05_os_chapter5_exercises
 add_executable(ch06_mouse_cursor_sim src/ch06/mouse_cursor_sim.cpp)
 add_test(NAME test_ch06_mouse_cursor_sim COMMAND ch06_mouse_cursor_sim --test)
 
+add_executable(ch06_xhci_arch_sim src/ch06/xhci_arch_sim.cpp)
+add_test(NAME test_ch06_xhci_arch_sim COMMAND ch06_xhci_arch_sim --test)
+
 
 
 

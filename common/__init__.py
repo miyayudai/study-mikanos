@@ -361,6 +361,16 @@ from common.os_sim import (
     MouseCursorSimulator,
     plot_fig6_01_vector2d_and_rectangle_rendering,
     plot_fig6_02_desktop_layout_and_mouse_cursor_sprite,
+    TRBType,
+    TRBCompletionCode,
+    TRBSim,
+    LinkTRBSim,
+    RingSimulator,
+    SlotContextSim,
+    EndpointContextSim,
+    xHCIArchitectureSimulator,
+    plot_fig6_03_xhci_data_structures_and_ring_hierarchy,
+    plot_fig6_04_trb_binary_layout_and_cycle_bit_transition,
 )
 
 __all__ = [
@@ -724,4 +734,14 @@ __all__ = [
     "MouseCursorSimulator",
     "plot_fig6_01_vector2d_and_rectangle_rendering",
     "plot_fig6_02_desktop_layout_and_mouse_cursor_sprite",
+    "TRBType",
+    "TRBCompletionCode",
+    "TRBSim",
+    "LinkTRBSim",
+    "RingSimulator",
+    "SlotContextSim",
+    "EndpointContextSim",
+    "xHCIArchitectureSimulator",
+    "plot_fig6_03_xhci_data_structures_and_ring_hierarchy",
+    "plot_fig6_04_trb_binary_layout_and_cycle_bit_transition",
 ]
