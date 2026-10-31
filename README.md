@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-365%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-20.2%25%20(46%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-385%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-21.1%25%20(48%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -93,7 +93,7 @@ cmake --build build
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | [`5_Exercises.ipynb`](5/5_Exercises.ipynb) | `[x]` 完了 (7/7) |
-| **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[ ]` 未着手 (0/5) |
+| **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[-]` 進行中 (1/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 未着手 (0/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -200,6 +200,13 @@ cmake --build build
 | [`5.5_Implementing_Console_Class.ipynb`](5/5.5_Implementing_Console_Class.ipynb) | 5.5 コンソールクラス（`osbook_day05e`・Consoleクラス設計・80列x25行テキストバッファ`buffer_[25][81]`・MMIO Read Penalty回避と二重管理モデル・カーソル自動前進・改行`\n`処理・最下行あふれ時の4段階スクロールシーケンス・VRAM消去・行シフト`memcpy`・再描画・最下行クリア・Newlib `sbrk`スタブPOSIX準拠改善`errno=ENOMEM`・27行出力実験・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.5_Implementing_Console_Class.ipynb) |
 | [`5.6_Implementing_printk.ipynb`](5/5.6_Implementing_printk.ipynb) | 5.6 printk()（`osbook_day05f`・カーネル書式付き出力printk・Linux由来命名・グローバルコンソール配置new・ベアメタル静的初期化の罠とCRT不在・可変長引数`<cstdarg>`・System V AMD64 ABI引数レジスタ規約・レジスタ退避領域`reg_save_area`・`va_list`構造体内部オフセット数理・`vsprintf`/`vsnprintf`バッファオーバーフロー保護・27行出力実験と3回スクロール検証・シリアルコンソールコラム・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.6_Implementing_printk.ipynb) |
 | [`5_Exercises.ipynb`](5/5_Exercises.ipynb) | 第5章 演習問題（8x16ビットマップフォントMSBビット展開・C++参照vsポインタ・objcopyリンカシンボル・Newlib sbrkスタブ・System V AMD64 va_list ABI・25行Consoleスクロール数理・printkバッファ切り詰め安全性・10問自己採点テスト・レーダーチャート） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5_Exercises.ipynb) |
+
+### 第6章 マウス入力とPCI (`6/`)
+
+| ノートブック | 内容 | Colab で開く |
+|---|---|:---:|
+| [`6.1_Rendering_Mouse_Cursor.ipynb`](6/6.1_Rendering_Mouse_Cursor.ipynb) | 6.1 マウスカーソル（`osbook_day06a`・2次元幾何ベクトル `Vector2D<T>` ゼロオーバーヘッド構造・外枠描画 `DrawRectangle` 重複排除最適化・塗りつぶし `FillRectangle` 走査線数理・デスクトップ領域分割・アスキーアートスプライト `mouse_cursor_shape`・白黒反転HCI視覚人間工学・透過色カラーキーイング・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/6/6.1_Rendering_Mouse_Cursor.ipynb) |
+
 
 
 

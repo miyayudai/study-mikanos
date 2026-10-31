@@ -21284,3 +21284,455 @@ def plot_chapter5_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+
+# ==============================================================================
+# Chapter 6: Mouse Input & PCI (6.1 Rendering Mouse Cursor)
+# ==============================================================================
+
+MOUSE_CURSOR_WIDTH: int = 15
+MOUSE_CURSOR_HEIGHT: int = 24
+
+MOUSE_CURSOR_SHAPE: List[str] = [
+    "@              ",
+    "@@             ",
+    "@.@            ",
+    "@..@           ",
+    "@...@          ",
+    "@....@         ",
+    "@.....@        ",
+    "@......@       ",
+    "@.......@      ",
+    "@........@     ",
+    "@.........@    ",
+    "@..........@   ",
+    "@...........@  ",
+    "@............@ ",
+    "@......@@@@@@@@",
+    "@......@       ",
+    "@....@@.@      ",
+    "@...@ @.@      ",
+    "@..@   @.@     ",
+    "@.@    @.@     ",
+    "@@      @.@    ",
+    "@       @.@    ",
+    "         @.@   ",
+    "         @@@   ",
+]
+
+
+@dataclass
+class Vector2DSim:
+    """2D Vector representation matching MikanOS template <typename T> struct Vector2D."""
+    x: int
+    y: int
+
+    def __add__(self, other: "Vector2DSim") -> "Vector2DSim":
+        return Vector2DSim(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other: "Vector2DSim") -> "Vector2DSim":
+        return Vector2DSim(self.x - other.x, self.y - other.y)
+
+    def as_tuple(self) -> Tuple[int, int]:
+        return (self.x, self.y)
+
+
+Vector2D = Vector2DSim
+
+
+@dataclass
+class DesktopLayoutConfig:
+    """Configuration and color palette for MikanOS Desktop GUI."""
+    width: int = 800
+    height: int = 600
+    desktop_bg_color: Tuple[int, int, int] = (45, 118, 237)   # kDesktopBGColor (Blue)
+    desktop_fg_color: Tuple[int, int, int] = (255, 255, 255) # White
+    taskbar_height: int = 50
+    taskbar_color: Tuple[int, int, int] = (1, 8, 17)         # Dark Navy/Black
+    start_button_color: Tuple[int, int, int] = (80, 80, 80)  # Gray
+    start_icon_color: Tuple[int, int, int] = (160, 160, 160) # Light Gray Border
+    cursor_initial_pos: Tuple[int, int] = (200, 100)
+
+    @property
+    def taskbar_pos(self) -> Vector2DSim:
+        return Vector2DSim(0, self.height - self.taskbar_height)
+
+    @property
+    def taskbar_size(self) -> Vector2DSim:
+        return Vector2DSim(self.width, self.taskbar_height)
+
+    @property
+    def start_button_size(self) -> Vector2DSim:
+        return Vector2DSim(self.width // 5, self.taskbar_height)
+
+    @property
+    def start_icon_pos(self) -> Vector2DSim:
+        return Vector2DSim(10, self.height - 40)
+
+    @property
+    def start_icon_size(self) -> Vector2DSim:
+        return Vector2DSim(30, 30)
+
+
+@dataclass
+class MouseCursorStats:
+    """Statistics of drawn pixels for mouse cursor sprite."""
+    black_pixels: int = 0
+    white_pixels: int = 0
+    transparent_pixels: int = 0
+
+    @property
+    def total_pixels(self) -> int:
+        return self.black_pixels + self.white_pixels + self.transparent_pixels
+
+
+class MouseCursorSimulator:
+    """Simulator for rendering desktop environment, rectangles, and mouse cursor sprite."""
+
+    def __init__(self, width: int = 800, height: int = 600):
+        self.config = DesktopLayoutConfig(width=width, height=height)
+        self.fb = FrameBufferSimulator(width=width, height=height)
+        self.cursor_pos = Vector2DSim(self.config.cursor_initial_pos[0], self.config.cursor_initial_pos[1])
+
+    def get_pixel(self, x: int, y: int) -> Tuple[int, int, int]:
+        """Get RGB pixel tuple at (x, y)."""
+        p = self.fb.buffer[y, x]
+        return (int(p[0]), int(p[1]), int(p[2]))
+
+    def draw_rectangle(self, pos: Vector2DSim, size: Vector2DSim, color: Tuple[int, int, int]) -> int:
+        """Draw outline of rectangle using MikanOS algorithm. Returns number of drawn pixels."""
+        pixel_count = 0
+        r, g, b = color
+        # Horizontal lines (top & bottom)
+        for dx in range(size.x):
+            self.fb.write_pixel(pos.x + dx, pos.y, r, g, b)
+            self.fb.write_pixel(pos.x + dx, pos.y + size.y - 1, r, g, b)
+            pixel_count += 2
+        # Vertical lines (left & right, excluding corners)
+        for dy in range(1, size.y - 1):
+            self.fb.write_pixel(pos.x, pos.y + dy, r, g, b)
+            self.fb.write_pixel(pos.x + size.x - 1, pos.y + dy, r, g, b)
+            pixel_count += 2
+        return pixel_count
+
+    def fill_rectangle(self, pos: Vector2DSim, size: Vector2DSim, color: Tuple[int, int, int]) -> int:
+        """Fill solid rectangle using MikanOS algorithm. Returns number of drawn pixels."""
+        pixel_count = 0
+        r, g, b = color
+        for dy in range(size.y):
+            for dx in range(size.x):
+                self.fb.write_pixel(pos.x + dx, pos.y + dy, r, g, b)
+                pixel_count += 1
+        return pixel_count
+
+    def draw_mouse_cursor(self, pos: Vector2DSim) -> MouseCursorStats:
+        """Draw mouse cursor sprite at given pos. Returns MouseCursorStats."""
+        stats = MouseCursorStats()
+        for dy in range(MOUSE_CURSOR_HEIGHT):
+            line = MOUSE_CURSOR_SHAPE[dy]
+            for dx in range(MOUSE_CURSOR_WIDTH):
+                ch = line[dx]
+                px = pos.x + dx
+                py = pos.y + dy
+                if ch == '@':
+                    self.fb.write_pixel(px, py, 0, 0, 0)
+                    stats.black_pixels += 1
+                elif ch == '.':
+                    self.fb.write_pixel(px, py, 255, 255, 255)
+                    stats.white_pixels += 1
+                else:
+                    # Transparent: do not modify framebuffer pixel
+                    stats.transparent_pixels += 1
+        return stats
+
+    def render_desktop(self) -> MouseCursorStats:
+        """Render complete day06a desktop screen."""
+        cfg = self.config
+        # 1. Desktop background
+        self.fill_rectangle(Vector2DSim(0, 0), Vector2DSim(cfg.width, cfg.height - cfg.taskbar_height), cfg.desktop_bg_color)
+        # 2. Taskbar
+        self.fill_rectangle(cfg.taskbar_pos, cfg.taskbar_size, cfg.taskbar_color)
+        # 3. Start button
+        self.fill_rectangle(cfg.taskbar_pos, cfg.start_button_size, cfg.start_button_color)
+        # 4. Start button icon border
+        self.draw_rectangle(cfg.start_icon_pos, cfg.start_icon_size, cfg.start_icon_color)
+        # 5. Mouse cursor
+        return self.draw_mouse_cursor(self.cursor_pos)
+
+
+def plot_fig6_01_vector2d_and_rectangle_rendering(output_path: str = "6/result/fig6_01_vector2d_and_rectangle_rendering.png") -> str:
+    """Generate Figure 6.01: Vector2D<T> structure and DrawRectangle / FillRectangle scanline models."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 11), dpi=300)
+    gs = GridSpec(2, 2, figure=fig, hspace=0.32, wspace=0.25)
+
+    # Subplot 1: Vector2D<T> Memory Layout & Zero-Overhead Principle
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_xlim(-5, 95)
+    ax1.set_ylim(-5, 95)
+    ax1.axis("off")
+    ax1.set_title("(A) 幾何ベクトルの構造体テンプレート: Vector2D<T>",
+                  fontsize=11.5, fontweight="bold", color="#1565C0", pad=8)
+
+    box1 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#E3F2FD", edgecolor="#1976D2", lw=1.8)
+    ax1.add_patch(box1)
+
+    ax1.text(4, 82, "【Vector2D<T> クラステンプレートの設計とメモリ構造】", fontsize=8.8, fontweight="bold", color="#0D47A1")
+    code_text = (
+        "template <typename T>\n"
+        "struct Vector2D {\n"
+        "  T x, y; // メンバ変数は 2 つのみ (x, y)\n"
+        "};\n\n"
+        "// 2次元空間における「位置」と「大きさ」を同一型で統一的に表現:\n"
+        "Vector2D<int> pos{ 200, 100 }; // 描画開始基準点 (x0, y0)\n"
+        "Vector2D<int> size{ 15,  24 }; // 幅・高さ (dx, dy)"
+    )
+    ax1.text(4, 52, code_text, fontsize=8.0,
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFFFFF", edgecolor="#90CAF9", lw=1.2))
+
+    # Memory Diagram
+    mem_box = patches.Rectangle((4, 18), 82, 24, facecolor="#BBDEFB", edgecolor="#1976D2", lw=1.5)
+    ax1.add_patch(mem_box)
+    ax1.text(45, 36, "Vector2D<int> のメモリレイアウト (64ビット環境)", fontsize=8.2, fontweight="bold", ha="center", color="#0D47A1")
+
+    # Member x
+    ax1.add_patch(patches.Rectangle((10, 22), 32, 10, facecolor="#FFFFFF", edgecolor="#1565C0", lw=1.2))
+    ax1.text(26, 27, "int x (4 bytes)\noffset: +0x00", fontsize=7.5, ha="center", va="center", color="#0D47A1")
+
+    # Member y
+    ax1.add_patch(patches.Rectangle((48, 22), 32, 10, facecolor="#FFFFFF", edgecolor="#1565C0", lw=1.2))
+    ax1.text(64, 27, "int y (4 bytes)\noffset: +0x04", fontsize=7.5, ha="center", va="center", color="#0D47A1")
+
+    ax1.text(4, 6, "★ C++ゼロオーバーヘッド原則: sizeof(Vector2D<int>) == 8 bytes (仮想関数なし・パディングなし)",
+             fontsize=7.6, fontweight="bold", color="#1B5E20")
+
+    # Subplot 2: DrawRectangle (Outline) Scanline Algorithm
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(-5, 95)
+    ax2.set_ylim(-5, 95)
+    ax2.axis("off")
+    ax2.set_title("(B) 矩形外枠描画アルゴリズム: DrawRectangle()",
+                  fontsize=11.5, fontweight="bold", color="#C2185B", pad=8)
+
+    box2 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#FCE4EC", edgecolor="#C2185B", lw=1.8)
+    ax2.add_patch(box2)
+
+    ax2.text(4, 82, "【外枠描画の4走査シーケンスと重複排除最適化】", fontsize=8.8, fontweight="bold", color="#880E4F")
+
+    gx0, gy0, gw, gh = 8, 30, 40, 44
+    ax2.add_patch(patches.Rectangle((gx0, gy0), gw, gh, facecolor="#F8BBD0", edgecolor="#880E4F", lw=1.5, linestyle="--"))
+
+    # Top line
+    ax2.add_patch(patches.Rectangle((gx0, gy0 + gh - 4), gw, 4, facecolor="#D81B60", edgecolor="#880E4F", lw=1.2))
+    ax2.text(gx0 + gw/2, gy0 + gh + 2, "上辺走査: dy = 0, dx = [0, size.x)", fontsize=7.0, ha="center", color="#880E4F", fontweight="bold")
+
+    # Bottom line
+    ax2.add_patch(patches.Rectangle((gx0, gy0), gw, 4, facecolor="#D81B60", edgecolor="#880E4F", lw=1.2))
+    ax2.text(gx0 + gw/2, gy0 - 4, "下辺走査: dy = size.y - 1, dx = [0, size.x)", fontsize=7.0, ha="center", color="#880E4F", fontweight="bold")
+
+    # Left line (excluding corners)
+    ax2.add_patch(patches.Rectangle((gx0, gy0 + 4), 4, gh - 8, facecolor="#8E24AA", edgecolor="#4A148C", lw=1.2))
+    ax2.text(gx0 - 2, gy0 + gh/2, "左辺走査:\ndy = [1, size.y-1)\n(角を除外)", fontsize=6.8, ha="right", va="center", color="#4A148C")
+
+    # Right line (excluding corners)
+    ax2.add_patch(patches.Rectangle((gx0 + gw - 4, gy0 + 4), 4, gh - 8, facecolor="#8E24AA", edgecolor="#4A148C", lw=1.2))
+    ax2.text(gx0 + gw + 2, gy0 + gh/2, "右辺走査:\ndy = [1, size.y-1)\n(角を除外)", fontsize=6.8, ha="left", va="center", color="#4A148C")
+
+    ax2.text(54, 70, "【走査ピクセル数】", fontsize=8.0, fontweight="bold", color="#880E4F")
+    ax2.text(54, 52, "水平線2本: 2 × size.x\n垂直線2本: 2 × (size.y - 2)\n合計: 2(size.x + size.y) - 4\n計算量: O(W + H)",
+             fontsize=7.5, color="#37474F")
+    ax2.text(54, 28, "★ 角ピクセル重複排除:\n垂直走査を dy=1 から\nsize.y-1 までに制限し、\n同一画素への二重書込\n(バス無駄) を完全防止",
+             fontsize=7.2, color="#B71C1C", fontweight="bold")
+
+    # Subplot 3: FillRectangle (Solid Fill) Row-Major Scanline
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_xlim(-5, 95)
+    ax3.set_ylim(-5, 95)
+    ax3.axis("off")
+    ax3.set_title("(C) 塗りつぶし矩形描画: FillRectangle() と走査線数理",
+                  fontsize=11.5, fontweight="bold", color="#2E7D32", pad=8)
+
+    box3 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#E8F5E9", edgecolor="#2E7D32", lw=1.8)
+    ax3.add_patch(box3)
+
+    ax3.text(4, 82, "【行優先走査 (Row-Major Scanline) と VRAM 連続アクセス】", fontsize=8.8, fontweight="bold", color="#1B5E20")
+
+    fx0, fy0, fw, fh = 8, 24, 46, 48
+    ax3.add_patch(patches.Rectangle((fx0, fy0), fw, fh, facecolor="#C8E6C9", edgecolor="#2E7D32", lw=1.5))
+
+    for i in range(5):
+        y_pos = fy0 + fh - 6 - i * 9
+        ax3.arrow(fx0 + 4, y_pos, fw - 10, 0, head_width=2.5, head_length=3.0, fc="#1B5E20", ec="#1B5E20", lw=1.2)
+        ax3.text(fx0 + fw + 2, y_pos, f"Line {i} (dy={i})", fontsize=6.8, va="center", color="#1B5E20")
+
+    ax3.text(58, 70, "【二重ループ構造】", fontsize=8.0, fontweight="bold", color="#1B5E20")
+    fill_code = (
+        "for (int dy = 0; dy < size.y; ++dy) {\n"
+        "  for (int dx = 0; dx < size.x; ++dx) {\n"
+        "    writer.Write(pos.x+dx, pos.y+dy, c);\n"
+        "  }\n"
+        "}"
+    )
+    ax3.text(58, 44, fill_code, fontsize=7.2,
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFFFFF", edgecolor="#A5D6A7"))
+
+    ax3.text(4, 10, "★ なぜ外側が dy で内側が dx なのか？ VRAMアドレス offset = (y * stride + x) * 4\n"
+                    "   水平方向 dx はメモリ連続アドレス（キャッシュラインにヒットし超高速転送可能）",
+             fontsize=7.4, fontweight="bold", color="#1B5E20")
+
+    # Subplot 4: Coordinate Mapping Formula & Hardware FrameBuffer Stride
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_xlim(-5, 95)
+    ax4.set_ylim(-5, 95)
+    ax4.axis("off")
+    ax4.set_title("(D) 2次元座標から VRAM 物理バイトオフセットへの変換数理",
+                  fontsize=11.5, fontweight="bold", color="#E65100", pad=8)
+
+    box4 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#FFF3E0", edgecolor="#E65100", lw=1.8)
+    ax4.add_patch(box4)
+
+    ax4.text(4, 82, "【UEFI GOP リニアフレームバッファのアドレッシング方程式】", fontsize=8.8, fontweight="bold", color="#BF360C")
+
+    eq_box = (
+        "VRAM 物理アドレス変換の一般式:\n"
+        "  Addr(x, y) = BaseAddr + 4 × (y × pixels_per_scan_line + x)\n\n"
+        "矩形描画時の各ピクセル物理アドレス:\n"
+        "  Addr(pos, dx, dy) = BaseAddr + 4 × [(pos.y + dy) × H_stride + (pos.x + dx)]\n\n"
+        "※ pixels_per_scan_line (H_stride) >= horizontal_resolution\n"
+        "  走査線末尾のハードウェアアライメントパディングに留意"
+    )
+    ax4.text(4, 46, eq_box, fontsize=7.6,
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFFFFF", edgecolor="#FFCC80"))
+
+    ax4.text(4, 30, "【描画性能とハードウェアバス効率】", fontsize=8.2, fontweight="bold", color="#BF360C")
+    ax4.text(4, 12, "・水平方向 dx ループ: 4バイト刻みのアドレス連続書込 (バースト転送・ライトコンバイン)\n"
+                    "・垂直方向 dy ループ: stride × 4 バイト離れたアドレスへのストライド跳躍\n"
+                    "・FillRectangle() の全画素数: N = size.x × size.y ピクセル (例: デスクトップ全体で約48万画素)",
+             fontsize=7.3, color="#37474F")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig6_02_desktop_layout_and_mouse_cursor_sprite(output_path: str = "6/result/fig6_02_desktop_layout_and_mouse_cursor_sprite.png") -> str:
+    """Generate Figure 6.02: Desktop Layout & Mouse Cursor Sprite Map."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 11), dpi=300)
+    gs = GridSpec(1, 2, figure=fig, width_ratios=[1.1, 0.9], wspace=0.22)
+
+    # Left: Desktop UI Layout (800x600 coordinate space)
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_xlim(-20, 820)
+    ax1.set_ylim(620, -20)  # Inverted Y for screen coordinates
+    ax1.set_aspect("equal")
+    ax1.set_title("(A) MikanOS デスクトップ画面レイアウト構成 (day06a)\n[解像度: 800 × 600 ピクセル]",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=12)
+
+    # 1. Desktop background
+    desktop_rect = patches.Rectangle((0, 0), 800, 550, facecolor="#2D76ED", edgecolor="#1565C0", lw=2)
+    ax1.add_patch(desktop_rect)
+    ax1.text(400, 260, "デスクトップ背景領域\nkDesktopBGColor: RGB(45, 118, 237)\nサイズ: 800 × 550 px",
+             fontsize=10.0, fontweight="bold", color="#FFFFFF", ha="center", va="center",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#1E88E5", alpha=0.85, edgecolor="#FFFFFF", lw=1.2))
+
+    # 2. Console Text Area
+    console_rect = patches.Rectangle((10, 10), 320, 120, facecolor="#2D76ED", edgecolor="#90CAF9", lw=1.2, linestyle="--")
+    ax1.add_patch(console_rect)
+    ax1.text(18, 30, "> Welcome to MikanOS!\n  printk(\"Welcome to MikanOS!\\n\");\n  文字色: 白 RGB(255, 255, 255)\n  背景色: デスクトップ青 RGB(45, 118, 237)",
+             fontsize=7.8, color="#FFFFFF")
+
+    # 3. Taskbar
+    taskbar_rect = patches.Rectangle((0, 550), 800, 50, facecolor="#010811", edgecolor="#000000", lw=1.5)
+    ax1.add_patch(taskbar_rect)
+    ax1.text(480, 575, "タスクバー領域: (0, 550), 800 × 50 px, RGB(1, 8, 17)",
+             fontsize=8.5, color="#ECEFF1", ha="center", va="center", fontweight="bold")
+
+    # 4. Start button
+    start_rect = patches.Rectangle((0, 550), 160, 50, facecolor="#505050", edgecolor="#37474F", lw=1.2)
+    ax1.add_patch(start_rect)
+    ax1.text(80, 575, "スタートボタン\n800/5 = 160px", fontsize=7.5, color="#FFFFFF", ha="center", va="center", fontweight="bold")
+
+    # 5. Start icon border
+    icon_rect = patches.Rectangle((10, 560), 30, 30, facecolor="none", edgecolor="#A0A0A0", lw=2)
+    ax1.add_patch(icon_rect)
+
+    # 6. Mouse Cursor in Desktop
+    cur_x, cur_y = 200, 100
+    ax1.add_patch(patches.Circle((cur_x, cur_y), 16, facecolor="none", edgecolor="#FF1744", lw=2, linestyle=":"))
+    ax1.text(cur_x + 25, cur_y + 10, f"マウスカーソル初期位置\n({cur_x}, {cur_y})",
+             fontsize=8.5, color="#D50000", fontweight="bold",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFEBEE", edgecolor="#FF1744"))
+
+    # Cursor mini preview
+    for dy in range(MOUSE_CURSOR_HEIGHT):
+        line = MOUSE_CURSOR_SHAPE[dy]
+        for dx in range(MOUSE_CURSOR_WIDTH):
+            ch = line[dx]
+            if ch == '@':
+                ax1.plot(cur_x + dx * 1.5, cur_y + dy * 1.5, marker="s", markersize=2.0, color="#000000")
+            elif ch == '.':
+                ax1.plot(cur_x + dx * 1.5, cur_y + dy * 1.5, marker="s", markersize=2.0, color="#FFFFFF")
+
+    ax1.set_xlabel("X 座標 (ピクセル)", fontsize=9.0)
+    ax1.set_ylabel("Y 座標 (ピクセル)", fontsize=9.0)
+    ax1.grid(True, alpha=0.3, linestyle=":")
+
+    # Right: Mouse Cursor Sprite Map (15x24 grid anatomy)
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_xlim(-1, 16)
+    ax2.set_ylim(25, -1)  # Inverted Y
+    ax2.set_aspect("equal")
+    ax2.set_title("(B) マウスカーソルスプライトのピクセルマップ解剖図\n[幅: 15 px × 高さ: 24 px / カラーキーイング]",
+                  fontsize=11.5, fontweight="bold", color="#880E4F", pad=12)
+
+    bg_box = patches.Rectangle((0, 0), 15, 24, facecolor="#2D76ED", edgecolor="#1565C0", lw=1.5)
+    ax2.add_patch(bg_box)
+
+    black_pixels = 0
+    white_pixels = 0
+    transparent_pixels = 0
+
+    for y in range(MOUSE_CURSOR_HEIGHT):
+        row = MOUSE_CURSOR_SHAPE[y]
+        for x in range(MOUSE_CURSOR_WIDTH):
+            ch = row[x]
+            if ch == '@':
+                p = patches.Rectangle((x, y), 1, 1, facecolor="#000000", edgecolor="#333333", lw=0.6)
+                ax2.add_patch(p)
+                black_pixels += 1
+            elif ch == '.':
+                p = patches.Rectangle((x, y), 1, 1, facecolor="#FFFFFF", edgecolor="#CCCCCC", lw=0.6)
+                ax2.add_patch(p)
+                white_pixels += 1
+            else:
+                p = patches.Rectangle((x, y), 1, 1, facecolor="none", edgecolor="#64B5F6", lw=0.4, linestyle=":")
+                ax2.add_patch(p)
+                transparent_pixels += 1
+
+    ax2.set_xticks(range(0, 16, 2))
+    ax2.set_yticks(range(0, 25, 2))
+    ax2.set_xlabel("dx (0 〜 14)", fontsize=8.5)
+    ax2.set_ylabel("dy (0 〜 23)", fontsize=8.5)
+
+    annot_text = (
+        f"【スプライトピクセル統計 (全 {15*24} 画素)】\n"
+        f"・'@': 外枠黒色 (RGB 0,0,0)  = {black_pixels} 画素 (エッジ強調)\n"
+        f"・'.': 内側白色 (RGB 255,255,255) = {white_pixels} 画素 (高輝度本体)\n"
+        f"・' ': 透過画素 (書込スキップ) = {transparent_pixels} 画素 (カラーキー)\n"
+        f"\n"
+        f"★ なぜ黒枠＋白塗りなのか？ (HCI 視覚人間工学)\n"
+        f"  白背景でも黒枠で境界が際立ち、黒背景でも白塗りで目立つ。\n"
+        f"  あらゆる壁紙・ウィンドウ上で見失わない不変の視認性を確保。"
+    )
+    ax2.text(0, 27.5, annot_text, fontsize=7.6, color="#212121",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#FFF8E1", edgecolor="#FFA000", lw=1.2))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

@@ -156,6 +156,11 @@ add_test(NAME test_ch05_printk_sim COMMAND ch05_printk_sim)
 add_executable(ch05_os_chapter5_exercises src/ch05/os_chapter5_exercises.cpp)
 add_test(NAME test_ch05_os_chapter5_exercises COMMAND ch05_os_chapter5_exercises --test)
 
+# Chapter 6
+add_executable(ch06_mouse_cursor_sim src/ch06/mouse_cursor_sim.cpp)
+add_test(NAME test_ch06_mouse_cursor_sim COMMAND ch06_mouse_cursor_sim --test)
+
+
 
 
 

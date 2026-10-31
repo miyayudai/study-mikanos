@@ -351,6 +351,16 @@ from common.os_sim import (
     Chapter5TheoryValidator,
     plot_chapter5_exercises_summary,
     plot_chapter5_mastery_radar,
+    MOUSE_CURSOR_WIDTH,
+    MOUSE_CURSOR_HEIGHT,
+    MOUSE_CURSOR_SHAPE,
+    Vector2DSim,
+    Vector2D,
+    DesktopLayoutConfig,
+    MouseCursorStats,
+    MouseCursorSimulator,
+    plot_fig6_01_vector2d_and_rectangle_rendering,
+    plot_fig6_02_desktop_layout_and_mouse_cursor_sprite,
 )
 
 __all__ = [
@@ -704,4 +714,14 @@ __all__ = [
     "Chapter5TheoryValidator",
     "plot_chapter5_exercises_summary",
     "plot_chapter5_mastery_radar",
+    "MOUSE_CURSOR_WIDTH",
+    "MOUSE_CURSOR_HEIGHT",
+    "MOUSE_CURSOR_SHAPE",
+    "Vector2DSim",
+    "Vector2D",
+    "DesktopLayoutConfig",
+    "MouseCursorStats",
+    "MouseCursorSimulator",
+    "plot_fig6_01_vector2d_and_rectangle_rendering",
+    "plot_fig6_02_desktop_layout_and_mouse_cursor_sprite",
 ]
