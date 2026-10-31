@@ -339,6 +339,9 @@ from common.os_sim import (
     MiniSprintfSim,
     plot_fig5_07_string_rendering_coordinate_advance,
     plot_fig5_08_newlib_sbrk_and_varargs_abi,
+    ConsoleSim,
+    plot_fig5_09_console_buffer_and_cursor_model,
+    plot_fig5_10_console_scroll_sequence,
 )
 
 __all__ = [
@@ -680,4 +683,7 @@ __all__ = [
     "MiniSprintfSim",
     "plot_fig5_07_string_rendering_coordinate_advance",
     "plot_fig5_08_newlib_sbrk_and_varargs_abi",
+    "ConsoleSim",
+    "plot_fig5_09_console_buffer_and_cursor_model",
+    "plot_fig5_10_console_scroll_sequence",
 ]

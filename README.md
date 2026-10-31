@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-348%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-19.3%25%20(44%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-357%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-19.7%25%20(45%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -197,6 +197,7 @@ cmake --build build
 | [`5.2_Separate_Compilation_and_Linking.ipynb`](5/5.2_Separate_Compilation_and_Linking.ipynb) | 5.2 分割コンパイル（`osbook_day05b`・graphics/font/main分割・翻訳単位・宣言vs定義・ODR単一定義規則・`#pragma once`インクルードガード・シンボルテーブルT/R/D/U・LLDシンボル解決・Makefile依存関係自動生成`clang++ -MM`・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.2_Separate_Compilation_and_Linking.ipynb) |
 | [`5.3_Generating_Hankaku_Font_Object.ipynb`](5/5.3_Generating_Hankaku_Font_Object.ipynb) | 5.3 フォントを増やそう（`osbook_day05c`・アスキーアート`hankaku.txt`・`makefont.py`ビット圧縮・`objcopy`生バイナリELF64化・特殊シンボル`_start`/`_end`/`_size`・絶対シンボル`&_size`落とし穴・`GetFont(c)`数理・ASCII 94文字連続描画・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.3_Generating_Hankaku_Font_Object.ipynb) |
 | [`5.4_String_Rendering_and_sprintf.ipynb`](5/5.4_String_Rendering_and_sprintf.ipynb) | 5.4 文字列描画とsprintf()（`osbook_day05d`・`WriteString`文字列連続描画・等幅8px送り数理・終端ヌル文字`'\0'`走査・Newlib標準Cライブラリ静的リンク`-lc`・システムコールスタブ`sbrk`の必然性・可変長引数`va_list`とSystem V AMD64 ABIレジスタ規約・`%al`浮動小数点引数数・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.4_String_Rendering_and_sprintf.ipynb) |
+| [`5.5_Implementing_Console_Class.ipynb`](5/5.5_Implementing_Console_Class.ipynb) | 5.5 コンソールクラス（`osbook_day05e`・Consoleクラス設計・80列x25行テキストバッファ`buffer_[25][81]`・MMIO Read Penalty回避と二重管理モデル・カーソル自動前進・改行`\n`処理・最下行あふれ時の4段階スクロールシーケンス・VRAM消去・行シフト`memcpy`・再描画・最下行クリア・Newlib `sbrk`スタブPOSIX準拠改善`errno=ENOMEM`・27行出力実験・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.5_Implementing_Console_Class.ipynb) |
 
 
 

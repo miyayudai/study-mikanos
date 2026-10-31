@@ -19967,3 +19967,405 @@ def plot_fig5_08_newlib_sbrk_and_varargs_abi(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 5.5: Console Class and Scroll Simulation
+# ==============================================================================
+
+class ConsoleSim:
+    """Simulator for MikanOS Console class (osbook_day05e).
+    
+    Models:
+    - 25 rows x 80 columns text buffer (char buffer_[25][81])
+    - Cursor positioning (cursor_row_, cursor_column_)
+    - Auto-advance, newline handling (\\n), and scrolling upon overflow
+    - Framebuffer rendering (640x400 pixels with 8x16 bitmap font)
+    """
+
+    kRows: int = 25
+    kColumns: int = 80
+    kFontWidth: int = 8
+    kFontHeight: int = 16
+
+    def __init__(
+        self,
+        fg_color: Tuple[int, int, int] = (0, 0, 0),
+        bg_color: Tuple[int, int, int] = (255, 255, 255),
+        string_renderer: Optional[StringRendererSim] = None,
+    ):
+        self.fg_color = fg_color
+        self.bg_color = bg_color
+        self.renderer = string_renderer or StringRendererSim()
+        
+        # buffer_[kRows][kColumns + 1] initialized to '\0'
+        self.buffer: List[List[str]] = [
+            ['\0' for _ in range(self.kColumns + 1)]
+            for _ in range(self.kRows)
+        ]
+        self.cursor_row: int = 0
+        self.cursor_column: int = 0
+        self.scroll_count: int = 0
+        self.scroll_history: List[str] = []
+        
+        # Simulated FrameBuffer: 640 x 400 (kColumns * 8, kRows * 16)
+        self.fb_width = self.kColumns * self.kFontWidth
+        self.fb_height = self.kRows * self.kFontHeight
+        self.framebuffer: np.ndarray = np.full(
+            (self.fb_height, self.fb_width, 3),
+            self.bg_color,
+            dtype=np.uint8
+        )
+
+    def put_string(self, s: str) -> None:
+        """Write string s to console, advancing cursor and handling newlines."""
+        for char in s:
+            if char == '\n':
+                self.newline()
+            elif self.cursor_column < self.kColumns - 1:
+                # Render character to framebuffer
+                px = self.kFontWidth * self.cursor_column
+                py = self.kFontHeight * self.cursor_row
+                self.renderer.render_string(
+                    self.framebuffer, px, py, char, color=self.fg_color
+                )
+                self.buffer[self.cursor_row][self.cursor_column] = char
+                self.cursor_column += 1
+
+    def newline(self) -> None:
+        """Move cursor to beginning of next line, scrolling if on bottom row."""
+        self.cursor_column = 0
+        if self.cursor_row < self.kRows - 1:
+            self.cursor_row += 1
+        else:
+            self.scroll_count += 1
+            # Record scroll out line
+            top_line = "".join(self.buffer[0][:self.kColumns]).rstrip('\0')
+            self.scroll_history.append(top_line)
+            
+            # Step 1: Clear console area in framebuffer
+            self.framebuffer[:, :] = self.bg_color
+            
+            # Step 2: Shift buffer rows and redraw
+            for row in range(self.kRows - 1):
+                self.buffer[row] = list(self.buffer[row + 1])
+                line_str = "".join(self.buffer[row][:self.kColumns]).rstrip('\0')
+                if line_str:
+                    self.renderer.render_string(
+                        self.framebuffer, 0, self.kFontHeight * row, line_str, color=self.fg_color
+                    )
+            
+            # Step 3: Clear bottom row
+            self.buffer[self.kRows - 1] = ['\0' for _ in range(self.kColumns + 1)]
+
+    def get_line(self, row: int) -> str:
+        """Get null-terminated string of specified row."""
+        if 0 <= row < self.kRows:
+            return "".join(self.buffer[row][:self.kColumns]).rstrip('\0')
+        raise IndexError(f"Row {row} out of range (0..{self.kRows - 1})")
+
+    def get_buffer_text(self) -> List[str]:
+        """Get all 25 rows as strings."""
+        return [self.get_line(r) for r in range(self.kRows)]
+
+    def clear_screen(self) -> None:
+        """Clear entire console and reset cursor."""
+        self.buffer = [
+            ['\0' for _ in range(self.kColumns + 1)]
+            for _ in range(self.kRows)
+        ]
+        self.cursor_row = 0
+        self.cursor_column = 0
+        self.framebuffer[:, :] = self.bg_color
+
+    def dump_state(self) -> Dict[str, Any]:
+        """Dump current state dictionary for inspection and verification."""
+        return {
+            "cursor_row": self.cursor_row,
+            "cursor_column": self.cursor_column,
+            "scroll_count": self.scroll_count,
+            "scroll_history": list(self.scroll_history),
+            "lines": self.get_buffer_text(),
+            "kRows": self.kRows,
+            "kColumns": self.kColumns,
+        }
+
+
+def plot_fig5_09_console_buffer_and_cursor_model(
+    output_path: str = "5/result/fig5_09_console_buffer_and_cursor_model.png"
+) -> str:
+    """Generate Figure 5.9: Console 25x80 Dual-Layer Architecture and Cursor Geometry."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 8.5))
+    gs = GridSpec(1, 2, width_ratios=[1.1, 1.0], wspace=0.22)
+
+    # Subplot 1: Physical Screen & Pixel Coordinates
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_xlim(-5, 95)
+    ax1.set_ylim(-5, 95)
+    ax1.axis("off")
+    ax1.set_title("1. 物理画面 (VRAM) と GOP フレームバッファ座標マッピング\n"
+                  "(640x400 ピクセル / 80列x25行 グリッド幾何学)",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # Outer Screen Frame
+    screen_rect = patches.FancyBboxPatch(
+        (0, 5), 90, 80, boxstyle="round,pad=0.8,rounding_size=1.5",
+        facecolor="#ECEFF1", edgecolor="#37474F", linewidth=2.5
+    )
+    ax1.add_patch(screen_rect)
+
+    # Display Area (Console Window)
+    display_rect = patches.Rectangle(
+        (5, 12), 80, 68, facecolor="#FFFFFF", edgecolor="#455A64", linewidth=1.8
+    )
+    ax1.add_patch(display_rect)
+
+    ax1.text(7, 76, "GOP VRAM 物理フレームバッファ領域 (横 640px × 縦 400px)",
+             fontsize=9.5, fontweight="bold", color="#1A237E")
+
+    # Draw grid cells representation
+    for row in range(5):
+        y_pos = 68 - row * 8
+        ax1.plot([6, 84], [y_pos, y_pos], color="#CFD8DC", linestyle="--", linewidth=0.8)
+        ax1.text(1, y_pos - 4, f"Row {row}", fontsize=7.5, color="#546E7A", va="center")
+
+    ax1.text(1, 22, "...", fontsize=12, fontweight="bold", color="#546E7A")
+    ax1.text(1, 14, "Row 24", fontsize=7.5, color="#D32F2F", va="center", fontweight="bold")
+    ax1.plot([6, 84], [17, 17], color="#EF9A9A", linestyle="-", linewidth=1.2)
+
+    # Column markers
+    for col in [0, 1, 2, 3, 10, 20]:
+        x_pos = 6 + col * 3.5
+        ax1.text(x_pos, 72, f"C{col}", fontsize=7.0, color="#78909C", ha="center")
+
+    # Sample rendered text lines
+    ax1.text(8, 64, "line 0: Console initialized (PixelWriter & buffer)", fontsize=8.0, family="monospace", color="#212121")
+    ax1.text(8, 56, "line 1: WriteAscii(writer, 8 * cursor_col, 16 * cursor_row)", fontsize=8.0, family="monospace", color="#212121")
+    ax1.text(8, 48, "line 2: Memory buffer caches ASCII chars for scroll", fontsize=8.0, family="monospace", color="#212121")
+
+    # Active Cursor indicator
+    cursor_rect = patches.Rectangle((34, 47), 3.2, 7.0, facecolor="#FF5722", alpha=0.45)
+    ax1.add_patch(cursor_rect)
+    ax1.text(34, 45, "▲ Cursor (row=2, col=11)", fontsize=7.5, fontweight="bold", color="#E64A19")
+
+    # Coordinate transformation formula card
+    formula_box = patches.FancyBboxPatch(
+        (5, -3), 80, 11, boxstyle="round,pad=0.5",
+        facecolor="#E8EAF6", edgecolor="#3F51B5", linewidth=1.5
+    )
+    ax1.add_patch(formula_box)
+    formula_text = (
+        "【ピクセル座標変換公式】\n"
+        "X = 8 × cursor_column_   [px]  (フォント幅 8px)\n"
+        "Y = 16 × cursor_row_     [px]  (フォント高 16px)"
+    )
+    ax1.text(45, 2.5, formula_text, fontsize=8.2, fontweight="bold", ha="center", va="center", color="#1A237E")
+
+    # Subplot 2: Logical Memory Buffer Structure
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(-5, 95)
+    ax2.set_ylim(-5, 95)
+    ax2.axis("off")
+    ax2.set_title("2. カーネルメモリ上の文字バッファ構造\n"
+                  "(char buffer_[25][81] と NULL 終端設計)",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # Memory Layout Box
+    mem_box = patches.FancyBboxPatch(
+        (0, 15), 90, 72, boxstyle="round,pad=0.8,rounding_size=1.5",
+        facecolor="#F1F8E9", edgecolor="#33691E", linewidth=2.2
+    )
+    ax2.add_patch(mem_box)
+
+    ax2.text(5, 82, "Console 内部配列: char buffer_[25][81]; (合計 2,025 バイト)",
+             fontsize=9.5, fontweight="bold", color="#1B5E20")
+
+    # Table visualization for buffer
+    rows_data = [
+        ("buffer_[0]", "['l','i','n','e',' ','0', ... , '\\0']", "#C8E6C9"),
+        ("buffer_[1]", "['l','i','n','e',' ','1', ... , '\\0']", "#C8E6C9"),
+        ("buffer_[2]", "['l','i','n','e',' ','2', ... , '\\0']", "#FFF59D"),
+        ("...", "...", "#E0E0E0"),
+        ("buffer_[23]", "[ ... , '\\0']", "#C8E6C9"),
+        ("buffer_[24]", "[ ... , '\\0']  <- 最下行 (Row 24)", "#FFCDD2"),
+    ]
+
+    y_pos = 73.0
+    for row_name, content, bg in rows_data:
+        r_patch = patches.FancyBboxPatch(
+            (5, y_pos - 6), 80, 6.2, boxstyle="round,pad=0.2",
+            facecolor=bg, edgecolor="#558B2F", linewidth=1.0
+        )
+        ax2.add_patch(r_patch)
+        ax2.text(7, y_pos - 3.0, row_name, fontsize=8.2, family="monospace", fontweight="bold", color="#2E7D32")
+        ax2.text(32, y_pos - 3.0, content, fontsize=8.0, color="#212121")
+        y_pos -= 8.5
+
+    # Member variables explanation
+    desc_box = patches.FancyBboxPatch(
+        (0, -3), 90, 15, boxstyle="round,pad=0.5",
+        facecolor="#FFFDE7", edgecolor="#FBC02D", linewidth=1.5
+    )
+    ax2.add_patch(desc_box)
+    desc_text = (
+        "【なぜメモリ上に文字バッファ配列が必要なのか？】\n"
+        "1. VRAM (MMIO) の読み戻しはバスウェイトにより極めて低速 (Read Penalty)\n"
+        "2. 一度ピクセル化された図形から元の ASCII 文字列を逆変換・抽出することは困難\n"
+        "3. スクロール時に memcpy(buffer_[i], buffer_[i+1], 81) で高速にテキスト行を移動可能\n"
+        "4. kColumns+1 = 81 バイト確保により、行末に必ず '\\0' を配置して WriteString() に渡せる"
+    )
+    ax2.text(5, 4.5, desc_text, fontsize=7.8, color="#37474F", linespacing=1.25)
+
+    fig.suptitle("ゼロからのOS自作入門 第5章 5.5: コンソールクラスの内部設計と画面座標幾何学\n"
+                 "(Figure 5.9: Console 25x80 Dual-Layer Architecture and Cursor Geometry)",
+                 fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig5_10_console_scroll_sequence(
+    output_path: str = "5/result/fig5_10_console_scroll_sequence.png"
+) -> str:
+    """Generate Figure 5.10: Console Scroll Sequence and Memory Relocation."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(16, 9.0))
+    gs = GridSpec(2, 2, width_ratios=[1.0, 1.0], height_ratios=[1.0, 1.0], wspace=0.18, hspace=0.28)
+
+    # Step 1: Initial Overflow State
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_xlim(-5, 95)
+    ax1.set_ylim(-5, 95)
+    ax1.axis("off")
+    ax1.set_title("Step 0: 最下行 (Row 24) 到達と改行 (\\n) 発火",
+                  fontsize=11.5, fontweight="bold", color="#B71C1C", pad=8)
+    box1 = patches.FancyBboxPatch((0, 5), 90, 85, boxstyle="round,pad=0.5", facecolor="#FFEBEE", edgecolor="#D32F2F", lw=1.8)
+    ax1.add_patch(box1)
+    ax1.text(5, 82, "状態: cursor_row_ == 24 かつ PutString(\"\\n\") が呼ばれる", fontsize=8.5, fontweight="bold", color="#C62828")
+
+    lines_s0 = [
+        ("Row 0", "line 0 (最も古い行)", "#CFD8DC"),
+        ("Row 1", "line 1", "#FFFFFF"),
+        ("...", "...", "#FFFFFF"),
+        ("Row 23", "line 23", "#FFFFFF"),
+        ("Row 24", "line 24 (画面最下行・満杯)", "#FFCDD2"),
+    ]
+    y_p = 72.0
+    for rname, val, bg in lines_s0:
+        p = patches.FancyBboxPatch((8, y_p - 6), 74, 6.5, boxstyle="round,pad=0.2", facecolor=bg, edgecolor="#B0BEC5")
+        ax1.add_patch(p)
+        ax1.text(12, y_p - 2.8, rname, fontsize=8.0, family="monospace", fontweight="bold")
+        ax1.text(32, y_p - 2.8, val, fontsize=8.0)
+        y_p -= 9.0
+
+    ax1.text(45, 12, "判定: cursor_row_ == kRows - 1 → スクロールルーチン起動！",
+             fontsize=8.5, fontweight="bold", color="#B71C1C", ha="center")
+
+    # Step 2: VRAM Clear
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(-5, 95)
+    ax2.set_ylim(-5, 95)
+    ax2.axis("off")
+    ax2.set_title("Step 1: コンソール矩形領域の全面消去 (VRAM Clear)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=8)
+    box2 = patches.FancyBboxPatch((0, 5), 90, 85, boxstyle="round,pad=0.5", facecolor="#E3F2FD", edgecolor="#1976D2", lw=1.8)
+    ax2.add_patch(box2)
+    ax2.text(5, 82, "処理: 640x400 の全ピクセルを bg_color_ (白) で塗りつぶす", fontsize=8.5, fontweight="bold", color="#0D47A1")
+
+    # Loop code snippet representation
+    vram_clear_rect = patches.Rectangle((8, 28), 74, 46, facecolor="#FFFFFF", edgecolor="#90CAF9", lw=1.5)
+    ax2.add_patch(vram_clear_rect)
+    code_text = (
+        "for (int y = 0; y < 16 * kRows; ++y) {\n"
+        "  for (int x = 0; x < 8 * kColumns; ++x) {\n"
+        "    writer_.Write(x, y, bg_color_);\n"
+        "  }\n"
+        "}"
+    )
+    ax2.text(12, 57, code_text, fontsize=8.0, family="monospace", color="#1565C0")
+    ax2.plot([12, 78], [44, 44], color="#BBDEFB", linestyle="-", linewidth=1.0)
+    ax2.text(12, 38, "・合計 640 x 400 = 256,000 ピクセルを描画\n・画面の古い文字ピクセルを完全に消去",
+             fontsize=7.8, color="#37474F", linespacing=1.2)
+    ax2.text(45, 12, "結果: VRAM画面が真っ白にリセットされる",
+             fontsize=8.5, fontweight="bold", color="#1565C0", ha="center")
+
+    # Step 3: Buffer Row Shift
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_xlim(-5, 95)
+    ax3.set_ylim(-5, 95)
+    ax3.axis("off")
+    ax3.set_title("Step 2 & 3: memcpy による行シフト & WriteString 再描画",
+                  fontsize=11.5, fontweight="bold", color="#2E7D32", pad=8)
+    box3 = patches.FancyBboxPatch((0, 5), 90, 85, boxstyle="round,pad=0.5", facecolor="#E8F5E9", edgecolor="#388E3C", lw=1.8)
+    ax3.add_patch(box3)
+    ax3.text(5, 82, "処理: 1行ずつ上へコピーし、直ちに画面へ再描画", fontsize=8.5, fontweight="bold", color="#1B5E20")
+
+    shift_rows = [
+        ("Row 0", "line 1 (旧 Row 1 をコピー)", "#C8E6C9", "▲ 1行シフト"),
+        ("Row 1", "line 2 (旧 Row 2 をコピー)", "#C8E6C9", "▲ 1行シフト"),
+        ("...", "...", "#FFFFFF", ""),
+        ("Row 22", "line 23 (旧 Row 23 をコピー)", "#C8E6C9", "▲ 1行シフト"),
+        ("Row 23", "line 24 (旧 Row 24 をコピー)", "#C8E6C9", "▲ 1行シフト"),
+    ]
+    y_p = 72.0
+    for rname, val, bg, note in shift_rows:
+        p = patches.FancyBboxPatch((8, y_p - 6), 74, 6.5, boxstyle="round,pad=0.2", facecolor=bg, edgecolor="#81C784")
+        ax3.add_patch(p)
+        ax3.text(12, y_p - 2.8, rname, fontsize=8.0, family="monospace", fontweight="bold")
+        ax3.text(30, y_p - 2.8, val, fontsize=8.0)
+        ax3.text(66, y_p - 2.8, note, fontsize=7.2, color="#2E7D32", fontweight="bold")
+        y_p -= 9.0
+
+    ax3.text(45, 12, "memcpy(buffer_[row], buffer_[row+1], 81);\nWriteString(writer_, 0, 16*row, buffer_[row], fg_color_);",
+             fontsize=7.8, family="monospace", fontweight="bold", color="#1B5E20", ha="center")
+
+    # Step 4: Bottom Row Clear & New Input
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_xlim(-5, 95)
+    ax4.set_ylim(-5, 95)
+    ax4.axis("off")
+    ax4.set_title("Step 4: 最下行ゼロクリア & 新しい文字の受入準備",
+                  fontsize=11.5, fontweight="bold", color="#E65100", pad=8)
+    box4 = patches.FancyBboxPatch((0, 5), 90, 85, boxstyle="round,pad=0.5", facecolor="#FFF3E0", edgecolor="#F57C00", lw=1.8)
+    ax4.add_patch(box4)
+    ax4.text(5, 82, "処理: memset で最下行をクリアし、カーソルを行頭に待機", fontsize=8.5, fontweight="bold", color="#E65100")
+
+    final_rows = [
+        ("Row 0", "line 1 (最上行が繰り上がった)", "#FFFFFF"),
+        ("...", "...", "#FFFFFF"),
+        ("Row 23", "line 24", "#FFFFFF"),
+        ("Row 24", "['\\0', '\\0', ... ]  <- memset で空に初期化", "#FFE0B2"),
+    ]
+    y_p = 72.0
+    for rname, val, bg in final_rows:
+        p = patches.FancyBboxPatch((8, y_p - 7), 74, 7.5, boxstyle="round,pad=0.2", facecolor=bg, edgecolor="#FFB74D")
+        ax4.add_patch(p)
+        ax4.text(12, y_p - 3.2, rname, fontsize=8.0, family="monospace", fontweight="bold")
+        ax4.text(30, y_p - 3.2, val, fontsize=8.0)
+        y_p -= 12.0
+
+    cursor_note = patches.FancyBboxPatch((8, 20), 74, 15, boxstyle="round,pad=0.4", facecolor="#FFCCBC", edgecolor="#FF5722")
+    ax4.add_patch(cursor_note)
+    ax4.text(12, 30, "● cursor_row_ = 24, cursor_column_ = 0 を維持\n"
+                     "● 次の PutString(\"line 25\\n\") が Row 24 にそのまま書き込まれる",
+             fontsize=8.0, color="#BF360C", fontweight="bold")
+
+    ax4.text(45, 10, "★ 1行スクロールサイクル完了！古い line 0 は破棄され新行を受け入れ可能",
+             fontsize=8.2, fontweight="bold", color="#E65100", ha="center")
+
+    fig.suptitle("ゼロからのOS自作入門 第5章 5.5: コンソールスクロールアルゴリズムの実行シーケンス\n"
+                 "(Figure 5.10: Console Scroll Sequence and Memory Relocation)",
+                 fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
