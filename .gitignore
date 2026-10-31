@@ -63,22 +63,27 @@ osbook/
 # Testing & Coverage
 .pytest_cache/
 .coverage
-3/3/
 htmlcov/
+
+# Accidental nested dirs
+1/1/
+2/2/
+3/3/
+5/5/
 
 # Jupyter Notebook
 .ipynb_checkpoints/
 */.ipynb_checkpoints/
 
-# Environments & Secrets
+# Environments & Temporary
 .env
 .env.local
 make_nb.py
 scratch/
 /result/
-1/1/
-2/2/
 generate_ch*.py
+src/ch*/*_sim
+src/ch*/*_sim.exe
 
 
 

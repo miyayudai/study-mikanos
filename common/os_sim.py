@@ -19444,3 +19444,526 @@ def plot_fig5_06_hankaku_font_memory_and_symbol_resolution(output_path: Union[st
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 5.4: String Rendering and sprintf() (osbook_day05d)
+# ==============================================================================
+
+class StringRendererSim:
+    """Simulator for MikanOS WriteString and font glyph advance algorithm."""
+
+    def __init__(self, font_bin_path: Optional[str] = None):
+        self.font_bytes: Optional[bytes] = None
+        if font_bin_path and os.path.exists(font_bin_path):
+            with open(font_bin_path, "rb") as f:
+                self.font_bytes = f.read()
+        elif os.path.exists("5/hankaku.bin"):
+            with open("5/hankaku.bin", "rb") as f:
+                self.font_bytes = f.read()
+
+    def get_font_glyph(self, c: str) -> Optional[bytes]:
+        """Return 16 bytes font glyph for character c."""
+        code = ord(c)
+        if 0x00 <= code <= 0x7F:
+            if self.font_bytes and len(self.font_bytes) >= (code + 1) * 16:
+                return self.font_bytes[code * 16 : (code + 1) * 16]
+            # Fallback mock glyph if font_bytes is unavailable
+            return bytes([0x7E if i in (1, 8) else 0x42 for i in range(16)])
+        return None
+
+    @staticmethod
+    def calculate_glyph_positions(x: int, y: int, s: str) -> List[Dict[str, Any]]:
+        """Calculate pixel coordinates and bounding box for each character in string s."""
+        positions = []
+        for i, char in enumerate(s):
+            char_x = x + 8 * i
+            char_y = y
+            positions.append({
+                "index": i,
+                "char": char,
+                "ascii": ord(char),
+                "x": char_x,
+                "y": char_y,
+                "width": 8,
+                "height": 16,
+                "bbox": (char_x, char_y, char_x + 8, char_y + 16)
+            })
+        return positions
+
+    @staticmethod
+    def get_string_width(s: str) -> int:
+        """Calculate total pixel width of string s (8 pixels per character)."""
+        return 8 * len(s)
+
+    @staticmethod
+    def get_string_bounding_box(x: int, y: int, s: str) -> Tuple[int, int, int, int]:
+        """Return bounding box (x, y, width, height) of string s."""
+        return (x, y, 8 * len(s), 16)
+
+    def render_string(
+        self,
+        fb: Any,
+        x: int,
+        y: int,
+        s: str,
+        color: Tuple[int, int, int] = (0, 0, 0)
+    ) -> int:
+        """Render string s to FrameBufferSimulator or numpy array. Returns total characters rendered."""
+        count = 0
+        for i, c in enumerate(s):
+            glyph = self.get_font_glyph(c)
+            char_x = x + 8 * i
+            char_y = y
+            if glyph:
+                for dy in range(16):
+                    row_byte = glyph[dy]
+                    for dx in range(8):
+                        if (row_byte & (0x80 >> dx)) != 0:
+                            if hasattr(fb, "write_pixel"):
+                                fb.write_pixel(char_x + dx, char_y + dy, color)
+                            elif hasattr(fb, "__getitem__"):
+                                fb[char_y + dy, char_x + dx] = color
+            count += 1
+        return count
+
+
+class NewlibStubAnalyzer:
+    """Analyzer and simulator for Newlib C library stubs in freestanding kernels."""
+
+    REQUIRED_STUBS = {
+        "sbrk": {
+            "signature": "caddr_t sbrk(int incr)",
+            "purpose": "Heap memory allocation (called by malloc / realloc within libc)",
+            "required_for": ["sprintf (floating-point / large format buffering)", "malloc", "free"],
+            "minimal_impl": "return (caddr_t)0; // NULL"
+        },
+        "write": {
+            "signature": "int write(int file, char *ptr, int len)",
+            "purpose": "Low-level byte output to file descriptor",
+            "required_for": ["printf", "puts", "putchar"],
+            "minimal_impl": "return len;"
+        },
+        "close": {
+            "signature": "int close(int file)",
+            "purpose": "Close file descriptor",
+            "required_for": ["fclose"],
+            "minimal_impl": "return -1;"
+        },
+        "fstat": {
+            "signature": "int fstat(int file, struct stat *st)",
+            "purpose": "Status of an open file",
+            "required_for": ["isatty", "fseek"],
+            "minimal_impl": "st->st_mode = S_IFCHR; return 0;"
+        },
+        "isatty": {
+            "signature": "int isatty(int file)",
+            "purpose": "Query whether file descriptor is an interactive terminal",
+            "required_for": ["buffering mode selection in stdio"],
+            "minimal_impl": "return 1;"
+        },
+        "read": {
+            "signature": "int read(int file, char *ptr, int len)",
+            "purpose": "Low-level byte input from file descriptor",
+            "required_for": ["scanf", "getchar", "fread"],
+            "minimal_impl": "return 0;"
+        },
+        "lseek": {
+            "signature": "int lseek(int file, int ptr, int dir)",
+            "purpose": "Reposition read/write file offset",
+            "required_for": ["fseek"],
+            "minimal_impl": "return 0;"
+        }
+    }
+
+    @classmethod
+    def get_stub_info(cls, function_name: str) -> Optional[Dict[str, Any]]:
+        """Get architectural metadata for a specific Newlib stub."""
+        return cls.REQUIRED_STUBS.get(function_name)
+
+    @classmethod
+    def simulate_sbrk_stub(cls, current_break: int, increment: int, max_heap: int = 0) -> Tuple[Optional[int], str]:
+        """Simulate sbrk behavior. In day05d, returns NULL (allocation failed) since OS has no heap."""
+        if max_heap == 0:
+            # Minimal day05d stub: return NULL (caddr_t 0)
+            return (None, "Stub returned NULL: Bare-metal OS has no heap initialized yet")
+        if current_break + increment > max_heap:
+            return (None, "Heap exhausted (ENOMEM)")
+        prev_break = current_break
+        return (prev_break, f"Allocated {increment} bytes from 0x{prev_break:08X} to 0x{current_break + increment:08X}")
+
+
+@dataclass
+class VarargArgument:
+    name: str
+    arg_type: str
+    value: Any
+    size_bytes: int
+    is_float: bool
+    passed_via: str  # e.g. "RDI", "RSI", "Stack [RSP+0]"
+    offset_in_area: int
+
+
+class SystemVVarargsSimulator:
+    """Simulator for x86-64 System V AMD64 ABI calling convention with variable arguments."""
+
+    INTEGER_REGISTERS = ["RDI", "RSI", "RDX", "RCX", "R8", "R9"]
+    FLOAT_REGISTERS = [f"XMM{i}" for i in range(8)]
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.gp_args: List[VarargArgument] = []
+        self.fp_args: List[VarargArgument] = []
+        self.stack_args: List[VarargArgument] = []
+        self.all_args: List[VarargArgument] = []
+        self.al_register: int = 0  # Number of floating point arguments in XMM registers
+
+    def pass_argument(self, name: str, value: Any, arg_type: str = "int") -> VarargArgument:
+        """Assign argument to register or stack according to System V ABI."""
+        is_float = arg_type in ("float", "double")
+        size = 8  # 64-bit slot
+
+        if is_float:
+            if len(self.fp_args) < len(self.FLOAT_REGISTERS):
+                reg = self.FLOAT_REGISTERS[len(self.fp_args)]
+                arg = VarargArgument(name, arg_type, value, size, True, reg, len(self.fp_args) * 16)
+                self.fp_args.append(arg)
+                self.al_register = len(self.fp_args)
+            else:
+                stack_offset = len(self.stack_args) * 8
+                arg = VarargArgument(name, arg_type, value, size, True, f"Stack [RSP+{stack_offset}]", stack_offset)
+                self.stack_args.append(arg)
+        else:
+            if len(self.gp_args) < len(self.INTEGER_REGISTERS):
+                reg = self.INTEGER_REGISTERS[len(self.gp_args)]
+                arg = VarargArgument(name, arg_type, value, size, False, reg, len(self.gp_args) * 8)
+                self.gp_args.append(arg)
+            else:
+                stack_offset = len(self.stack_args) * 8
+                arg = VarargArgument(name, arg_type, value, size, False, f"Stack [RSP+{stack_offset}]", stack_offset)
+                self.stack_args.append(arg)
+
+        self.all_args.append(arg)
+        return arg
+
+    def get_va_list_state(self, num_fixed_gp: int = 2, num_fixed_fp: int = 0) -> Dict[str, Any]:
+        """Compute va_list structure fields (gp_offset, fp_offset, overflow_arg_area, reg_save_area)."""
+        gp_offset = min(num_fixed_gp * 8, 48)
+        fp_offset = min(48 + num_fixed_fp * 16, 176)
+        return {
+            "gp_offset": gp_offset,
+            "fp_offset": fp_offset,
+            "overflow_arg_area_offset": 0,
+            "reg_save_area_size": 48 + 128,  # 6 GP regs (48B) + 8 XMM regs (128B)
+            "al_register": self.al_register,
+            "total_stack_args": len(self.stack_args)
+        }
+
+
+class MiniSprintfSim:
+    """Format string parser and simulator for sprintf formatting logic."""
+
+    SPECIFIER_PATTERN = re.compile(r'%([0-9]*)([dsxc%])')
+
+    @classmethod
+    def format(cls, fmt: str, *args) -> Tuple[str, List[Dict[str, Any]]]:
+        """Format string and return tuple (formatted_str, trace_steps)."""
+        arg_idx = 0
+        steps = []
+        result = []
+        last_end = 0
+
+        for match in cls.SPECIFIER_PATTERN.finditer(fmt):
+            start, end = match.span()
+            literal = fmt[last_end:start]
+            if literal:
+                result.append(literal)
+                steps.append({"type": "literal", "text": literal})
+
+            width_str, spec = match.groups()
+            width = int(width_str) if width_str else 0
+
+            if spec == '%':
+                result.append('%')
+                steps.append({"type": "escape", "text": "%"})
+            else:
+                if arg_idx >= len(args):
+                    val = "<missing_arg>"
+                else:
+                    val = args[arg_idx]
+                    arg_idx += 1
+
+                if spec == 'd':
+                    formatted = str(int(val)).rjust(width)
+                elif spec == 'x':
+                    formatted = hex(int(val))[2:].rjust(width, '0')
+                elif spec == 's':
+                    formatted = str(val).rjust(width)
+                elif spec == 'c':
+                    formatted = chr(int(val)) if isinstance(val, int) else str(val)[0]
+                else:
+                    formatted = f"%{spec}"
+
+                result.append(formatted)
+                steps.append({
+                    "type": "specifier",
+                    "spec": spec,
+                    "width": width,
+                    "arg_val": val,
+                    "formatted": formatted
+                })
+            last_end = end
+
+        literal = fmt[last_end:]
+        if literal:
+            result.append(literal)
+            steps.append({"type": "literal", "text": literal})
+
+        return ("".join(result), steps)
+
+
+def plot_fig5_07_string_rendering_coordinate_advance(
+    output_path: str = "5/result/fig5_07_string_rendering_coordinate_advance.png"
+) -> str:
+    """Figure 5.7: String Rendering Coordinate Advance and Baseline Pipeline."""
+    setup_plot_style()
+    output_path = str(output_path)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    fig = plt.figure(figsize=(15, 10), facecolor="#FAFAFA")
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.2, 1.0], hspace=0.35)
+
+    # Subplot 1: Coordinate advance math and character stride pipeline
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 70)
+    ax1.axis("off")
+    ax1.set_title("1. WriteString() における 8 ドット等幅送り数理アルゴリズムとフレームバッファ展開",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=10)
+
+    # String sample: "Hello"
+    sample = "Hello"
+    box_w = 12.0
+    box_h = 24.0
+    start_x = 10.0
+    base_y = 28.0
+
+    ax1.text(start_x, base_y + box_h + 10,
+             "void WriteString(PixelWriter& writer, int x, int y, const char* s, const PixelColor& color) {\n"
+             "    for (int i = 0; s[i] != '\\0'; ++i) {\n"
+             "        WriteAscii(writer, x + 8 * i, y, s[i], color);  // Stride 8px per character\n"
+             "    }\n"
+             "}",
+             fontsize=9.0, family="monospace", color="#1A237E",
+             bbox=dict(boxstyle="round,pad=0.6", facecolor="#E8EAF6", edgecolor="#3F51B5", lw=1.5))
+
+    colors = ["#FFE082", "#FFCC80", "#C8E6C9", "#B3E5FC", "#D1C4E9"]
+    for i, ch in enumerate(sample):
+        bx = start_x + i * (box_w + 3.0)
+        p = patches.FancyBboxPatch(
+            (bx, base_y), box_w, box_h,
+            boxstyle="round,pad=0.3,rounding_size=0.8",
+            facecolor=colors[i % len(colors)], edgecolor="#37474F", linewidth=1.8
+        )
+        ax1.add_patch(p)
+
+        # Labels
+        ax1.text(bx + box_w/2, base_y + box_h * 0.70, f"'{ch}'",
+                 fontsize=14, fontweight="bold", ha="center", va="center", color="#212121")
+        ax1.text(bx + box_w/2, base_y + box_h * 0.40, f"i = {i}",
+                 fontsize=9, family="monospace", ha="center", va="center", color="#37474F")
+        ax1.text(bx + box_w/2, base_y + box_h * 0.18, f"x + {8*i}",
+                 fontsize=8.5, family="monospace", ha="center", va="center", color="#B71C1C", fontweight="bold")
+
+        # Arrow indicating stride
+        if i < len(sample) - 1:
+            ax1.annotate(
+                "", xy=(bx + box_w + 3.0, base_y + box_h/2),
+                xytext=(bx + box_w, base_y + box_h/2),
+                arrowprops=dict(arrowstyle="->", lw=1.8, color="#D84315")
+            )
+            ax1.text(bx + box_w + 1.5, base_y + box_h/2 + 2.5, "+8px",
+                     fontsize=8, ha="center", color="#D84315", fontweight="bold")
+
+    # Null terminator box
+    null_x = start_x + len(sample) * (box_w + 3.0)
+    p_null = patches.FancyBboxPatch(
+        (null_x, base_y), box_w, box_h,
+        boxstyle="round,pad=0.3,rounding_size=0.8",
+        facecolor="#ECEFF1", edgecolor="#90A4AE", linewidth=1.5, linestyle="--"
+    )
+    ax1.add_patch(p_null)
+    ax1.text(null_x + box_w/2, base_y + box_h * 0.70, "'\\0'",
+             fontsize=13, fontweight="bold", ha="center", va="center", color="#78909C")
+    ax1.text(null_x + box_w/2, base_y + box_h * 0.40, f"i = {len(sample)}",
+             fontsize=9, family="monospace", ha="center", va="center", color="#78909C")
+    ax1.text(null_x + box_w/2, base_y + box_h * 0.18, "終端検知",
+             fontsize=8.5, ha="center", va="center", color="#D32F2F", fontweight="bold")
+
+    # Math formula note
+    formula_box = patches.FancyBboxPatch(
+        (10, 4), 80, 18,
+        boxstyle="round,pad=0.6,rounding_size=1.0",
+        facecolor="#FFFDE7", edgecolor="#FBC02D", linewidth=1.5
+    )
+    ax1.add_patch(formula_box)
+    math_text = (
+        "【幾何計算モデル】\n"
+        "● 文字列長 N のとき、先頭座標 (x, y) からの描画領域: [x, x + 8N) × [y, y + 16)\n"
+        "● 第 i 文字目の X 座標計算式:  X_i = x + 8 × i  (グリフ幅 W=8 ドットによる線形等差数列)\n"
+        "● 終端文字 '\\0' (ASCII 0) を検出するまでループし、改行 '\\n' 処理は第5章 5.5節 Console クラスで導入"
+    )
+    ax1.text(12, 13, math_text, fontsize=8.5, color="#5D4037", linespacing=1.35)
+
+    # Subplot 2: Day05d Simulation Result ("Hello, world!" and "1 + 2 = 3")
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_facecolor("#212121")  # Dark display
+    ax2.set_xlim(0, 800)
+    ax2.set_ylim(0, 140)
+    ax2.axis("off")
+    ax2.set_title("2. MikanOS day05d 実行画面シミュレーション (y=66 文字列描画 & y=82 sprintf 書式化出力)",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=8)
+
+    # Screen panel
+    screen_rect = patches.Rectangle((20, 15), 760, 110, facecolor="#C6C6C6", edgecolor="#37474F", linewidth=2.0)
+    ax2.add_patch(screen_rect)
+
+    # Kernel day05d rendered lines
+    # Line 1: y=50 ASCII characters
+    ax2.text(25, 105, "y=50: '!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'",
+             fontsize=7.8, family="monospace", color="#424242")
+
+    # Line 2: y=66 WriteString(*pixel_writer, 0, 66, "Hello, world!", {0, 0, 255}); (Blue)
+    ax2.text(25, 75, "y=66: Hello, world!", fontsize=11.0, family="monospace", color="#0D47A1", fontweight="bold")
+    ax2.text(350, 75, "← WriteString(*pixel_writer, 0, 66, \"Hello, world!\", {0, 0, 255});  (青文字描画)",
+             fontsize=8.5, color="#1565C0")
+
+    # Line 3: y=82 sprintf(buf, "1 + 2 = %d", 1 + 2); WriteString(*pixel_writer, 0, 82, buf, {0, 0, 0}); (Black)
+    ax2.text(25, 45, "y=82: 1 + 2 = 3", fontsize=11.0, family="monospace", color="#000000", fontweight="bold")
+    ax2.text(350, 45, "← sprintf(buf, \"1 + 2 = %d\", 1 + 2); WriteString(*pixel_writer, 0, 82, buf, {0, 0, 0});",
+             fontsize=8.5, color="#212121")
+
+    ax2.text(400, 22, "※ Newlib libc との静的リンク (-lc) により、OS カーネル内で完全な C 標準書式化が実現！",
+             fontsize=8.5, ha="center", color="#B71C1C", fontweight="bold")
+
+    fig.suptitle("ゼロからのOS自作入門 第5章 5.4: 文字列描画と等幅フォント座標展開\n"
+                 "(Figure 5.7: String Rendering Coordinate Advance, Pixel Offsets, and FrameBuffer Output)",
+                 fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig5_08_newlib_sbrk_and_varargs_abi(
+    output_path: str = "5/result/fig5_08_newlib_sbrk_and_varargs_abi.png"
+) -> str:
+    """Figure 5.8: Newlib sbrk Stub Dependency Chain and System V ABI Varargs Stack Frame."""
+    setup_plot_style()
+    output_path = str(output_path)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    fig = plt.figure(figsize=(16, 11), facecolor="#FAFAFA")
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.1], wspace=0.25)
+
+    # Subplot 1: Newlib Dependency Chain and sbrk stub
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("1. Newlib (-lc) リンク機構とシステムコールスタブ sbrk() の必然性",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    boxes = [
+        {"y": 82, "h": 12, "title": "カーネルコード (main.cpp)", "sub": "sprintf(buf, \"1 + 2 = %d\", 1 + 2);", "color": "#E3F2FD", "border": "#1976D2"},
+        {"y": 62, "h": 13, "title": "Newlib libc.a (標準Cライブラリ)", "sub": "sprintf.o / vfprintf.o (書式解析・バッファリング)\n※ 浮動小数点数展開や再入可能コンテキストで動的確保を要求", "color": "#FFF3E0", "border": "#F57C00"},
+        {"y": 42, "h": 12, "title": "Newlib malloc / _sbrk_r", "sub": "ヒープ領域拡張のため OS 固有システムコール sbrk を呼び出す", "color": "#FBE9E7", "border": "#D84315"},
+        {"y": 18, "h": 16, "title": "カーネルスタブ (newlib_support.c)", "sub": "caddr_t sbrk(int incr) { return NULL; }\n● 未実装システムコールを空実装してリンクエラー解消\n● 整数フォーマット (%d) では malloc は不実行のため安全！", "color": "#E8F5E9", "border": "#2E7D32"}
+    ]
+
+    for b in boxes:
+        p = patches.FancyBboxPatch(
+            (8, b["y"]), 84, b["h"],
+            boxstyle="round,pad=0.6,rounding_size=1.0",
+            facecolor=b["color"], edgecolor=b["border"], linewidth=2.0
+        )
+        ax1.add_patch(p)
+        ax1.text(50, b["y"] + b["h"] * 0.70, b["title"],
+                 fontsize=10.5, fontweight="bold", ha="center", va="center", color=b["border"])
+        ax1.text(50, b["y"] + b["h"] * 0.32, b["sub"],
+                 fontsize=8.0, ha="center", va="center", color="#212121", linespacing=1.2)
+
+    # Arrows between boxes
+    for y_top in [82, 62, 42]:
+        ax1.annotate(
+            "", xy=(50, y_top - 7), xytext=(50, y_top),
+            arrowprops=dict(arrowstyle="->", lw=2.2, color="#37474F")
+        )
+
+    ax1.text(50, 6, "※ 第8章でメモリ管理（ヒープ）を実装した際に、sbrk を本実装に昇格します",
+             fontsize=8.0, ha="center", color="#757575", fontstyle="italic")
+
+    # Subplot 2: System V AMD64 ABI Varargs Register Allocation & va_list Frame
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("2. System V AMD64 ABI 可変長引数 (va_list) のスタック・レジスタ構造",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # Table of ABI argument passing
+    header_box = patches.FancyBboxPatch((5, 84), 90, 9, boxstyle="round,pad=0.3", facecolor="#EDE7F6", edgecolor="#512DA8", lw=1.8)
+    ax2.add_patch(header_box)
+    ax2.text(50, 88.5, "sprintf(char *str, const char *format, ...) のレジスタ配置",
+             fontsize=9.5, fontweight="bold", ha="center", color="#4A148C")
+
+    reg_entries = [
+        ("1st arg (str)", "%rdi", "固定引数 (出力先バッファポインタ)"),
+        ("2nd arg (format)", "%rsi", "固定引数 (書式化フォーマット文字列)"),
+        ("3rd arg (1+2 = 3)", "%rdx", "可変長引数 1 (整数値 3)"),
+        ("4th arg", "%rcx", "可変長引数 2 (存在する場合)"),
+        ("5th arg", "%r8", "可変長引数 3 (存在する場合)"),
+        ("6th arg", "%r9", "可変長引数 4 (存在する場合)"),
+        ("Float Count", "%al", "XMM レジスタに載せた浮動小数点引数の数 (0〜8)"),
+        ("7th+ args", "Stack", "スタック領域に 8 バイト単位で退避 (Overflow)")
+    ]
+
+    y_cur = 76.0
+    for label, reg, desc in reg_entries:
+        ax2.text(8, y_cur, f"{label:<16}", fontsize=8.2, family="monospace", fontweight="bold", color="#1565C0")
+        ax2.text(38, y_cur, f"→ {reg:<6}", fontsize=8.5, family="monospace", fontweight="bold", color="#C2185B")
+        ax2.text(56, y_cur, desc, fontsize=8.0, color="#37474F")
+        y_cur -= 5.2
+
+    # va_list structure box
+    va_box = patches.FancyBboxPatch(
+        (5, 4), 90, 30,
+        boxstyle="round,pad=0.6,rounding_size=1.2",
+        facecolor="#FFFDE7", edgecolor="#FBC02D", linewidth=2.0
+    )
+    ax2.add_patch(va_box)
+    ax2.text(50, 30.5, "【System V ABI: va_list 構造体の内部仕様】",
+             fontsize=10.0, fontweight="bold", ha="center", color="#E65100")
+
+    va_text = (
+        "typedef struct {\n"
+        "    unsigned int gp_offset;      // Offset in reg_save_area for GP regs (0..48)\n"
+        "    unsigned int fp_offset;      // Offset in reg_save_area for FP regs (48..176)\n"
+        "    void *overflow_arg_area;     // Pointer to arguments on stack\n"
+        "    void *reg_save_area;         // Pointer to register save area (RDI..R9, XMM0..7)\n"
+        "} va_list[1];\n"
+        "─────────────────────────────────────────────────\n"
+        "● va_arg(ap, int) 実行時: gp_offset < 48 ならば reg_save_area + gp_offset から取得し gp_offset += 8\n"
+        "● gp_offset >= 48 に達すると、スタック上の overflow_arg_area から順次取得"
+    )
+    ax2.text(8, 16.5, va_text, fontsize=7.6, color="#3E2723", linespacing=1.25)
+
+    fig.suptitle("ゼロからのOS自作入門 第5章 5.4: Newlib リンク機構と System V AMD64 ABI 可変長引数\n"
+                 "(Figure 5.8: Newlib libc Integration, System Call Stub Architecture, and Varargs ABI)",
+                 fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

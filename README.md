@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-339%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-18.9%25%20(43%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-348%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-19.3%25%20(44%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -92,7 +92,7 @@ cmake --build build
 | **第2章** | EDK II入門とメモリマップ | 9 | `day02a`–`02b` | EDK II、`GetMemoryMap()`、ポインタとアロー演算子 | [`2_Exercises.ipynb`](2/2_Exercises.ipynb) | `[x]` 完了 (10/10) |
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | `[x]` 完了 (6/6) |
-| **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[-]` 進行中 (3/7) |
+| **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | `5_Exercises.ipynb` | `[-]` 進行中 (4/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[ ]` 未着手 (0/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 未着手 (0/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -196,6 +196,7 @@ cmake --build build
 | [`5.1_Drawing_Characters_and_References.ipynb`](5/5.1_Drawing_Characters_and_References.ipynb) | 5.1 文字を書いてみる（`osbook_day05a`・8x16ビットマップフォント・`kFontA[16]`グリフデータ・左シフトビット判定数理・VRAM文字描画・文字送り+8px・コラム5.1 参照とポインタ・System V ABIレジスタ渡し・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.1_Drawing_Characters_and_References.ipynb) |
 | [`5.2_Separate_Compilation_and_Linking.ipynb`](5/5.2_Separate_Compilation_and_Linking.ipynb) | 5.2 分割コンパイル（`osbook_day05b`・graphics/font/main分割・翻訳単位・宣言vs定義・ODR単一定義規則・`#pragma once`インクルードガード・シンボルテーブルT/R/D/U・LLDシンボル解決・Makefile依存関係自動生成`clang++ -MM`・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.2_Separate_Compilation_and_Linking.ipynb) |
 | [`5.3_Generating_Hankaku_Font_Object.ipynb`](5/5.3_Generating_Hankaku_Font_Object.ipynb) | 5.3 フォントを増やそう（`osbook_day05c`・アスキーアート`hankaku.txt`・`makefont.py`ビット圧縮・`objcopy`生バイナリELF64化・特殊シンボル`_start`/`_end`/`_size`・絶対シンボル`&_size`落とし穴・`GetFont(c)`数理・ASCII 94文字連続描画・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.3_Generating_Hankaku_Font_Object.ipynb) |
+| [`5.4_String_Rendering_and_sprintf.ipynb`](5/5.4_String_Rendering_and_sprintf.ipynb) | 5.4 文字列描画とsprintf()（`osbook_day05d`・`WriteString`文字列連続描画・等幅8px送り数理・終端ヌル文字`'\0'`走査・Newlib標準Cライブラリ静的リンク`-lc`・システムコールスタブ`sbrk`の必然性・可変長引数`va_list`とSystem V AMD64 ABIレジスタ規約・`%al`浮動小数点引数数・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/5/5.4_String_Rendering_and_sprintf.ipynb) |
 
 
 

@@ -332,6 +332,13 @@ from common.os_sim import (
     create_day05c_object_files,
     plot_fig5_05_objcopy_binary_to_elf_pipeline,
     plot_fig5_06_hankaku_font_memory_and_symbol_resolution,
+    StringRendererSim,
+    NewlibStubAnalyzer,
+    VarargArgument,
+    SystemVVarargsSimulator,
+    MiniSprintfSim,
+    plot_fig5_07_string_rendering_coordinate_advance,
+    plot_fig5_08_newlib_sbrk_and_varargs_abi,
 )
 
 __all__ = [
@@ -666,4 +673,11 @@ __all__ = [
     "create_day05c_object_files",
     "plot_fig5_05_objcopy_binary_to_elf_pipeline",
     "plot_fig5_06_hankaku_font_memory_and_symbol_resolution",
+    "StringRendererSim",
+    "NewlibStubAnalyzer",
+    "VarargArgument",
+    "SystemVVarargsSimulator",
+    "MiniSprintfSim",
+    "plot_fig5_07_string_rendering_coordinate_advance",
+    "plot_fig5_08_newlib_sbrk_and_varargs_abi",
 ]

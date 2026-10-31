@@ -144,6 +144,9 @@ add_test(NAME test_ch05_separate_compilation_sim COMMAND ch05_separate_compilati
 add_executable(ch05_font_binary_sim src/ch05/font_binary_sim.cpp)
 add_test(NAME test_ch05_font_binary_sim COMMAND ch05_font_binary_sim)
 
+add_executable(ch05_string_sprintf_sim src/ch05/string_sprintf_sim.cpp)
+add_test(NAME test_ch05_string_sprintf_sim COMMAND ch05_string_sprintf_sim)
+
 
 
 
