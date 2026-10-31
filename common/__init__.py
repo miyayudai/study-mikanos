@@ -342,6 +342,11 @@ from common.os_sim import (
     ConsoleSim,
     plot_fig5_09_console_buffer_and_cursor_model,
     plot_fig5_10_console_scroll_sequence,
+    VaListRecord,
+    VaListAbiModel,
+    PrintkPipelineSim,
+    plot_fig5_11_varargs_abi_and_va_list_model,
+    plot_fig5_12_global_placement_new_and_printk_pipeline,
 )
 
 __all__ = [
@@ -686,4 +691,9 @@ __all__ = [
     "ConsoleSim",
     "plot_fig5_09_console_buffer_and_cursor_model",
     "plot_fig5_10_console_scroll_sequence",
+    "VaListRecord",
+    "VaListAbiModel",
+    "PrintkPipelineSim",
+    "plot_fig5_11_varargs_abi_and_va_list_model",
+    "plot_fig5_12_global_placement_new_and_printk_pipeline",
 ]

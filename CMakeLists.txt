@@ -150,6 +150,9 @@ add_test(NAME test_ch05_string_sprintf_sim COMMAND ch05_string_sprintf_sim)
 add_executable(ch05_console_sim src/ch05/console_sim.cpp)
 add_test(NAME test_ch05_console_sim COMMAND ch05_console_sim)
 
+add_executable(ch05_printk_sim src/ch05/printk_sim.cpp)
+add_test(NAME test_ch05_printk_sim COMMAND ch05_printk_sim)
+
 
 
 

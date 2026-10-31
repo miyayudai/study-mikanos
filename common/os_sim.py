@@ -34,6 +34,7 @@ def setup_plot_style() -> None:
     plt.rcParams["grid.alpha"] = 0.3
     plt.rcParams["font.size"] = 10
     plt.rcParams["font.family"] = ["Noto Sans CJK JP", "Droid Sans Fallback", "DejaVu Sans", "sans-serif"]
+    plt.rcParams["font.monospace"] = ["Noto Sans Mono CJK JP", "DejaVu Sans Mono", "Noto Sans CJK JP", "monospace"]
 
 
 
@@ -20362,6 +20363,435 @@ def plot_fig5_10_console_scroll_sequence(
 
     fig.suptitle("ゼロからのOS自作入門 第5章 5.5: コンソールスクロールアルゴリズムの実行シーケンス\n"
                  "(Figure 5.10: Console Scroll Sequence and Memory Relocation)",
+                 fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+# =============================================================================
+# Chapter 5.6: printk() & System V AMD64 ABI Varargs Architecture
+# =============================================================================
+
+@dataclass
+class VaListRecord:
+    """Record of a variable argument consumed via System V AMD64 ABI."""
+    arg_index: int
+    arg_type: str
+    value: Any
+    passed_via: str
+    gp_offset: int
+    fp_offset: int
+    memory_address: int
+
+
+class VaListAbiModel:
+    """Simulates System V AMD64 ABI va_list and register save area mechanism.
+    
+    In System V AMD64 ABI:
+    - First 6 integer/pointer arguments are passed in RDI, RSI, RDX, RCX, R8, R9.
+    - Floating point arguments are passed in XMM0..XMM7.
+    - Inside a varargs function, the prologue creates a `reg_save_area` on the stack.
+    - `va_list` struct contains:
+        unsigned int gp_offset;       // offset into reg_save_area for GP regs (0..48)
+        unsigned int fp_offset;       // offset into reg_save_area for FP regs (48..304)
+        void* overflow_arg_area;      // pointer to stack arguments
+        void* reg_save_area;          // pointer to base of register save area
+    """
+
+    GP_REGISTERS = ["RDI", "RSI", "RDX", "RCX", "R8", "R9"]
+    FP_REGISTERS = [f"XMM{i}" for i in range(8)]
+    GP_SAVE_SIZE = 48    # 6 * 8 bytes
+    FP_SAVE_SIZE = 128   # 8 * 16 bytes
+    TOTAL_REG_SAVE_SIZE = GP_SAVE_SIZE + FP_SAVE_SIZE
+
+    def __init__(
+        self,
+        reg_save_base: int = 0x7FFFFFFFE000,
+        overflow_base: int = 0x7FFFFFFFE100,
+    ):
+        self.reg_save_base = reg_save_base
+        self.overflow_base = overflow_base
+        # In printk(format, ...), RDI is format (consumed before va_list).
+        # Therefore, first vararg starts at RSI -> gp_offset = 8.
+        self.gp_offset = 8
+        self.fp_offset = self.GP_SAVE_SIZE
+        self.overflow_offset = 0
+        self.consumed_args: List[VaListRecord] = []
+
+    def consume_gp_arg(self, value: Any, arg_type: str = "uint64_t") -> VaListRecord:
+        """Consume next general purpose integer/pointer argument."""
+        arg_idx = len(self.consumed_args) + 1
+        if self.gp_offset < self.GP_SAVE_SIZE:
+            reg_idx = self.gp_offset // 8
+            reg_name = self.GP_REGISTERS[reg_idx]
+            addr = self.reg_save_base + self.gp_offset
+            record = VaListRecord(
+                arg_index=arg_idx,
+                arg_type=arg_type,
+                value=value,
+                passed_via=f"{reg_name} (gp_offset={self.gp_offset})",
+                gp_offset=self.gp_offset,
+                fp_offset=self.fp_offset,
+                memory_address=addr,
+            )
+            self.gp_offset += 8
+        else:
+            # Overflow to stack
+            addr = self.overflow_base + self.overflow_offset
+            record = VaListRecord(
+                arg_index=arg_idx,
+                arg_type=arg_type,
+                value=value,
+                passed_via=f"Stack (overflow+{self.overflow_offset})",
+                gp_offset=self.gp_offset,
+                fp_offset=self.fp_offset,
+                memory_address=addr,
+            )
+            self.overflow_offset += 8
+        self.consumed_args.append(record)
+        return record
+
+    def dump_va_list_state(self) -> Dict[str, Any]:
+        """Dump internal va_list struct state."""
+        return {
+            "gp_offset": self.gp_offset,
+            "fp_offset": self.fp_offset,
+            "overflow_arg_area": hex(self.overflow_base + self.overflow_offset),
+            "reg_save_area": hex(self.reg_save_base),
+            "args_consumed_count": len(self.consumed_args),
+        }
+
+
+class PrintkPipelineSim:
+    """Simulator for MikanOS printk() pipeline (osbook_day05f).
+    
+    Models:
+    - Global console placement new buffer (`console_buf` and `console`)
+    - `printk(format, ...)` variable arguments formatting
+    - Safe buffer truncation with vsnprintf
+    - Console scroll and framebuffer output integration
+    """
+
+    def __init__(
+        self,
+        console: Optional[ConsoleSim] = None,
+        buffer_size: int = 1024,
+        console_buf_addr: int = 0x602000,
+    ):
+        self.console = console or ConsoleSim()
+        self.buffer_size = buffer_size
+        self.console_buf_addr = console_buf_addr
+        self.console_ptr = console_buf_addr  # Simulated placement new address
+        self.call_history: List[Dict[str, Any]] = []
+
+    def printk(self, fmt: str, *args) -> int:
+        """Emulate printk(format, ...) behavior."""
+        try:
+            # Emulate C-style formatting
+            if "%" in fmt and args:
+                formatted = fmt % args
+            else:
+                formatted = fmt
+        except Exception:
+            formatted = fmt
+
+        # Truncate to buffer_size - 1 (vsnprintf null-termination guarantee)
+        if len(formatted) >= self.buffer_size:
+            formatted = formatted[: self.buffer_size - 1]
+
+        # Forward to console PutString
+        self.console.put_string(formatted)
+
+        record = {
+            "format": fmt,
+            "args": list(args),
+            "formatted_string": formatted,
+            "chars_printed": len(formatted),
+            "cursor_row": self.console.cursor_row,
+            "cursor_column": self.console.cursor_column,
+            "scroll_count": self.console.scroll_count,
+        }
+        self.call_history.append(record)
+        return len(formatted)
+
+    def run_day05f_experiment(self) -> None:
+        """Run the 27-line printing loop from osbook_day05f main.cpp:
+        for (int i = 0; i < 27; ++i) { printk("printk: %d\n", i); }
+        """
+        for i in range(27):
+            self.printk("printk: %d\n", i)
+
+
+def plot_fig5_11_varargs_abi_and_va_list_model(output_path: str = "5/result/fig5_11_varargs_abi_and_va_list_model.png") -> str:
+    """Generate Figure 5.11: System V AMD64 ABI Variable Arguments & va_list Model."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 12), dpi=300)
+    gs = GridSpec(2, 2, figure=fig, hspace=0.32, wspace=0.25)
+
+    # Subplot 1: Register Save Area Layout
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_xlim(-5, 95)
+    ax1.set_ylim(-5, 95)
+    ax1.axis("off")
+    ax1.set_title("(A) System V AMD64 ABI レジスタ退避領域 (reg_save_area)",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=8)
+    box1 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#E3F2FD", edgecolor="#1976D2", lw=1.8)
+    ax1.add_patch(box1)
+
+    reg_entries = [
+        ("+0 (0x00)", "RDI (8B)", "第1引数 format (通常引数)", "#BBDEFB"),
+        ("+8 (0x08)", "RSI (8B)", "第2引数 / 第1可変長引数 (va_start 開始位置)", "#C8E6C9"),
+        ("+16 (0x10)", "RDX (8B)", "第3引数 / 第2可変長引数", "#C8E6C9"),
+        ("+24 (0x18)", "RCX (8B)", "第4引数 / 第3可変長引数", "#C8E6C9"),
+        ("+32 (0x20)", "R8  (8B)", "第5引数 / 第4可変長引数", "#C8E6C9"),
+        ("+40 (0x28)", "R9  (8B)", "第6引数 / 第5可変長引数 (GP レジスタ上限)", "#C8E6C9"),
+        ("+48..175", "XMM0..XMM7 (128B)", "浮動小数点レジスタ退避領域 (AL > 0 で保存)", "#FFE0B2"),
+    ]
+    y_pos = 78.0
+    for off, reg, desc, col in reg_entries:
+        p = patches.FancyBboxPatch((4, y_pos - 6), 82, 6.2, boxstyle="round,pad=0.2", facecolor=col, edgecolor="#90CAF9")
+        ax1.add_patch(p)
+        ax1.text(7, y_pos - 2.8, off, fontsize=7.5, family="monospace", fontweight="bold", color="#0D47A1")
+        ax1.text(26, y_pos - 2.8, reg, fontsize=7.8, family="monospace", fontweight="bold", color="#1565C0")
+        ax1.text(48, y_pos - 2.8, desc, fontsize=7.2, color="#263238")
+        y_pos -= 8.5
+
+    ax1.text(45, 6, "★ 関数プロローグで呼び出し元レジスタがスタック上の reg_save_area へ退避される",
+             fontsize=8.0, fontweight="bold", color="#0D47A1", ha="center")
+
+    # Subplot 2: va_list Structure Layout
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(-5, 95)
+    ax2.set_ylim(-5, 95)
+    ax2.axis("off")
+    ax2.set_title("(B) va_list 内部構造体 (24バイト) のメモリレイアウト",
+                  fontsize=11.5, fontweight="bold", color="#1B5E20", pad=8)
+    box2 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#E8F5E9", edgecolor="#388E3C", lw=1.8)
+    ax2.add_patch(box2)
+
+    valist_fields = [
+        ("unsigned int gp_offset", "4B (オフセット +0)", "汎用レジスタ退避領域の現在オフセット (初期値: 8, 最大: 48)"),
+        ("unsigned int fp_offset", "4B (オフセット +4)", "浮動小数点レジスタ退避領域のオフセット (初期値: 48)"),
+        ("void* overflow_arg_area", "8B (オフセット +8)", "第7引数以降が格納されるスタックフレームへのポインタ"),
+        ("void* reg_save_area", "8B (オフセット +16)", "レジスタ退避領域の先頭メモリアドレス"),
+    ]
+    y_pos = 76.0
+    for fname, sz, desc in valist_fields:
+        p = patches.FancyBboxPatch((4, y_pos - 7), 82, 7.5, boxstyle="round,pad=0.2", facecolor="#FFFFFF", edgecolor="#81C784", lw=1.2)
+        ax2.add_patch(p)
+        ax2.text(7, y_pos - 2.2, fname, fontsize=8.2, family="monospace", fontweight="bold", color="#1B5E20")
+        ax2.text(7, y_pos - 5.5, f"サイズ: {sz} | {desc}", fontsize=7.2, color="#37474F")
+        y_pos -= 11.5
+
+    ax2.text(45, 18, "typedef struct {\n"
+                     "  unsigned int gp_offset;\n"
+                     "  unsigned int fp_offset;\n"
+                     "  void *overflow_arg_area;\n"
+                     "  void *reg_save_area;\n"
+                     "} va_list[1];",
+             fontsize=7.8, family="monospace", color="#1B5E20",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#C8E6C9", edgecolor="#4CAF50"))
+
+    # Subplot 3: Argument Consumption Logic
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_xlim(-5, 95)
+    ax3.set_ylim(-5, 95)
+    ax3.axis("off")
+    ax3.set_title("(C) va_arg(ap, type) 引数取り出しとフォールバック遷移",
+                  fontsize=11.5, fontweight="bold", color="#E65100", pad=8)
+    box3 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#FFF3E0", edgecolor="#F57C00", lw=1.8)
+    ax3.add_patch(box3)
+
+    steps = [
+        ("Step 1: gp_offset < 48 か判定", "YES -> レジスタ退避領域から即座に取り出し", "#FFE0B2"),
+        ("Step 2: レジスタからの取得", "arg = *(type*)(reg_save_area + gp_offset);", "#FFFFFF"),
+        ("Step 3: gp_offset の更新", "gp_offset += 8 (次の8バイト汎用レジスタへ前進)", "#FFE0B2"),
+        ("Step 4: gp_offset >= 48 の場合", "NO -> レジスタ枯渇！スタック溢れ領域へ切り替え", "#FFCCBC"),
+        ("Step 5: スタックからの取得", "arg = *(type*)overflow_arg_area;\noverflow_arg_area += 8;", "#FFFFFF"),
+    ]
+    y_pos = 78.0
+    for title, desc, bg in steps:
+        p = patches.FancyBboxPatch((4, y_pos - 6.5), 82, 6.8, boxstyle="round,pad=0.2", facecolor=bg, edgecolor="#FFB74D")
+        ax3.add_patch(p)
+        ax3.text(7, y_pos - 2.5, title, fontsize=7.8, fontweight="bold", color="#BF360C")
+        ax3.text(7, y_pos - 5.5, desc, fontsize=7.0, color="#3E2723")
+        y_pos -= 10.0
+
+    ax3.text(45, 12, "★ レジスタ経由（高速）からスタック経由（無制限）へシームレスに切り替わる",
+             fontsize=8.0, fontweight="bold", color="#E65100", ha="center")
+
+    # Subplot 4: va_start & vsprintf Call Flow
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_xlim(-5, 95)
+    ax4.set_ylim(-5, 95)
+    ax4.axis("off")
+    ax4.set_title("(D) printk における va_start / vsprintf / va_end フロー",
+                  fontsize=11.5, fontweight="bold", color="#4A148C", pad=8)
+    box4 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#F3E5F5", edgecolor="#8E24AA", lw=1.8)
+    ax4.add_patch(box4)
+
+    flow_items = [
+        ("1. printk(format, ...)", "可変長引数がレジスタ (RSI..R9) とスタックに配置される"),
+        ("2. va_start(ap, format)", "__builtin_va_start: ap のポインタとオフセットを初期化"),
+        ("3. vsnprintf(s, 1024, fmt, ap)", "ap をトラバースし、format の指定子に従って文字列化"),
+        ("4. va_end(ap)", "__builtin_va_end: リソースクリーンアップ・整合性維持"),
+        ("5. console->PutString(s)", "生成された文字列をグローバルコンソール経由で描画"),
+    ]
+    y_pos = 78.0
+    for code, note in flow_items:
+        p = patches.FancyBboxPatch((4, y_pos - 6.5), 82, 6.8, boxstyle="round,pad=0.2", facecolor="#FFFFFF", edgecolor="#CE93D8")
+        ax4.add_patch(p)
+        ax4.text(7, y_pos - 2.5, code, fontsize=8.0, family="monospace", fontweight="bold", color="#4A148C")
+        ax4.text(7, y_pos - 5.5, f"-> {note}", fontsize=7.2, color="#37474F")
+        y_pos -= 10.0
+
+    ax4.text(45, 12, "⚠️ 注意: 可変長引数 '...' をそのまま別関数へ渡すことは不可！必ず va_list 版 (v-系) を呼ぶ",
+             fontsize=7.8, fontweight="bold", color="#B71C1C", ha="center")
+
+    fig.suptitle("ゼロからのOS自作入門 第5章 5.6: System V AMD64 ABI 可変長引数と va_list 構造体\n"
+                 "(Figure 5.11: Variable Arguments ABI and va_list Internal Structure)",
+                 fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig5_12_global_placement_new_and_printk_pipeline(output_path: str = "5/result/fig5_12_global_placement_new_and_printk_pipeline.png") -> str:
+    """Generate Figure 5.12: Global Placement New & printk() Output Pipeline."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 12), dpi=300)
+    gs = GridSpec(2, 2, figure=fig, hspace=0.32, wspace=0.25)
+
+    # Subplot 1: Why Placement New in Bare Metal?
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_xlim(-5, 95)
+    ax1.set_ylim(-5, 95)
+    ax1.axis("off")
+    ax1.set_title("(A) なぜ通常のグローバル変数ではなく配置newなのか？",
+                  fontsize=11.5, fontweight="bold", color="#B71C1C", pad=8)
+    box1 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#FFEBEE", edgecolor="#D32F2F", lw=1.8)
+    ax1.add_patch(box1)
+
+    ax1.text(4, 82, "【通常のグローバル変数: Console console; の致命的欠点】", fontsize=8.2, fontweight="bold", color="#B71C1C")
+    ax1.text(6, 74, "1. ELF静的初期化子 (__init_array / 共有ライブラリ) の未実行:\n"
+                    "   ベアメタル環境では main() 前にコンストラクタを自動呼出する\n"
+                    "   Cランタイム (CRT) が存在しないため、未初期化のまま実行される",
+             fontsize=7.5, color="#37474F")
+    ax1.text(6, 60, "2. 初期化順序の未定義問題 (Static Initialization Order Fiasco):\n"
+                    "   PixelWriter や FrameBufferConfig の準備が整う前に Console が\n"
+                    "   初期化されようとすると、NULLポインタ参照や不正メモリ書込を起こす",
+             fontsize=7.5, color="#37474F")
+
+    ax1.plot([4, 86], [50, 50], color="#EF9A9A", linestyle="--", lw=1.2)
+
+    ax1.text(4, 44, "【MikanOS の解法: console_buf + 配置 new (Placement new)】", fontsize=8.2, fontweight="bold", color="#2E7D32")
+    sol_text = ("char console_buf[sizeof(Console)];  // static storage\n"
+                "Console* console;                 // global pointer\n\n"
+                "// KernelMain: initialize after hardware setup\n"
+                "console = new(console_buf) Console{*pixel_writer, fg, bg};")
+    ax1.text(6, 22, sol_text, fontsize=7.6, family="monospace", color="#1B5E20",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#E8F5E9", edgecolor="#4CAF50"))
+
+    # Subplot 2: Global Memory Layout
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(-5, 95)
+    ax2.set_ylim(-5, 95)
+    ax2.axis("off")
+    ax2.set_title("(B) 静的メモリ領域 (.bss / .data) と配置newのレイアウト",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=8)
+    box2 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#E3F2FD", edgecolor="#1976D2", lw=1.8)
+    ax2.add_patch(box2)
+
+    mem_blocks = [
+        ("console (8B pointer)", ".data 領域", "console_buf の先頭アドレスを保持", "#BBDEFB"),
+        ("console_buf[sizeof(Console)]", ".bss 領域 (約2KB)", "25行x81列バッファ + カーソル + 設定値を内包", "#C8E6C9"),
+        ("pixel_writer_buf", ".bss 領域 (40バイト)", "第4章で配置newされた PixelWriter インスタンス", "#FFE0B2"),
+        ("frame_buffer (VRAM)", "物理メモリ (MMIO)", "GOP フレームバッファ (VRAM実体)", "#E1BEE7"),
+    ]
+    y_pos = 78.0
+    for name, sec, desc, bg in mem_blocks:
+        p = patches.FancyBboxPatch((4, y_pos - 6.8), 82, 7.2, boxstyle="round,pad=0.2", facecolor=bg, edgecolor="#90CAF9")
+        ax2.add_patch(p)
+        ax2.text(7, y_pos - 2.5, name, fontsize=8.0, family="monospace", fontweight="bold", color="#0D47A1")
+        ax2.text(7, y_pos - 5.5, f"[{sec}] {desc}", fontsize=7.2, color="#263238")
+        y_pos -= 11.0
+
+    ax2.annotate("", xy=(30, 68), xytext=(20, 75),
+                 arrowprops=dict(arrowstyle="->", color="#D32F2F", lw=2.0))
+    ax2.text(45, 12, "★ カーネル内の全関数・割り込みハンドラから console ポインタ経由で出力可能",
+             fontsize=7.8, fontweight="bold", color="#0D47A1", ha="center")
+
+    # Subplot 3: 5-Stage Output Pipeline
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_xlim(-5, 95)
+    ax3.set_ylim(-5, 95)
+    ax3.axis("off")
+    ax3.set_title("(C) printk() から画面表示までの5段階実行パイプライン",
+                  fontsize=11.5, fontweight="bold", color="#1B5E20", pad=8)
+    box3 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#E8F5E9", edgecolor="#388E3C", lw=1.8)
+    ax3.add_patch(box3)
+
+    pipeline = [
+        ("1. printk(\"val: %d\", x)", "可変長引数を呼び出し規約レジスタへ渡す"),
+        ("2. vsnprintf(s, 1024, ...)", "スタックバッファ char s[1024] に書式整形展開"),
+        ("3. console->PutString(s)", "グローバルポインタを経由して Console インスタンスへ"),
+        ("4. WriteAscii / buffer_", "25x80文字バッファへ格納し、スクロール判定"),
+        ("5. PixelWriter (VRAM)", "フレームバッファへフォントビットパターンを描画"),
+    ]
+    y_pos = 78.0
+    for stage, desc in pipeline:
+        p = patches.FancyBboxPatch((4, y_pos - 6.5), 82, 6.8, boxstyle="round,pad=0.2", facecolor="#FFFFFF", edgecolor="#81C784")
+        ax3.add_patch(p)
+        ax3.text(7, y_pos - 2.5, stage, fontsize=8.0, family="monospace", fontweight="bold", color="#1B5E20")
+        ax3.text(7, y_pos - 5.5, f"-> {desc}", fontsize=7.2, color="#37474F")
+        y_pos -= 10.0
+
+    ax3.text(45, 12, "★ printf 互換の書式指定（%d, %x, %s等）がベアメタルカーネルで即座に利用可能",
+             fontsize=7.8, fontweight="bold", color="#1B5E20", ha="center")
+
+    # Subplot 4: 27-Line Experiment Result
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_xlim(-5, 95)
+    ax4.set_ylim(-5, 95)
+    ax4.axis("off")
+    ax4.set_title("(D) 27行出力実験 (osbook_day05f) とスクロール結果",
+                  fontsize=11.5, fontweight="bold", color="#E65100", pad=8)
+    box4 = patches.FancyBboxPatch((0, 2), 90, 88, boxstyle="round,pad=0.5", facecolor="#FFF3E0", edgecolor="#F57C00", lw=1.8)
+    ax4.add_patch(box4)
+
+    exp_rows = [
+        ("Row 0", "printk: 3", "最上行 (初期 line 0, 1, 2 はスクロールで画面外へ)", "#FFE0B2"),
+        ("Row 1", "printk: 4", "1行繰り上がった行", "#FFFFFF"),
+        ("...", "...", "中間行 (printk: 5 〜 printk: 24)", "#FFFFFF"),
+        ("Row 23", "printk: 26", "27行目 (最新出力行)", "#FFE0B2"),
+        ("Row 24", "['\\0', ...]", "最下行 (次回の文字入力を待機する空行)", "#FFCCBC"),
+    ]
+    y_pos = 78.0
+    for rname, val, note, bg in exp_rows:
+        p = patches.FancyBboxPatch((4, y_pos - 6.5), 82, 6.8, boxstyle="round,pad=0.2", facecolor=bg, edgecolor="#FFB74D")
+        ax4.add_patch(p)
+        ax4.text(7, y_pos - 2.5, rname, fontsize=8.0, family="monospace", fontweight="bold", color="#BF360C")
+        ax4.text(24, y_pos - 2.5, f"\"{val}\"", fontsize=8.0, family="monospace", color="#D84315")
+        ax4.text(48, y_pos - 2.5, note, fontsize=6.8, color="#4E342E")
+        y_pos -= 9.5
+
+    ax4.text(45, 16, "【スクロール統計】\n"
+                     "・総出力行数: 27 行 (0〜26)\n"
+                     "・バッファ容量: 25 行\n"
+                     "・発生スクロール回数: 3 回\n"
+                     "・カーソル最終位置: 行 24, 列 0",
+             fontsize=7.5, color="#BF360C",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFE0B2", edgecolor="#FF9800"))
+
+    fig.suptitle("ゼロからのOS自作入門 第5章 5.6: グローバル配置newと printk() パイプライン\n"
+                 "(Figure 5.12: Global Placement New and printk Output Pipeline)",
                  fontsize=14, fontweight="bold", color="#0D47A1", y=0.98)
 
     plt.tight_layout()
