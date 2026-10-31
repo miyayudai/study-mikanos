@@ -347,6 +347,10 @@ from common.os_sim import (
     PrintkPipelineSim,
     plot_fig5_11_varargs_abi_and_va_list_model,
     plot_fig5_12_global_placement_new_and_printk_pipeline,
+    Chapter5Quiz,
+    Chapter5TheoryValidator,
+    plot_chapter5_exercises_summary,
+    plot_chapter5_mastery_radar,
 )
 
 __all__ = [
@@ -696,4 +700,8 @@ __all__ = [
     "PrintkPipelineSim",
     "plot_fig5_11_varargs_abi_and_va_list_model",
     "plot_fig5_12_global_placement_new_and_printk_pipeline",
+    "Chapter5Quiz",
+    "Chapter5TheoryValidator",
+    "plot_chapter5_exercises_summary",
+    "plot_chapter5_mastery_radar",
 ]

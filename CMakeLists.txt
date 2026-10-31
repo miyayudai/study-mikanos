@@ -153,6 +153,10 @@ add_test(NAME test_ch05_console_sim COMMAND ch05_console_sim)
 add_executable(ch05_printk_sim src/ch05/printk_sim.cpp)
 add_test(NAME test_ch05_printk_sim COMMAND ch05_printk_sim)
 
+add_executable(ch05_os_chapter5_exercises src/ch05/os_chapter5_exercises.cpp)
+add_test(NAME test_ch05_os_chapter5_exercises COMMAND ch05_os_chapter5_exercises --test)
+
+
 
 
 

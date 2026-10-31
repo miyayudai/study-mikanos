@@ -20799,3 +20799,488 @@ def plot_fig5_12_global_placement_new_and_printk_pipeline(output_path: str = "5/
     plt.close()
     return output_path
 
+
+
+# =============================================================================
+# Chapter 5 Exercises: Comprehensive Verification & Quiz Engine
+# =============================================================================
+
+class Chapter5Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 5.1 to 5.6."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="5.1",
+                topic="8x16 ビットマップフォントのビット展開数理",
+                question="8x16 ドットのビットマップフォントにおいて、行 dy (0〜15)・列 dx (0〜7) のピクセルが点灯しているかを判定するC++式として正しいものはどれか？ (font[dy] は1バイトデータ、左端列が dx=0)",
+                options=[
+                    "(font[dy] >> dx) & 1  （最下位ビット LSB が文字の左端に対応する）",
+                    "(font[dy] << dx) & 0x80u  または  (font[dy] >> (7 - dx)) & 1  （最上位ビット MSB が文字の左端に対応する）",
+                    "(font[dx] << dy) & 0x01u  （配列インデックスは列 dx で参照する）",
+                    "font[dy * 8 + dx] == 1  （font は 128 バイトのフラット配列である）",
+                ],
+                correct_index=1,
+                explanation="Hankaku 等の一般的なビットマップフォントでは、各バイトの最上位ビット（MSB: Bit 7）がグリフの最も左（dx=0）に対応します。そのため、dx ビット左シフトして最上位ビットをマスクする `(font[dy] << dx) & 0x80u`、または `(font[dy] >> (7 - dx)) & 1` で判定します。",
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="5.1",
+                topic="C++参照 (Reference) とポインタ (Pointer) の比較",
+                question="C++ における参照（Reference: T&）とポインタ（Pointer: T*）の言語仕様上の本質的な違いとして正しいものはどれか？",
+                options=[
+                    "参照はnullptrを保持でき、作成後いつでも別のオブジェクトを指すようリセット（Rebind）できる",
+                    "参照はポインタと完全に同一であり、内部的にも構文的にも何ら制約や差異は存在しない",
+                    "参照は宣言時の初期化が必須であり（null不可）、一度束縛した対象を変更できず、構文上直接ドット演算子 '.' でメンバーにアクセスできる",
+                    "参照はコンパイル後に必ず32バイトのヒープ領域を動的確保してアドレスを管理する",
+                ],
+                correct_index=2,
+                explanation="C++参照は別名（エイリアス）であり、宣言時に有効なオブジェクトで初期化しなければなりません（nullptr不可）。また一度初期化すると別のオブジェクトに再束縛（Rebind）することはできず、自動的に逆参照されるため `.` 演算子で直接アクセスできます。",
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="5.2",
+                topic="分割コンパイルとシンボル解決・インクルードガード",
+                question="ヘッダファイルとソースファイルの分割コンパイルにおいて、#pragma once（またはインクルードガード）が必要とされる根本的な理由とODR（単一定義規則）の関係として正しいものはどれか？",
+                options=[
+                    "ヘッダファイル内で定義されたクラスや構造体が同一翻訳単位内で多重展開され、再定義エラー（ODR違反）となるのを防ぐため",
+                    "コンパイル時にオブジェクトファイルを自動的に削除してディスク容量を節約するため",
+                    "リンカが外部ライブラリをリンクするのを強制的にブロックするため",
+                    "C++20 のモジュール構文と完全に互換性を持たせるための必須アセンブラディレクティブであるため",
+                ],
+                correct_index=0,
+                explanation="1つのソースファイル（翻訳単位）から複数のヘッダが間接的に同一ヘッダをインクルードすると、クラス型や構造体の多重定義エラーが発生します。`#pragma once` やインクルードガードは同一翻訳単位内での多重インクルードを防止して単一定義規則（ODR: One Definition Rule）を守ります。",
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="5.2",
+                topic="コンパイラとリンカの役割分担とシンボル解決",
+                question="ソースコードから最終バイナリが生成される過程におけるコンパイラとリンカの処理内容として正しいものはどれか？",
+                options=[
+                    "コンパイラが外部関数呼び出しの絶対アドレスをすべて決定し、リンカは単にファイルを結合するだけである",
+                    "コンパイラはソース単位でオブジェクトファイル（未解決外部シンボル含む）を出力し、リンカがそれらのシンボル参照先アドレスを解決・再配置（Relocation）して結合する",
+                    "リンカがC++ソースコードを解析してAST（抽象構文木）を生成し、機械語への最適化を行う",
+                    "分割コンパイルではリンカは使用されず、プリプロセッサが直接実行可能ELFバイナリを出力する",
+                ],
+                correct_index=1,
+                explanation="コンパイラは各ソースファイル（翻訳単位）を独立してコンパイルし、別ファイルで定義された関数や変数を「未定義シンボル（Undefined Symbol）」としてオブジェクトファイル（.o）に記録します。リンカがすべての .o を集め、シンボル名と定義先アドレスを対応付けて機械語の参照箇所を書き換える再配置（Relocation）を行います。",
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="5.3",
+                topic="objcopy によるバイナリデータのELFオブジェクト化とリンカシンボル",
+                question="hankaku.txt から生成したバイナリファイル hankaku.bin に対し、objcopy -I binary -O elf64-x86-64 -B i386:x86-64 hankaku.bin hankaku.o を実行したとき、リンカによって自動生成されるシンボルとして正しいものはどれか？",
+                options=[
+                    "__hankaku_font_table, __hankaku_font_count",
+                    "_binary_hankaku_bin_start, _binary_hankaku_bin_end, _binary_hankaku_bin_size",
+                    "g_font_bitmap_data, g_font_bitmap_size",
+                    "hankaku_bin_data_ptr, hankaku_bin_data_len",
+                ],
+                correct_index=1,
+                explanation="GNU objcopy でバイナリをELFオブジェクトに変換すると、入力ファイル名（hankaku.bin）の特殊文字をアンダースコアに置換した `_binary_<filename>_start`, `_binary_<filename>_end`, `_binary_<filename>_size` という3つのシンボルが自動生成されます。",
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="5.3",
+                topic="半角フォントデータのアドレス計算式",
+                question="文字コード c（ASCII 0〜255）に対応する半角フォント（1文字16バイト）の先頭アドレスを、フォント配列先頭ポインタ fonts（_binary_hankaku_bin_start）から取得する正しいポインタ算術式はどれか？",
+                options=[
+                    "fonts + c",
+                    "fonts + c * 8",
+                    "fonts + c * 16",
+                    "fonts + c * 256",
+                ],
+                correct_index=2,
+                explanation="半角フォント（Hankaku）は1文字あたり高さ16ピクセル×幅8ピクセル（1行1バイト×16行 = 16バイト）で構成されているため、文字コード c のフォントデータは先頭から `c * 16` バイト目に配置されます。ポインタ算術では `fonts + c * 16` となります。",
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="5.4",
+                topic="Newlib 標準Cライブラリとベアメタル用スタブ関数 (sbrk)",
+                question="MikanOS カーネルに Newlib の libc.a をリンクして sprintf() 等を利用可能にする際、OS側が必ず実装（スタブ提供）しなければならない低レベルシステムコール関数として最も適切なものはどれか？",
+                options=[
+                    "sbrk()（または _sbrk()）: Newlib内部の動的メモリ確保（malloc）要求に応じたヒープ領域の拡張",
+                    "fork() および execve(): プロセス生成ランタイムの初期化",
+                    "pthread_create(): マルチスレッドスケジューラの起動",
+                    "select() および epoll_wait(): ネットワークソケット多重I/Oのポーリング",
+                ],
+                correct_index=0,
+                explanation="Newlib の標準ライブラリ（sprintf や printf 等）は内部でバッファや動的メモリ管理を利用する場合があり、ヒープ領域の終端アドレスを前進させる `sbrk()`（または `_sbrk()`）や入出力スタブをOS側が提供する必要があります。",
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="5.4",
+                topic="System V AMD64 ABI における可変長引数 (va_list) の内部構造",
+                question="x86-64 の System V AMD64 ABI において、可変長引数 va_list が保持する構造体フィールドと引数渡しの仕組みとして正しいものはどれか？",
+                options=[
+                    "すべての引数は単純なスタックポインタ1つだけで管理され、レジスタは一切使用されない",
+                    "gp_offset（汎用レジスタオフセット）, fp_offset（浮動小数点レジスタオフセット）, overflow_arg_area（スタック溢れ引数）, reg_save_area（レジスタ退避領域）を保持し、レジスタ渡しとスタック渡しを透過的に処理する",
+                    "引数はすべて暗黙のグローバル配列 g_varargs[1024] にコピーされる",
+                    "64ビット整数1つ（引数の総数）のみを保持し、関数内部で CPU の TSC レジスタを読み取る",
+                ],
+                correct_index=1,
+                explanation="System V AMD64 ABI では第1〜第6引数がレジスタ渡しされるため、可変長引数関数呼び出し時にそれらのレジスタがスタック上の reg_save_area に退避されます。va_list は `gp_offset`, `fp_offset`, `overflow_arg_area`, `reg_save_area` の4つのフィールドを持つ構造体として定義され、レジスタ領域とスタック領域の引数を順次取り出します。",
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="5.5",
+                topic="Console クラスにおける行バッファリングとスクロール処理",
+                question="Console クラス（25行×80列文字バッファ）において、最下行（Row 24）で改行（'\\n'）が発生したときのスクロール処理アルゴリズムとして正しいものはどれか？",
+                options=[
+                    "画面全体をクリアしてカーソルを (0, 0) に戻す",
+                    "行1〜24 のバッファ内容を行0〜23 にコピー（シフト）し、行24 を空白文字（'\\0'）でクリアして画面全体または移動領域を再描画する",
+                    "VRAM の物理ベースアドレスをハードウェアスクロールレジスタで 16 ピクセルシフトする",
+                    "メモリ不足例外（std::bad_alloc）をスローしてカーネルをパニック停止させる",
+                ],
+                correct_index=1,
+                explanation="コンソールのスクロールでは、文字バッファの内容を行1〜24から行0〜23へ1行分上にシフトコピーし、新しく現れた最下行（行24）を空白文字でクリアした上で、PixelWriter を通じて文字を再描画します。",
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="5.6",
+                topic="printk() 実装パイプラインとバッファ切り詰めハンドリング",
+                question="MikanOS の printk(const char* format, ...) の実装および安全性に関する記述として最も適切なものはどれか？",
+                options=[
+                    "printk は printf と全く同一の関数ポインタであり、標準出力をそのままターミナルにパイプする",
+                    "va_start で可変長引数を初期化し、vsnprintf で固定長バッファ（例: 1024バイト）に書式展開して Console::PutString に渡し、va_end で破棄する。vsnprintf によりバッファオーバーランを防止し、文字列終端 '\\0' を保証する",
+                    "フォーマット文字列の解析をすべて独自の手書きループで行い、vsnprintf などのライブラリ関数は一切使用してはならない",
+                    "printk はブートローダ（UEFI）環境専用のデバッグ関数であり、カーネル内では実行できない",
+                ],
+                correct_index=1,
+                explanation="printk は可変長引数を扱い、`va_start` で初期化後、`vsnprintf(buf, sizeof(buf), format, ap)` を用いて安全に書式展開を行います。vsnprintf はバッファサイズを超過した出力を安全に切り詰め、常に末尾に '\\0' を付加するためバッファオーバーランを確実に防止します。展開後はコンソールインスタンスに文字列を出力し、`va_end` で後始末を行います。",
+            ),
+        ]
+
+    def evaluate(self, user_answers: dict[int, int]) -> dict[str, any]:
+        """Evaluate answers and calculate total score, percentage, and per-section mastery rates."""
+        correct_count = 0
+        total_questions = len(self.questions)
+        section_results: dict[str, list[bool]] = {}
+
+        for q in self.questions:
+            user_ans = user_answers.get(q.question_id)
+            is_correct = (user_ans == q.correct_index)
+            if is_correct:
+                correct_count += 1
+            if q.section not in section_results:
+                section_results[q.section] = []
+            section_results[q.section].append(is_correct)
+
+        percentage = (correct_count / total_questions) * 100.0
+        passed = (percentage >= 80.0)
+
+        mastery_rates = {}
+        for sec, results in section_results.items():
+            mastery_rates[sec] = (sum(results) / len(results)) * 100.0
+
+        return {
+            "total_questions": total_questions,
+            "correct_count": correct_count,
+            "percentage": percentage,
+            "passed": passed,
+            "mastery_rates": mastery_rates,
+        }
+
+
+class Chapter5TheoryValidator:
+    """Validation helper for Chapter 5 systems theory, fonts, linking, sprintf, console, and printk."""
+
+    @staticmethod
+    def validate_font_bit_expansion(math_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate 8x16 bitmap font bit-expansion logic."""
+        font_byte = math_dict.get("font_byte", 0b10000001)
+        dx = math_dict.get("dx", 0)
+        is_lit = math_dict.get("is_lit")
+
+        expected = bool((font_byte << dx) & 0x80)
+        if is_lit == expected:
+            return True, "正解！MSBを文字左端とするビットマップフォントのビット展開数理を正しく検証しました。"
+        return False, f"不正解です。font_byte=0x{font_byte:02x}, dx={dx} の期待値={expected}, 入力値={is_lit}"
+
+    @staticmethod
+    def validate_reference_vs_pointer(comp_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate C++ reference vs pointer core language characteristics."""
+        can_be_null_ref = comp_dict.get("ref_can_be_null", False)
+        can_rebind_ref = comp_dict.get("ref_can_rebind", False)
+        ref_access_op = comp_dict.get("ref_access_operator", ".")
+        ptr_access_op = comp_dict.get("ptr_access_operator", "->")
+
+        errors = []
+        if can_be_null_ref is not False:
+            errors.append("参照は nullptr を取ることができません (必須非ヌル)")
+        if can_rebind_ref is not False:
+            errors.append("参照は一度初期化されると再束縛 (Rebind) できません")
+        if ref_access_op != ".":
+            errors.append(f"参照のメンバーアクセス演算子は '.' です (入力: {ref_access_op})")
+        if ptr_access_op not in ("->", "*"):
+            errors.append(f"ポインタのメンバーアクセス演算子は '->' または '*' です (入力: {ptr_access_op})")
+
+        if not errors:
+            return True, "正解！C++参照とポインタの構文・セマンティクス・安全性の差異を正確に識別しました。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_objcopy_symbols(sym_dict: dict[str, str]) -> tuple[bool, str]:
+        """Validate objcopy linker symbol naming conventions."""
+        start_sym = sym_dict.get("start_symbol", "").strip()
+        end_sym = sym_dict.get("end_symbol", "").strip()
+        size_sym = sym_dict.get("size_symbol", "").strip()
+
+        errors = []
+        if start_sym != "_binary_hankaku_bin_start":
+            errors.append(f"start_symbol: 期待値 '_binary_hankaku_bin_start', 入力値 '{start_sym}'")
+        if end_sym != "_binary_hankaku_bin_end":
+            errors.append(f"end_symbol: 期待値 '_binary_hankaku_bin_end', 入力値 '{end_sym}'")
+        if size_sym != "_binary_hankaku_bin_size":
+            errors.append(f"size_symbol: 期待値 '_binary_hankaku_bin_size', 入力値 '{size_sym}'")
+
+        if not errors:
+            return True, "正解！GNU objcopy が自動生成する3大リンカシンボルを正確に同定しました。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_system_v_varargs_abi(abi_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate System V AMD64 ABI va_list memory layout."""
+        fields = set(abi_dict.get("struct_fields", []))
+        expected_fields = {"gp_offset", "fp_offset", "overflow_arg_area", "reg_save_area"}
+        num_gp = abi_dict.get("num_gp_regs", 6)
+
+        errors = []
+        if fields != expected_fields:
+            errors.append(f"va_list フィールド: 期待値 {expected_fields}, 入力値 {fields}")
+        if num_gp != 6:
+            errors.append(f"可変長引数用汎用レジスタ数: 期待値 6 (RDI..R9), 入力値 {num_gp}")
+
+        if not errors:
+            return True, "正解！System V AMD64 ABI における va_list 構造体の内部レイアウトを正確に把握しています。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_console_scroll_math(scroll_dict: dict[str, int]) -> tuple[bool, str]:
+        """Validate Console row buffering and scroll shift math."""
+        total_rows = scroll_dict.get("total_rows", 25)
+        shifted_rows = scroll_dict.get("shifted_rows")
+        cleared_row = scroll_dict.get("cleared_row")
+        final_cursor_row = scroll_dict.get("final_cursor_row")
+
+        expected_shifted = total_rows - 1  # 24 rows (1..24 to 0..23)
+        expected_cleared = total_rows - 1  # Row 24
+        expected_cursor_row = total_rows - 1  # Row 24
+
+        errors = []
+        if shifted_rows != expected_shifted:
+            errors.append(f"シフト行数: 期待値 {expected_shifted}, 入力値 {shifted_rows}")
+        if cleared_row != expected_cleared:
+            errors.append(f"クリア最下行インデックス: 期待値 {expected_cleared}, 入力値 {cleared_row}")
+        if final_cursor_row != expected_cursor_row:
+            errors.append(f"スクロール後カーソル行: 期待値 {expected_cursor_row}, 入力値 {final_cursor_row}")
+
+        if not errors:
+            return True, "正解！25行コンソールの行バッファシフト・最下行クリア・カーソル管理数理を正確に導出しました。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_printk_buffer_safety(safety_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate printk vsnprintf buffer truncation and safety."""
+        buf_size = safety_dict.get("buffer_size", 1024)
+        truncation_cond = safety_dict.get("truncation_detected_when", "")
+        null_terminated = safety_dict.get("null_terminated", True)
+
+        errors = []
+        if buf_size < 256:
+            errors.append("buffer_size: カーネルログバッファは最低でも256バイト以上を推奨します")
+        if not ("ret >= sizeof" in truncation_cond or "ret >= buffer_size" in truncation_cond or ">= 1024" in truncation_cond):
+            errors.append("truncation_detected_when: vsnprintf の戻り値 >= バッファサイズ で切り詰めを検知します")
+        if null_terminated is not True:
+            errors.append("null_terminated: vsnprintf は常に末尾に '\\0' を付加することを保証します")
+
+        if not errors:
+            return True, "正解！printk における vsnprintf のバッファ安全性と切り詰めハンドリングを正確に理解しています。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+
+def plot_chapter5_exercises_summary(output_path: Path | str) -> Path:
+    """Generate Chapter 5 comprehensive exercises curriculum and evaluation summary chart."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle(
+        "第5章 総合演習問題カリキュラム & 理論・実装評価マップ\n"
+        "(Chapter 5 Comprehensive Exercises & Verification Architecture)",
+        fontsize=14, fontweight="bold", color="#1A237E", y=0.98,
+    )
+
+    # 1. 6大トピック構成 (Top-Left)
+    ax1 = axes[0, 0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 第5章の学習・演習 6大コアトピック", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    topics = [
+        ("5.1 文字描画 & 参照", "8x16 ビットマップフォント展開・ビットシフト・参照 vs ポインタ", "#E3F2FD", "#1565C0"),
+        ("5.2 分割コンパイル", "ヘッダ宣言とソース定義・インクルードガード・ODR・リンカシンボル解決", "#E8F5E9", "#2E7D32"),
+        ("5.3 フォントバイナリ", "objcopy による任意データELF化・_binary_start/end/size・文字オフセット", "#FFF3E0", "#E65100"),
+        ("5.4 sprintf & ABI", "Newlib libc.a 連携・sbrkスタブ・System V AMD64 可変長引数 ABI", "#F3E5F5", "#6A1B9A"),
+        ("5.5 コンソールクラス", "25行×80列文字バッファ・改行処理・行シフトスクロールと全画面再描画", "#E0F2F1", "#00695C"),
+        ("5.6 printk & 配置new", "vsnprintf バッファ安全性・va_listパイプライン・グローバル初期化", "#FCE4EC", "#C2185B"),
+    ]
+
+    y_pos = 0.88
+    for title, desc, bg, border in topics:
+        box = FancyBboxPatch((0.03, y_pos - 0.05), 0.94, 0.105, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax1.add_patch(box)
+        ax1.text(0.06, y_pos, title, fontsize=8.6, fontweight="bold", color=border)
+        ax1.text(0.33, y_pos, desc, fontsize=7.4, color="#263238")
+        y_pos -= 0.145
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. 演習問題構成比率 (Top-Right)
+    ax2 = axes[0, 1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 演習問題の配点・カテゴリ比率 (10問)", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    categories = [
+        "フォント & 参照 (5.1)",
+        "分割コンパイル (5.2)",
+        "objcopyバイナリ (5.3)",
+        "Newlib & va_list (5.4)",
+        "Consoleスクロール (5.5)",
+        "printkパイプライン (5.6)",
+    ]
+    counts = [2, 2, 2, 2, 1, 1]
+    colors = ["#42A5F5", "#66BB6A", "#FFA726", "#AB47BC", "#26A69A", "#EC407A"]
+
+    wedges, texts, autotexts = ax2.pie(
+        counts, labels=categories, autopct="%1.0f%%", startangle=140,
+        colors=colors, textprops=dict(fontsize=8.0, color="#263238"),
+        wedgeprops=dict(width=0.45, edgecolor="white", lw=2),
+    )
+    for at in autotexts:
+        at.set_fontsize(8.2)
+        at.set_fontweight("bold")
+        at.set_color("#FFFFFF")
+
+    # 3. 理論検証フロー (Bottom-Left)
+    ax3 = axes[1, 0]
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 自動採点 & 理論検証エンジン (Chapter5TheoryValidator)", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    val_steps = [
+        ("Step 1", "8x16 ビットマップフォント MSB シフト判定数理", "#E1F5FE", "#0288D1"),
+        ("Step 2", "C++ 参照 vs ポインタ言語仕様・安全性照合", "#E8F8F5", "#1ABC9C"),
+        ("Step 3", "GNU objcopy 自動生成 3大リンカシンボル検証", "#FEF9E7", "#F39C12"),
+        ("Step 4", "System V AMD64 ABI va_list 構造体レジスタレイアウト", "#F4ECF7", "#8E44AD"),
+        ("Step 5", "25行コンソール 行シフトスクロール & 最下行クリア数理", "#FDEDEC", "#E74C3C"),
+        ("Step 6", "printk vsnprintf バッファ切り詰め & 安全性境界値", "#FCE4EC", "#AD1457"),
+    ]
+
+    y_pos = 0.88
+    for step_num, desc, bg, border in val_steps:
+        box = FancyBboxPatch((0.04, y_pos - 0.05), 0.92, 0.105, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax3.add_patch(box)
+        ax3.text(0.08, y_pos, step_num, fontsize=8.0, fontweight="bold", color=border)
+        ax3.text(0.24, y_pos, desc, fontsize=7.4, color="#263238")
+        y_pos -= 0.145
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    # 4. C++20 / Python ハイブリッド検証基盤 (Bottom-Right)
+    ax4 = axes[1, 1]
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. C++20 スタンドアロン検証 & pytest 統合", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    comp_items = [
+        ("C++20 Standalone", "src/ch05/os_chapter5_exercises.cpp\n(CMake: ch05_os_chapter5_exercises)", "#2E7D32"),
+        ("Python Module", "common/os_sim.py\n(Chapter5Quiz, Chapter5TheoryValidator)", "#1565C0"),
+        ("Unit Testing", "tests/test_ch5_exercises.py\n(pytest tests/ -v)", "#C62828"),
+        ("Visual Verification", "5/result/fig5_ex1_exercises_summary.png\n5/result/fig5_ex2_ch5_mastery_radar.png", "#6A1B9A"),
+    ]
+
+    y_pos = 0.82
+    for label, desc, col in comp_items:
+        box = FancyBboxPatch((0.05, y_pos - 0.08), 0.90, 0.15, boxstyle="round,pad=0.015",
+                             facecolor="#F5F5F5", edgecolor=col, lw=1.5)
+        ax4.add_patch(box)
+        ax4.text(0.09, y_pos + 0.02, label, fontsize=8.8, fontweight="bold", color=col)
+        ax4.text(0.09, y_pos - 0.05, desc, fontsize=7.4, color="#37474F")
+        y_pos -= 0.21
+
+    ax4.set_xlim(0, 1.0)
+    ax4.set_ylim(0, 1.0)
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_chapter5_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float]) -> Path:
+    """Generate radar chart showing mastery rates across all 6 sections of Chapter 5."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    sections = [
+        "5.1\n文字描画&参照",
+        "5.2\n分割コンパイル",
+        "5.3\nフォントバイナリ",
+        "5.4\nsprintf&ABI",
+        "5.5\nConsoleクラス",
+        "5.6\nprintk&配置new",
+    ]
+    sec_keys = ["5.1", "5.2", "5.3", "5.4", "5.5", "5.6"]
+    rates = [mastery_rates.get(k, 100.0) for k in sec_keys]
+
+    num_vars = len(sections)
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    rates_closed = rates + rates[:1]
+    angles_closed = angles + angles[:1]
+
+    fig = plt.figure(figsize=(8, 8))
+    fig.patch.set_facecolor("#FAFAFA")
+    ax = fig.add_subplot(111, polar=True)
+    ax.set_facecolor("#FFFFFF")
+
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+
+    ax.set_xticks(angles)
+    ax.set_xticklabels(sections, fontsize=9.2, fontweight="bold", color="#1A237E")
+
+    ax.set_rlabel_position(0)
+    ax.set_yticks([20, 40, 60, 80, 100])
+    ax.set_yticklabels(["20%", "40%", "60%", "80%", "100%"], fontsize=7.5, color="#546E7A")
+    ax.set_ylim(0, 100)
+
+    # Plot data
+    ax.plot(angles_closed, rates_closed, color="#1565C0", linewidth=2.2, linestyle="solid")
+    ax.fill(angles_closed, rates_closed, color="#42A5F5", alpha=0.35)
+
+    # Plot reference 80% pass threshold
+    pass_thresh = [80] * (num_vars + 1)
+    ax.plot(angles_closed, pass_thresh, color="#E53935", linewidth=1.2, linestyle="--", label="合格基準 (Pass Threshold: 80%)")
+
+    for angle, rate in zip(angles, rates):
+        color = "#2E7D32" if rate >= 80.0 else "#C62828"
+        ax.text(angle, rate + 6, f"{rate:.0f}%", horizontalalignment="center",
+                verticalalignment="center", fontsize=8.6, fontweight="bold", color=color)
+
+    ax.set_title("第5章 理解度・習得率レーダーチャート\n(Chapter 5 Mastery Radar Chart)",
+                 fontsize=12, fontweight="bold", color="#0D47A1", pad=20)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.25, 1.1), fontsize=8.5)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
