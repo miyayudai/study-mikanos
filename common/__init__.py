@@ -371,6 +371,11 @@ from common.os_sim import (
     xHCIArchitectureSimulator,
     plot_fig6_03_xhci_data_structures_and_ring_hierarchy,
     plot_fig6_04_trb_binary_layout_and_cycle_bit_transition,
+    PCIAddress,
+    PCIDeviceSim,
+    PCIConfigSpaceSimulator,
+    plot_fig6_05_pci_config_address_and_header_layout,
+    plot_fig6_06_pci_bus_tree_and_recursive_scan_algorithm,
 )
 
 __all__ = [
@@ -744,4 +749,9 @@ __all__ = [
     "xHCIArchitectureSimulator",
     "plot_fig6_03_xhci_data_structures_and_ring_hierarchy",
     "plot_fig6_04_trb_binary_layout_and_cycle_bit_transition",
+    "PCIAddress",
+    "PCIDeviceSim",
+    "PCIConfigSpaceSimulator",
+    "plot_fig6_05_pci_config_address_and_header_layout",
+    "plot_fig6_06_pci_bus_tree_and_recursive_scan_algorithm",
 ]

@@ -22313,3 +22313,552 @@ def plot_fig6_04_trb_binary_layout_and_cycle_bit_transition(output_path: str = "
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# =============================================================================
+# Chapter 6.3: PCI Configuration Space & Bus Scanning Simulators
+# =============================================================================
+
+@dataclass
+class PCIAddress:
+    """
+    Representation of a 32-bit PCI CONFIG_ADDRESS register (I/O Port 0x0CF8).
+    
+    Bitfield Layout:
+    - Bit 31: Enable Bit (1 = enable configuration transactions)
+    - Bits 30-24: Reserved (0)
+    - Bits 23-16: Bus Number (0-255)
+    - Bits 15-11: Device Number (0-31)
+    - Bits 10-8: Function Number (0-7)
+    - Bits 7-2: Register Offset (0x00-0xFC, 4-byte aligned)
+    - Bits 1-0: 00 (must be zero for DWORD alignment)
+    """
+    bus: int = 0
+    device: int = 0
+    function: int = 0
+    reg_addr: int = 0
+    enable: bool = True
+
+    def to_uint32(self) -> int:
+        enable_bit = 1 if self.enable else 0
+        return (
+            ((enable_bit & 0x1) << 31)
+            | ((self.bus & 0xFF) << 16)
+            | ((self.device & 0x1F) << 11)
+            | ((self.function & 0x07) << 8)
+            | (self.reg_addr & 0xFC)
+        )
+
+    @classmethod
+    def from_uint32(cls, val: int) -> "PCIAddress":
+        return cls(
+            bus=(val >> 16) & 0xFF,
+            device=(val >> 11) & 0x1F,
+            function=(val >> 8) & 0x07,
+            reg_addr=val & 0xFC,
+            enable=bool((val >> 31) & 0x01)
+        )
+
+
+@dataclass
+class PCIDeviceSim:
+    """
+    Simulated PCI Device representation for configuration space exploration.
+    """
+    bus: int
+    device: int
+    function: int
+    vendor_id: int = 0xFFFF
+    device_id: int = 0xFFFF
+    command: int = 0x0007
+    status: int = 0x0010
+    base_class: int = 0x00
+    sub_class: int = 0x00
+    prog_if: int = 0x00
+    revision_id: int = 0x00
+    header_type: int = 0x00
+    bars: list[int] = field(default_factory=lambda: [0] * 6)
+    secondary_bus: int = 0
+    subordinate_bus: int = 0
+
+    @property
+    def class_code(self) -> int:
+        return (
+            ((self.base_class & 0xFF) << 24)
+            | ((self.sub_class & 0xFF) << 16)
+            | ((self.prog_if & 0xFF) << 8)
+            | (self.revision_id & 0xFF)
+        )
+
+    @property
+    def is_single_function(self) -> bool:
+        return (self.header_type & 0x80) == 0
+
+    @property
+    def is_pci_bridge(self) -> bool:
+        return self.base_class == 0x06 and self.sub_class == 0x04
+
+    @property
+    def is_xhci(self) -> bool:
+        return (
+            self.base_class == 0x0C
+            and self.sub_class == 0x03
+            and self.prog_if == 0x30
+        )
+
+    def read_dword(self, offset: int) -> int:
+        reg = offset & 0xFC
+        if reg == 0x00:
+            return (self.vendor_id & 0xFFFF) | ((self.device_id & 0xFFFF) << 16)
+        elif reg == 0x04:
+            return (self.command & 0xFFFF) | ((self.status & 0xFFFF) << 16)
+        elif reg == 0x08:
+            return self.class_code
+        elif reg == 0x0C:
+            return (self.header_type & 0xFF) << 16
+        elif reg == 0x18 and (self.header_type & 0x7F) == 0x01:
+            # Type 01h PCI-to-PCI Bridge: Primary, Secondary, Subordinate bus numbers
+            return (
+                (self.bus & 0xFF)
+                | ((self.secondary_bus & 0xFF) << 8)
+                | ((self.subordinate_bus & 0xFF) << 16)
+            )
+        elif 0x10 <= reg <= 0x24:
+            idx = (reg - 0x10) // 4
+            if idx < len(self.bars):
+                return self.bars[idx]
+            return 0
+        return 0
+
+
+class PCIConfigSpaceSimulator:
+    """
+    Simulates PCI Configuration Mechanism #1 using I/O ports 0x0CF8 and 0x0CFC.
+    Directly mirrors MikanOS kernel/pci.cpp behavior.
+    """
+    def __init__(self):
+        self.devices: dict[tuple[int, int, int], PCIDeviceSim] = {}
+        self.config_address: int = 0
+        self.config_data: int = 0
+
+    def register_device(self, dev: PCIDeviceSim):
+        self.devices[(dev.bus, dev.device, dev.function)] = dev
+
+    def write_address(self, addr: int):
+        self.config_address = addr & 0xFFFFFFFF
+
+    def write_data(self, val: int):
+        self.config_data = val & 0xFFFFFFFF
+        if (self.config_address & 0x80000000) != 0:
+            parsed = PCIAddress.from_uint32(self.config_address)
+            dev = self.devices.get((parsed.bus, parsed.device, parsed.function))
+            if dev is not None and 0x10 <= parsed.reg_addr <= 0x24:
+                idx = (parsed.reg_addr - 0x10) // 4
+                if idx < len(dev.bars):
+                    dev.bars[idx] = val & 0xFFFFFFFF
+
+    def read_data(self) -> int:
+        if (self.config_address & 0x80000000) == 0:
+            return 0xFFFFFFFF
+        parsed = PCIAddress.from_uint32(self.config_address)
+        dev = self.devices.get((parsed.bus, parsed.device, parsed.function))
+        if dev is not None:
+            return dev.read_dword(parsed.reg_addr)
+        return 0xFFFFFFFF
+
+    def read_vendor_id(self, bus: int, device: int, function: int) -> int:
+        self.write_address(PCIAddress(bus, device, function, 0x00).to_uint32())
+        return self.read_data() & 0xFFFF
+
+    def read_device_id(self, bus: int, device: int, function: int) -> int:
+        self.write_address(PCIAddress(bus, device, function, 0x00).to_uint32())
+        return (self.read_data() >> 16) & 0xFFFF
+
+    def read_header_type(self, bus: int, device: int, function: int) -> int:
+        self.write_address(PCIAddress(bus, device, function, 0x0C).to_uint32())
+        return (self.read_data() >> 16) & 0xFF
+
+    def read_class_code(self, bus: int, device: int, function: int) -> int:
+        self.write_address(PCIAddress(bus, device, function, 0x08).to_uint32())
+        return self.read_data()
+
+    def read_bus_numbers(self, bus: int, device: int, function: int) -> int:
+        self.write_address(PCIAddress(bus, device, function, 0x18).to_uint32())
+        return self.read_data()
+
+    def is_single_function_device(self, header_type: int) -> bool:
+        return (header_type & 0x80) == 0
+
+    def scan_all_bus(self) -> tuple[list[PCIDeviceSim], list[str]]:
+        discovered: list[PCIDeviceSim] = []
+        logs: list[str] = []
+
+        def scan_function(bus: int, dev_idx: int, func: int):
+            ht = self.read_header_type(bus, dev_idx, func)
+            dev = self.devices.get((bus, dev_idx, func))
+            if dev is None:
+                vid = self.read_vendor_id(bus, dev_idx, func)
+                did = self.read_device_id(bus, dev_idx, func)
+                cc = self.read_class_code(bus, dev_idx, func)
+                dev = PCIDeviceSim(
+                    bus=bus, device=dev_idx, function=func,
+                    vendor_id=vid, device_id=did, header_type=ht,
+                    base_class=(cc >> 24) & 0xFF,
+                    sub_class=(cc >> 16) & 0xFF,
+                    prog_if=(cc >> 8) & 0xFF,
+                    revision_id=cc & 0xFF
+                )
+            discovered.append(dev)
+            logs.append(
+                f"AddDevice: {bus}.{dev_idx}.{func} vend=0x{dev.vendor_id:04x} "
+                f"dev=0x{dev.device_id:04x} class=0x{dev.class_code:08x} head=0x{ht:02x}"
+            )
+
+            cc = self.read_class_code(bus, dev_idx, func)
+            base = (cc >> 24) & 0xFF
+            sub = (cc >> 16) & 0xFF
+            if base == 0x06 and sub == 0x04:
+                bn = self.read_bus_numbers(bus, dev_idx, func)
+                sec_bus = (bn >> 8) & 0xFF
+                logs.append(f"  -> Found PCI-to-PCI Bridge! Recursively scanning secondary bus {sec_bus}")
+                scan_bus(sec_bus)
+
+        def scan_device(bus: int, dev_idx: int):
+            scan_function(bus, dev_idx, 0)
+            ht0 = self.read_header_type(bus, dev_idx, 0)
+            if self.is_single_function_device(ht0):
+                return
+            for f in range(1, 8):
+                if self.read_vendor_id(bus, dev_idx, f) == 0xFFFF:
+                    continue
+                scan_function(bus, dev_idx, f)
+
+        def scan_bus(bus: int):
+            logs.append(f"Scanning Bus {bus} (devices 0..31)...")
+            for d in range(32):
+                if self.read_vendor_id(bus, d, 0) == 0xFFFF:
+                    continue
+                scan_device(bus, d)
+
+        # ScanAllBus entry logic
+        ht_0_0_0 = self.read_header_type(0, 0, 0)
+        if self.is_single_function_device(ht_0_0_0):
+            scan_bus(0)
+        else:
+            for f in range(1, 8):
+                if self.read_vendor_id(0, 0, f) == 0xFFFF:
+                    continue
+                scan_bus(f)
+
+        return discovered, logs
+
+    @classmethod
+    def create_qemu_standard_pci_space(cls) -> "PCIConfigSpaceSimulator":
+        sim = cls()
+        # 0.0.0: Intel 82440FX Host Bridge (Header Type 0x00, Single Function)
+        sim.register_device(PCIDeviceSim(0, 0, 0, 0x8086, 0x1237, base_class=0x06, sub_class=0x00, prog_if=0x00, revision_id=0x02, header_type=0x00))
+        # 0.1.0: Intel PIIX3 ISA Bridge (Header Type 0x80: Multi-Function!)
+        sim.register_device(PCIDeviceSim(0, 1, 0, 0x8086, 0x7000, base_class=0x06, sub_class=0x01, prog_if=0x00, revision_id=0x00, header_type=0x80))
+        # 0.1.1: Intel PIIX3 IDE Controller (Function 1 of Dev 1)
+        sim.register_device(PCIDeviceSim(0, 1, 1, 0x8086, 0x7010, base_class=0x01, sub_class=0x01, prog_if=0x80, revision_id=0x00, header_type=0x00))
+        # 0.1.3: Intel PIIX4 Power Management / ACPI (Function 3 of Dev 1)
+        sim.register_device(PCIDeviceSim(0, 1, 3, 0x8086, 0x7113, base_class=0x06, sub_class=0x80, prog_if=0x00, revision_id=0x00, header_type=0x00))
+        # 0.2.0: QEMU Standard VGA Display Adapter
+        sim.register_device(PCIDeviceSim(0, 2, 0, 0x1234, 0x1111, base_class=0x03, sub_class=0x00, prog_if=0x00, revision_id=0x00, header_type=0x00))
+        # 0.3.0: Intel 82540EM Gigabit Ethernet (e1000)
+        sim.register_device(PCIDeviceSim(0, 3, 0, 0x8086, 0x100E, base_class=0x02, sub_class=0x00, prog_if=0x00, revision_id=0x00, header_type=0x00))
+        # 0.4.0: NEC / QEMU xHCI USB 3.0 Host Controller (Class 0x0C033001)
+        sim.register_device(PCIDeviceSim(0, 4, 0, 0x1B36, 0x000D, base_class=0x0C, sub_class=0x03, prog_if=0x30, revision_id=0x01, header_type=0x00, bars=[0xFEB00000, 0, 0, 0, 0, 0]))
+        # 0.5.0: Red Hat PCI-to-PCI Bridge (Header Type 0x01, Secondary Bus = 1)
+        sim.register_device(PCIDeviceSim(0, 5, 0, 0x1B36, 0x0001, base_class=0x06, sub_class=0x04, prog_if=0x00, revision_id=0x00, header_type=0x01, secondary_bus=1, subordinate_bus=1))
+        # 1.1.0: Intel AC'97 Audio Controller on Secondary Bus 1
+        sim.register_device(PCIDeviceSim(1, 1, 0, 0x8086, 0x2415, base_class=0x04, sub_class=0x01, prog_if=0x00, revision_id=0x00, header_type=0x00))
+        return sim
+
+
+def plot_fig6_05_pci_config_address_and_header_layout(output_path: str = "6/result/fig6_05_pci_config_address_and_header_layout.png") -> str:
+    """
+    Generate Figure 6.05: PCI CONFIG_ADDRESS (0x0CF8) Bit Layout and Configuration Space Header Maps.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 12), dpi=300)
+    gs = GridSpec(2, 2, figure=fig, height_ratios=[1.0, 1.4], wspace=0.22, hspace=0.32)
+
+    # Subplot 1: Top (Span both columns) -> CONFIG_ADDRESS Register Bitfield Layout
+    ax_top = fig.add_subplot(gs[0, :])
+    ax_top.set_xlim(-0.5, 32.5)
+    ax_top.set_ylim(-0.8, 4.2)
+    ax_top.axis("off")
+
+    ax_top.text(16.0, 3.8, "【PCI CONFIG_ADDRESS レジスタ (I/O Port 0x0CF8) 32ビット構造とアドレス生成数理】",
+                ha="center", va="center", fontsize=14, weight="bold", color="#0D47A1")
+
+    # Bit positions header
+    for b in range(32):
+        ax_top.text(31 - b + 0.5, 2.9, str(b), ha="center", va="center", fontsize=7.5, color="#546E7A")
+
+    # Bit fields definition: (bit_start, bit_len, name, color, description)
+    fields = [
+        (31, 1, "Enable", "#E53935", "Bit 31: コンフィギュレーション空間アクセス有効化 (1 = 有効)"),
+        (24, 7, "Reserved", "#CFD8DC", "Bits 30-24: 予約領域 (常に 0)"),
+        (16, 8, "Bus Number [7:0]", "#1E88E5", "Bits 23-16: PCIバス番号 (0〜255)"),
+        (11, 5, "Device [4:0]", "#43A047", "Bits 15-11: デバイス番号 (0〜31)"),
+        (8, 3, "Func [2:0]", "#FB8C00", "Bits 10-8: ファンクション番号 (0〜7)"),
+        (2, 6, "Reg Offset [7:2]", "#8E24AA", "Bits 7-2: レジスタオフセット (4バイト境界)"),
+        (0, 2, "00", "#90A4AE", "Bits 1-0: DWORD境界 (常に 00b)")
+    ]
+
+    for bit_start, bit_len, name, col, _ in fields:
+        x_left = 32 - (bit_start + bit_len)
+        p = FancyBboxPatch((x_left, 1.8), bit_len, 0.9, boxstyle="round,pad=0.04",
+                           facecolor=col, edgecolor="#263238", lw=1.2)
+        ax_top.add_patch(p)
+        text_col = "#FFFFFF" if col not in ["#CFD8DC", "#90A4AE", "#FB8C00"] else "#212121"
+        ax_top.text(x_left + bit_len / 2.0, 2.25, name,
+                    ha="center", va="center", fontsize=8.5, weight="bold", color=text_col)
+
+    # Mathematical Formula Box
+    formula_title = "MakeAddress(bus, dev, func, reg) = (1 << 31) | (bus << 16) | (dev << 11) | (func << 8) | (reg & 0xFC)"
+    formula_notes = (
+        "• CONFIG_DATA (0x0CFC) は 32 ビット (DWORD) 単位でのみアクセス可能。下位2ビット (reg & 0x03) はハードウェア仕様により強制無視 (00b 固定)。\n"
+        "• 16ビット値（Vendor ID等）や8ビット値（Header Type等）を読み取る際は、32ビット一括リード後にシフトとマスク演算を行う。"
+    )
+    p_box = FancyBboxPatch((0.0, -0.6), 32.0, 2.0, boxstyle="round,pad=0.1",
+                           facecolor="#E8EAF6", edgecolor="#3949AB", lw=1.3)
+    ax_top.add_patch(p_box)
+    ax_top.text(16.0, 0.75, formula_title, ha="center", va="center", fontsize=10.5, weight="bold", color="#1A237E")
+    ax_top.text(16.0, 0.05, formula_notes, ha="center", va="center", fontsize=8.8, color="#283593")
+
+    # Subplot 2: Bottom-Left -> Header Type 00h (General Device)
+    ax_bl = fig.add_subplot(gs[1, 0])
+    ax_bl.set_xlim(-0.5, 32.5)
+    ax_bl.set_ylim(-0.5, 17.0)
+    ax_bl.axis("off")
+
+    ax_bl.text(16.0, 16.2, "【Header Type 00h: 一般エンドポイントデバイス (64 Byte Header)】",
+               ha="center", va="center", fontsize=11.5, weight="bold", color="#1B5E20")
+
+    # Type 00h registers: (dword_idx, byte_offset, [(bit_start, bit_len, name, color)])
+    type0_dwords = [
+        (0, "0x00", [(16, 16, "Device ID (16-bit)", "#C8E6C9"), (0, 16, "Vendor ID (0xFFFF = 未接続)", "#A5D6A7")]),
+        (1, "0x04", [(16, 16, "Status Register", "#E1BEE7"), (0, 16, "Command Register", "#CE93D8")]),
+        (2, "0x08", [(24, 8, "Base Class", "#FFE082"), (16, 8, "Sub Class", "#FFD54F"), (8, 8, "Prog IF", "#FFCA28"), (0, 8, "Rev ID", "#FFC107")]),
+        (3, "0x0C", [(24, 8, "BIST", "#CFD8DC"), (16, 8, "Header Type (Bit 7: Multi-Func)", "#FF8A80"), (8, 8, "Latency Timer", "#ECEFF1"), (0, 8, "CacheLine", "#ECEFF1")]),
+        (4, "0x10", [(0, 32, "Base Address Register 0 (BAR0: MMIO / Port I/O)", "#B3E5FC")]),
+        (5, "0x14", [(0, 32, "Base Address Register 1 (BAR1)", "#E1F5FE")]),
+        (6, "0x18", [(0, 32, "Base Address Register 2 (BAR2)", "#E1F5FE")]),
+        (7, "0x1C", [(0, 32, "Base Address Register 3 (BAR3)", "#E1F5FE")]),
+        (8, "0x20", [(0, 32, "Base Address Register 4 (BAR4)", "#E1F5FE")]),
+        (9, "0x24", [(0, 32, "Base Address Register 5 (BAR5)", "#E1F5FE")]),
+        (10, "0x28", [(0, 32, "Cardbus CIS Pointer", "#ECEFF1")]),
+        (11, "0x2C", [(16, 16, "Subsystem ID", "#D7CCC8"), (0, 16, "Subsystem Vendor ID", "#BCAAA4")]),
+        (12, "0x30", [(0, 32, "Expansion ROM Base Address", "#ECEFF1")]),
+        (13, "0x34", [(8, 24, "Reserved", "#CFD8DC"), (0, 8, "Capabilities Pointer", "#FFD180")]),
+        (14, "0x38", [(0, 32, "Reserved", "#CFD8DC")]),
+        (15, "0x3C", [(24, 8, "Max_Lat", "#ECEFF1"), (16, 8, "Min_Gnt", "#ECEFF1"), (8, 8, "Interrupt PIN", "#80CBC4"), (0, 8, "Interrupt LINE", "#4DB6AC")])
+    ]
+
+    for dword_idx, offset_str, d_fields in type0_dwords:
+        y = 15.0 - dword_idx * 0.95
+        ax_bl.text(-0.2, y + 0.35, offset_str, ha="right", va="center", fontsize=7.8, weight="bold", color="#37474F")
+        for bit_start, bit_len, name, col in d_fields:
+            x_left = 32 - (bit_start + bit_len)
+            p = FancyBboxPatch((x_left, y), bit_len, 0.75, boxstyle="round,pad=0.02",
+                               facecolor=col, edgecolor="#37474F", lw=0.9)
+            ax_bl.add_patch(p)
+            ax_bl.text(x_left + bit_len / 2.0, y + 0.38, name,
+                       ha="center", va="center", fontsize=7.0, weight="bold", color="#212121")
+
+    # Subplot 3: Bottom-Right -> Header Type 01h (PCI-to-PCI Bridge)
+    ax_br = fig.add_subplot(gs[1, 1])
+    ax_br.set_xlim(-0.5, 32.5)
+    ax_br.set_ylim(-0.5, 17.0)
+    ax_br.axis("off")
+
+    ax_br.text(16.0, 16.2, "【Header Type 01h: PCI-to-PCI ブリッジ (再帰的探索の鍵)】",
+               ha="center", va="center", fontsize=11.5, weight="bold", color="#E65100")
+
+    type1_dwords = [
+        (0, "0x00", [(16, 16, "Device ID (16-bit)", "#C8E6C9"), (0, 16, "Vendor ID", "#A5D6A7")]),
+        (1, "0x04", [(16, 16, "Status Register", "#E1BEE7"), (0, 16, "Command Register", "#CE93D8")]),
+        (2, "0x08", [(24, 8, "Base Class (0x06)", "#FFE082"), (16, 8, "Sub Class (0x04)", "#FFD54F"), (8, 8, "Prog IF", "#FFCA28"), (0, 8, "Rev ID", "#FFC107")]),
+        (3, "0x0C", [(24, 8, "BIST", "#CFD8DC"), (16, 8, "Header Type (0x01)", "#FF8A80"), (8, 8, "Latency", "#ECEFF1"), (0, 8, "CacheLine", "#ECEFF1")]),
+        (4, "0x10", [(0, 32, "Base Address Register 0 (BAR0)", "#B3E5FC")]),
+        (5, "0x14", [(0, 32, "Base Address Register 1 (BAR1)", "#E1F5FE")]),
+        (6, "0x18", [(24, 8, "Secondary Latency", "#ECEFF1"), (16, 8, "Subordinate Bus", "#FFCC80"), (8, 8, "★Secondary Bus (子バス)", "#FF7043"), (0, 8, "Primary Bus (親バス)", "#81D4FA")]),
+        (7, "0x1C", [(16, 16, "Secondary Status", "#ECEFF1"), (8, 8, "I/O Limit", "#ECEFF1"), (0, 8, "I/O Base", "#ECEFF1")]),
+        (8, "0x20", [(16, 16, "Memory Limit", "#ECEFF1"), (0, 16, "Memory Base", "#ECEFF1")]),
+        (9, "0x24", [(16, 16, "Prefetchable Mem Limit", "#ECEFF1"), (0, 16, "Prefetchable Mem Base", "#ECEFF1")]),
+        (10, "0x28", [(0, 32, "Prefetchable Base Upper 32-bit", "#ECEFF1")]),
+        (11, "0x2C", [(0, 32, "Prefetchable Limit Upper 32-bit", "#ECEFF1")]),
+        (12, "0x30", [(16, 16, "I/O Limit Upper 16-bit", "#ECEFF1"), (0, 16, "I/O Base Upper 16-bit", "#ECEFF1")]),
+        (13, "0x34", [(8, 24, "Reserved", "#CFD8DC"), (0, 8, "Capabilities Pointer", "#FFD180")]),
+        (14, "0x38", [(0, 32, "Expansion ROM Base Address", "#ECEFF1")]),
+        (15, "0x3C", [(16, 16, "Bridge Control", "#ECEFF1"), (8, 8, "Interrupt PIN", "#80CBC4"), (0, 8, "Interrupt LINE", "#4DB6AC")])
+    ]
+
+    for dword_idx, offset_str, d_fields in type1_dwords:
+        y = 15.0 - dword_idx * 0.95
+        ax_br.text(-0.2, y + 0.35, offset_str, ha="right", va="center", fontsize=7.8, weight="bold", color="#37474F")
+        for bit_start, bit_len, name, col in d_fields:
+            x_left = 32 - (bit_start + bit_len)
+            p = FancyBboxPatch((x_left, y), bit_len, 0.75, boxstyle="round,pad=0.02",
+                               facecolor=col, edgecolor="#37474F", lw=0.9)
+            ax_br.add_patch(p)
+            text_color = "#FFFFFF" if col == "#FF7043" else "#212121"
+            ax_br.text(x_left + bit_len / 2.0, y + 0.38, name,
+                       ha="center", va="center", fontsize=7.0, weight="bold", color=text_color)
+
+    # Note on bridge traversal
+    note_bridge = (
+        "【PCI-to-PCI ブリッジの最重要性】\n"
+        "• Class Code = 0x0604 (Base: 0x06 Bridge, Sub: 0x04 PCI-to-PCI Bridge)\n"
+        "• Offset 0x18 の Bits 15:8 に「Secondary Bus Number」が格納される。\n"
+        "• ScanFunction() はこの二次バス番号を取得し、ScanBus(secondary_bus) を再帰呼び出しして階層下の全デバイスを探索する。"
+    )
+    p_bridge_note = FancyBboxPatch((0.0, -0.4), 32.0, 1.8, boxstyle="round,pad=0.08",
+                                   facecolor="#FFF3E0", edgecolor="#FF9800", lw=1.2)
+    ax_br.add_patch(p_bridge_note)
+    ax_br.text(0.5, 0.5, note_bridge, ha="left", va="center", fontsize=8.2, color="#E65100")
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig6_06_pci_bus_tree_and_recursive_scan_algorithm(output_path: str = "6/result/fig6_06_pci_bus_tree_and_recursive_scan_algorithm.png") -> str:
+    """
+    Generate Figure 6.06: PCI Bus Hierarchy Topology and ScanAllBus Recursive Algorithm Flowchart.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 12), dpi=300)
+    gs = GridSpec(1, 2, figure=fig, width_ratios=[1.0, 1.0], wspace=0.20)
+
+    # Subplot 1: Left -> PCI Topology Tree Diagram
+    ax_tree = fig.add_subplot(gs[0])
+    ax_tree.set_xlim(-0.5, 10.5)
+    ax_tree.set_ylim(-0.5, 11.5)
+    ax_tree.axis("off")
+
+    ax_tree.text(5.0, 11.1, "【PCI バストポロジー階層図 (QEMU 構成例)】",
+                 ha="center", va="center", fontsize=13, weight="bold", color="#0D47A1")
+
+    # Host Bridge Box
+    p_host = FancyBboxPatch((2.0, 9.6), 6.0, 1.0, boxstyle="round,pad=0.08",
+                            facecolor="#BBDEFB", edgecolor="#1565C0", lw=1.5)
+    ax_tree.add_patch(p_host)
+    ax_tree.text(5.0, 10.1, "CPU / Host Bridge (Root Complex)\n[Bus 0, Device 0, Function 0] Intel 82440FX",
+                 ha="center", va="center", fontsize=9.0, weight="bold", color="#0D47A1")
+
+    # Bus 0 Line
+    ax_tree.annotate("", xy=(5.0, 8.8), xytext=(5.0, 9.6),
+                     arrowprops=dict(arrowstyle="-", lw=2.5, color="#37474F"))
+    ax_tree.plot([0.5, 9.5], [8.8, 8.8], lw=3.5, color="#1976D2")
+    ax_tree.text(9.7, 8.8, "PCI Bus 0", ha="left", va="center", fontsize=10, weight="bold", color="#1976D2")
+
+    # Devices on Bus 0
+    bus0_devices = [
+        (1.0, 6.8, "Dev 1: PIIX3\n(Multi-Func: 0x80)\nFunc 0: ISA\nFunc 1: IDE\nFunc 3: ACPI", "#E1BEE7", "#4A148C", False),
+        (3.2, 7.1, "Dev 2: VGA\n(0x1234:1111)\nClass 0x030000", "#DCEDC8", "#33691E", False),
+        (5.2, 7.1, "Dev 3: e1000\n(0x8086:100E)\nClass 0x020000", "#DCEDC8", "#33691E", False),
+        (7.2, 6.8, "★Dev 4: xHCI USB\n(0x1B36:000D)\nClass 0x0C0330\n[目標コントローラ]", "#FFE082", "#E65100", True),
+        (9.2, 7.1, "Dev 5: PCI Bridge\n(0x1B36:0001)\nHeader Type 0x01", "#FFCCBC", "#BF360C", False),
+    ]
+
+    for x_pos, y_pos, label, bg, edge, is_target in bus0_devices:
+        # line down from bus 0
+        ax_tree.plot([x_pos, x_pos], [8.8, y_pos + 0.8], lw=1.8, color="#37474F")
+        lw = 2.5 if is_target else 1.2
+        box_h = 1.6 if "Multi-Func" in label or is_target else 1.3
+        p_dev = FancyBboxPatch((x_pos - 0.9, y_pos - 0.1), 1.8, box_h, boxstyle="round,pad=0.06",
+                               facecolor=bg, edgecolor=edge, lw=lw)
+        ax_tree.add_patch(p_dev)
+        ax_tree.text(x_pos, y_pos + box_h / 2.0 - 0.05, label,
+                     ha="center", va="center", fontsize=7.6, weight="bold" if is_target else "normal", color=edge)
+
+    # Secondary Bus 1 hanging off Dev 5
+    ax_tree.annotate("", xy=(9.2, 4.4), xytext=(9.2, 7.0),
+                     arrowprops=dict(arrowstyle="->", lw=2.2, color="#E65100"))
+    ax_tree.text(9.4, 5.7, "Secondary\nBus = 1", ha="left", va="center", fontsize=8.5, weight="bold", color="#E65100")
+
+    ax_tree.plot([6.5, 9.8], [4.4, 4.4], lw=3.0, color="#E65100")
+    ax_tree.text(5.5, 4.4, "PCI Bus 1", ha="right", va="center", fontsize=10, weight="bold", color="#E65100")
+
+    # Devices on Bus 1
+    ax_tree.plot([8.0, 8.0], [4.4, 3.4], lw=1.8, color="#37474F")
+    p_dev1 = FancyBboxPatch((6.8, 1.8), 2.4, 1.5, boxstyle="round,pad=0.06",
+                            facecolor="#CFD8DC", edgecolor="#37474F", lw=1.2)
+    ax_tree.add_patch(p_dev1)
+    ax_tree.text(8.0, 2.55, "Dev 1: AC'97 Audio\n(0x8086:2415)\nClass 0x040100\n[Bus 1, Dev 1, Func 0]",
+                 ha="center", va="center", fontsize=7.8, color="#212121")
+
+    # Discovery Summary Box
+    summary_text = (
+        "【PCI バス走査によるデバイス特定条件】\n"
+        "• 未実装デバイス: Vendor ID == 0xFFFF (走査スキップ)\n"
+        "• 単一ファンクション: Header Type bit 7 == 0 (Func 1..7 の走査省略)\n"
+        "• 多重ファンクション: Header Type bit 7 == 1 (Func 1..7 を走査)\n"
+        "• xHCI USB 3.0 コントローラの特定数理:\n"
+        "  (ClassCode >> 24 == 0x0C) && (ClassCode >> 16 == 0x03) && (ClassCode >> 8 == 0x30)"
+    )
+    p_sum = FancyBboxPatch((0.5, 0.0), 9.5, 1.5, boxstyle="round,pad=0.08",
+                           facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.3)
+    ax_tree.add_patch(p_sum)
+    ax_tree.text(0.8, 0.75, summary_text, ha="left", va="center", fontsize=8.2, color="#37474F")
+
+    # Subplot 2: Right -> ScanAllBus Recursive Flowchart
+    ax_flow = fig.add_subplot(gs[1])
+    ax_flow.set_xlim(-0.5, 10.5)
+    ax_flow.set_ylim(-0.5, 11.5)
+    ax_flow.axis("off")
+
+    ax_flow.text(5.0, 11.1, "【ScanAllBus() 再帰的探索アルゴリズム 制御フロー】",
+                 ha="center", va="center", fontsize=13, weight="bold", color="#1B5E20")
+
+    flow_nodes = [
+        (5.0, 10.3, "Start: ScanAllBus() (num_device = 0)", "#E8F5E9", "#2E7D32", 1.8),
+        (5.0, 9.2, "ReadHeaderType(0, 0, 0)\nHost Bridge は単一ファンクションか？", "#FFF9C4", "#F57F17", 2.2),
+        (2.5, 8.0, "単一: ScanBus(0) 開始", "#C8E6C9", "#1B5E20", 2.0),
+        (7.5, 8.0, "多重: Func 1..7 で\nVendorID!=0xFFFF のバスを走査", "#FFE0B2", "#E65100", 2.0),
+        (5.0, 6.7, "ScanBus(bus): デバイス番号 0〜31 をループ\nReadVendorId(bus, dev, 0) == 0xFFFF なら次へ", "#E1F5FE", "#0288D1", 2.5),
+        (5.0, 5.3, "ScanDevice(bus, dev): Func 0 に対し ScanFunction() 実行\nIsSingleFunctionDevice() なら終了", "#E1BEE7", "#6A1B9A", 2.5),
+        (5.0, 3.8, "多重ファンクションの場合: Func 1〜7 を走査\nVendorID != 0xFFFF の各ファンクションで ScanFunction()", "#F8BBD0", "#AD1457", 2.5),
+        (5.0, 2.3, "ScanFunction(bus, dev, func):\n1. devices[num_device++] に登録\n2. Class Code が PCI-PCI Bridge (0x0604) か判定", "#DCEDC8", "#33691E", 2.5),
+        (5.0, 0.7, "ブリッジ検出時: Secondary Bus 番号を取得し\n再帰呼び出し: ScanBus(secondary_bus) ★", "#FFCDD2", "#C62828", 2.3)
+    ]
+
+    for x, y, text, bg, edge, w_scale in flow_nodes:
+        box_w = 4.2 * (w_scale / 2.0)
+        box_h = 0.85 if "\n" not in text else 1.05
+        p = FancyBboxPatch((x - box_w / 2.0, y - box_h / 2.0), box_w, box_h, boxstyle="round,pad=0.06",
+                           facecolor=bg, edgecolor=edge, lw=1.3)
+        ax_flow.add_patch(p)
+        ax_flow.text(x, y, text, ha="center", va="center", fontsize=7.8, color="#212121", weight="bold" if "★" in text else "normal")
+
+    # Connect arrows between flowchart steps
+    arrows = [
+        ((5.0, 9.8), (5.0, 9.75)),
+        ((3.8, 8.7), (2.5, 8.4)),
+        ((6.2, 8.7), (7.5, 8.4)),
+        ((2.5, 7.5), (4.5, 7.2)),
+        ((7.5, 7.5), (5.5, 7.2)),
+        ((5.0, 6.2), (5.0, 5.85)),
+        ((5.0, 4.75), (5.0, 4.35)),
+        ((5.0, 3.25), (5.0, 2.85)),
+        ((5.0, 1.75), (5.0, 1.25)),
+    ]
+
+    for p1, p2 in arrows:
+        ax_flow.annotate("", xy=p2, xytext=p1,
+                         arrowprops=dict(arrowstyle="->", lw=1.5, color="#37474F"))
+
+    # Recurse arrow from bottom back to ScanBus
+    ax_flow.annotate("", xy=(8.3, 6.7), xytext=(8.0, 0.7),
+                     arrowprops=dict(arrowstyle="->", lw=1.8, color="#C62828", connectionstyle="arc3,rad=-0.4"))
+    ax_flow.text(9.5, 3.8, "再帰呼び出し\nRecursion!", ha="center", va="center", fontsize=8.5, weight="bold", color="#C62828")
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
