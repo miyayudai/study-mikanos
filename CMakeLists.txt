@@ -172,6 +172,9 @@ add_test(NAME test_ch06_mouse_polling_sim COMMAND ch06_mouse_polling_sim --test)
 add_executable(ch06_os_chapter6_exercises src/ch06/os_chapter6_exercises.cpp)
 add_test(NAME test_ch06_os_chapter6_exercises COMMAND ch06_os_chapter6_exercises --test)
 
+add_executable(ch07_interrupt_concept_sim src/ch07/interrupt_concept_sim.cpp)
+add_test(NAME test_ch07_interrupt_concept_sim COMMAND ch07_interrupt_concept_sim)
+
 
 
 

@@ -383,6 +383,12 @@ from common.os_sim import (
     XHCIPollingSimulator,
     plot_fig6_07_pci_bar_and_mmio_mapping,
     plot_fig6_08_xhci_polling_sequence_and_mouse_event_flow,
+    X86InterruptCategory,
+    InterruptStackFrame,
+    BenchmarkResult,
+    PollingVsInterruptBenchmarker,
+    plot_fig7_01_polling_vs_interrupt_timeline,
+    plot_fig7_02_interrupt_classification_and_lifecycle,
 )
 
 __all__ = [
@@ -768,4 +774,10 @@ __all__ = [
     "XHCIPollingSimulator",
     "plot_fig6_07_pci_bar_and_mmio_mapping",
     "plot_fig6_08_xhci_polling_sequence_and_mouse_event_flow",
+    "X86InterruptCategory",
+    "InterruptStackFrame",
+    "BenchmarkResult",
+    "PollingVsInterruptBenchmarker",
+    "plot_fig7_01_polling_vs_interrupt_timeline",
+    "plot_fig7_02_interrupt_classification_and_lifecycle",
 ]

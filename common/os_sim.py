@@ -23745,3 +23745,410 @@ def plot_chapter6_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# 第7章: 割り込みとFIFO (Chapter 7: Interrupts and FIFO)
+# ==============================================================================
+
+class X86InterruptCategory(Enum):
+    """x86-64 アーキテクチャにおける割り込み・例外の分類体系"""
+    EXTERNAL_HARDWARE = "External Hardware (Asynchronous / Peripheral IRQ)"
+    SOFTWARE_INTERRUPT = "Software Interrupt (Synchronous / INT n, Syscall)"
+    CPU_EXCEPTION_FAULT = "Fault Exception (Restartable: e.g., #PF, #GP, #UD)"
+    CPU_EXCEPTION_TRAP = "Trap Exception (Next-Instruction: e.g., #DB, #BP, INTO)"
+    CPU_EXCEPTION_ABORT = "Abort Exception (Unrecoverable: e.g., #DF, #MC)"
+
+
+@dataclass
+class InterruptStackFrame:
+    """x86-64 割り込み発生時に CPU がスタック上に自動プッシュするスタックフレーム"""
+    rip: int
+    cs: int
+    rflags: int
+    rsp: int
+    ss: int
+    error_code: Optional[int] = None
+
+    @property
+    def total_bytes(self) -> int:
+        return 48 if self.error_code is not None else 40
+
+    def dump_hex(self) -> List[str]:
+        lines = [
+            f"+40 SS:     0x{self.ss:016x}",
+            f"+32 RSP:    0x{self.rsp:016x}",
+            f"+24 RFLAGS: 0x{self.rflags:016x}",
+            f"+16 CS:     0x{self.cs:016x}",
+            f"+08 RIP:    0x{self.rip:016x}",
+        ]
+        if self.error_code is not None:
+            lines.append(f"+00 ERR:    0x{self.error_code:016x}")
+        return lines
+
+
+@dataclass
+class BenchmarkResult:
+    """ポーリング vs 割り込み駆動ベンチマーク結果"""
+    mode: str
+    total_time_ms: float
+    num_events: int
+    avg_latency_ms: float
+    max_latency_ms: float
+    cpu_utilization_pct: float
+    energy_consumed_joules: float
+    timeline_time: List[float]
+    timeline_cpu_state: List[int]  # 0: Idle, 1: Busy/Polling, 2: Handling
+    event_latencies: List[float]
+
+
+class PollingVsInterruptBenchmarker:
+    """ポーリング方式 vs 割り込み駆動方式の定量的数理モデルシミュレータ"""
+    def __init__(
+        self,
+        loop_interval_ms: float = 10.0,
+        task_workload_ms: float = 8.0,
+        handler_execution_us: float = 25.0,
+        cpu_idle_power_w: float = 5.0,
+        cpu_active_power_w: float = 65.0,
+    ):
+        self.loop_interval_ms = loop_interval_ms
+        self.task_workload_ms = task_workload_ms
+        self.handler_execution_ms = handler_execution_us / 1000.0
+        self.cpu_idle_power_w = cpu_idle_power_w
+        self.cpu_active_power_w = cpu_active_power_w
+
+    def run_simulation(
+        self,
+        total_time_ms: float = 100.0,
+        event_times_ms: Optional[List[float]] = None,
+        dt_ms: float = 0.1,
+    ) -> Tuple[BenchmarkResult, BenchmarkResult]:
+        """ポーリングと割り込み駆動の双方で同一イベント列に対するシミュレーションを実行"""
+        if event_times_ms is None:
+            # 15ms, 32ms, 58ms, 71ms, 85ms にイベント発生
+            event_times_ms = [15.0, 32.0, 58.0, 71.0, 85.0]
+
+        # 1. ポーリング方式のシミュレーション
+        polling_res = self._simulate_polling(total_time_ms, event_times_ms, dt_ms)
+
+        # 2. 割り込み駆動方式のシミュレーション
+        interrupt_res = self._simulate_interrupt(total_time_ms, event_times_ms, dt_ms)
+
+        return polling_res, interrupt_res
+
+    def _simulate_polling(
+        self,
+        total_time_ms: float,
+        event_times_ms: List[float],
+        dt_ms: float,
+    ) -> BenchmarkResult:
+        num_steps = int(total_time_ms / dt_ms)
+        timeline_time = [i * dt_ms for i in range(num_steps)]
+        timeline_cpu_state = [1] * num_steps  # ポーリングはビジーループで常に 1 (Busy)
+
+        pending_events = list(event_times_ms)
+        processed_events = []
+        latencies = []
+
+        # ポーリングチェックポイントは loop_interval_ms ごと
+        next_poll_time = self.loop_interval_ms
+        for i, t in enumerate(timeline_time):
+            # ポーリングチェックタイミング
+            if t >= next_poll_time:
+                # 発生済みの保留イベントをすべて処理
+                while pending_events and pending_events[0] <= t:
+                    ev_time = pending_events.pop(0)
+                    latency = t - ev_time
+                    latencies.append(latency)
+                    processed_events.append(ev_time)
+                next_poll_time += self.loop_interval_ms
+
+        avg_lat = sum(latencies) / len(latencies) if latencies else 0.0
+        max_lat = max(latencies) if latencies else 0.0
+        cpu_util = 100.0  # 常にループが回り続けるため 100%
+        # エネルギー = ActivePower * 時間(秒)
+        energy = self.cpu_active_power_w * (total_time_ms / 1000.0)
+
+        return BenchmarkResult(
+            mode="Polling (Busy-wait)",
+            total_time_ms=total_time_ms,
+            num_events=len(processed_events),
+            avg_latency_ms=avg_lat,
+            max_latency_ms=max_lat,
+            cpu_utilization_pct=cpu_util,
+            energy_consumed_joules=energy,
+            timeline_time=timeline_time,
+            timeline_cpu_state=timeline_cpu_state,
+            event_latencies=latencies,
+        )
+
+    def _simulate_interrupt(
+        self,
+        total_time_ms: float,
+        event_times_ms: List[float],
+        dt_ms: float,
+    ) -> BenchmarkResult:
+        num_steps = int(total_time_ms / dt_ms)
+        timeline_time = [i * dt_ms for i in range(num_steps)]
+        timeline_cpu_state = [0] * num_steps  # デフォルトは 0 (Idle / HLT)
+
+        latencies = []
+        active_time_ms = 0.0
+
+        # ハードウェア割り込みは即座にハンドラが起動 (極小遅延 ~0.005ms)
+        hardware_delay_ms = 0.005
+
+        for ev_time in event_times_ms:
+            latencies.append(hardware_delay_ms)
+            handler_start = ev_time + hardware_delay_ms
+            handler_end = handler_start + self.handler_execution_ms
+
+            # タイムライン上でハンドラ実行区間を 2 (Handling) にマーキング
+            start_idx = max(0, int(handler_start / dt_ms))
+            end_idx = min(num_steps, int(handler_end / dt_ms) + 1)
+            for idx in range(start_idx, end_idx):
+                timeline_cpu_state[idx] = 2
+            active_time_ms += self.handler_execution_ms
+
+        avg_lat = sum(latencies) / len(latencies) if latencies else 0.0
+        max_lat = max(latencies) if latencies else 0.0
+
+        cpu_util = (active_time_ms / total_time_ms) * 100.0
+        idle_time_s = (total_time_ms - active_time_ms) / 1000.0
+        active_time_s = active_time_ms / 1000.0
+        energy = (self.cpu_active_power_w * active_time_s) + (self.cpu_idle_power_w * idle_time_s)
+
+        return BenchmarkResult(
+            mode="Interrupt-driven (Event-driven + HLT)",
+            total_time_ms=total_time_ms,
+            num_events=len(event_times_ms),
+            avg_latency_ms=avg_lat,
+            max_latency_ms=max_lat,
+            cpu_utilization_pct=cpu_util,
+            energy_consumed_joules=energy,
+            timeline_time=timeline_time,
+            timeline_cpu_state=timeline_cpu_state,
+            event_latencies=latencies,
+        )
+
+
+def plot_fig7_01_polling_vs_interrupt_timeline(
+    output_path: str = "7/result/fig7_01_polling_vs_interrupt_timeline.png"
+) -> str:
+    """Figure 7.01: ポーリング vs 割り込み駆動のタイミングチャート・CPU負荷・レイテンシ対比図"""
+    setup_plot_style()
+    benchmarker = PollingVsInterruptBenchmarker(
+        loop_interval_ms=10.0,
+        task_workload_ms=8.0,
+        handler_execution_us=25.0,
+        cpu_idle_power_w=5.0,
+        cpu_active_power_w=65.0,
+    )
+    events = [12.0, 28.0, 45.0, 63.0, 81.0]
+    total_time = 100.0
+    pol_res, int_res = benchmarker.run_simulation(total_time_ms=total_time, event_times_ms=events)
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [1.2, 1.2, 1.0]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # 1. ポーリングのタイムライン
+    ax0 = axes[0]
+    ax0.set_facecolor("#FFFFFF")
+    t = pol_res.timeline_time
+    ax0.plot(t, [1] * len(t), color="#D32F2F", linewidth=2.5, label="CPU State: 100% Busy-Loop Polling")
+    ax0.fill_between(t, 0, 1, color="#FFCDD2", alpha=0.5)
+
+    # ポーリングチェックポイント (10ms ごと)
+    for p in range(10, 101, 10):
+        ax0.axvline(x=p, color="#78909C", linestyle="--", alpha=0.7, linewidth=1.0)
+        ax0.text(p, 1.08, f"Poll\n{p}ms", ha="center", fontsize=7.5, color="#455A64")
+
+    # イベント発生点とレイテンシ矢印
+    for ev, lat in zip(events, pol_res.event_latencies):
+        proc_time = ev + lat
+        ax0.scatter([ev], [0.5], color="#1565C0", s=60, zorder=5, marker="o")
+        ax0.annotate(f"Event\n({ev:.0f}ms)", (ev, 0.5), textcoords="offset points",
+                     xytext=(-15, -25), fontsize=8, fontweight="bold", color="#1565C0",
+                     arrowprops=dict(arrowstyle="->", color="#1565C0", lw=1))
+        # レイテンシ矢印 (イベント発生 -> ポーリング検出)
+        ax0.annotate("", xy=(proc_time, 0.5), xytext=(ev, 0.5),
+                     arrowprops=dict(arrowstyle="<->", color="#D32F2F", lw=2.0))
+        ax0.text((ev + proc_time) / 2, 0.62, f"Latency: {lat:.1f}ms",
+                 ha="center", fontsize=8, fontweight="bold", color="#B71C1C",
+                 bbox=dict(boxstyle="round,pad=0.2", facecolor="#FFEBEE", edgecolor="#EF9A9A", alpha=0.9))
+
+    ax0.set_xlim(0, 100)
+    ax0.set_ylim(-0.1, 1.3)
+    ax0.set_yticks([0, 1])
+    ax0.set_yticklabels(["Idle", "Busy\n(100%)"], fontsize=9, fontweight="bold")
+    ax0.set_title("(A) ポーリング方式 (Polling): 常にCPUがビジーループで浪費され、最大ループ周期分の遅延が発生",
+                  fontsize=10.5, fontweight="bold", color="#B71C1C", pad=12)
+    ax0.grid(True, linestyle=":", alpha=0.4)
+    ax0.legend(loc="upper left", fontsize=8.5)
+
+    # 2. 割り込み駆動のタイムライン
+    ax1 = axes[1]
+    ax1.set_facecolor("#FFFFFF")
+    t_int = int_res.timeline_time
+    state_int = int_res.timeline_cpu_state
+
+    # 0: HLT/Idle, 2: Handling
+    ax1.plot(t_int, [1 if s == 2 else 0 for s in state_int], color="#2E7D32", linewidth=2.0,
+             label="CPU State: Event-Driven ISR / Idle (HLT)")
+    ax1.fill_between(t_int, 0, [1 if s == 2 else 0 for s in state_int], color="#C8E6C9", alpha=0.8)
+
+    for ev in events:
+        ax1.scatter([ev], [0.0], color="#1565C0", s=60, zorder=5, marker="^")
+        ax1.annotate(f"IRQ\n({ev:.0f}ms)", (ev, 0.0), textcoords="offset points",
+                     xytext=(-10, 20), fontsize=8, fontweight="bold", color="#1565C0",
+                     arrowprops=dict(arrowstyle="->", color="#1565C0", lw=1))
+        # 即時ハンドラ起動パルス (幅 25us = 0.025ms)
+        ax1.axvspan(ev, ev + 0.5, color="#43A047", alpha=0.7)
+        ax1.text(ev + 1.2, 0.6, "ISR (~25μs)\nLatency: ~5μs", fontsize=7.5, fontweight="bold", color="#1B5E20",
+                 bbox=dict(boxstyle="round,pad=0.2", facecolor="#E8F5E9", edgecolor="#A5D6A7", alpha=0.9))
+
+    # HLT スリープ領域の注記
+    ax1.text(5, 0.2, "HLT 省電力スリープ状態 (CPU Clock Gated / Low Power)",
+             fontsize=9, color="#2E7D32", style="italic")
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(-0.1, 1.3)
+    ax1.set_yticks([0, 1])
+    ax1.set_yticklabels(["HLT\n(Idle)", "ISR\n(Active)"], fontsize=9, fontweight="bold")
+    ax1.set_title("(B) 割り込み駆動方式 (Interrupt-driven): イベント発生時のみ即時起動し、アイドル時はHLTで省電力化",
+                  fontsize=10.5, fontweight="bold", color="#1B5E20", pad=12)
+    ax1.grid(True, linestyle=":", alpha=0.4)
+    ax1.legend(loc="upper left", fontsize=8.5)
+
+    # 3. 定量メトリクス比較 (棒グラフ)
+    ax2 = axes[2]
+    ax2.set_facecolor("#FFFFFF")
+    metrics = ["Avg Latency (ms)", "Max Latency (ms)", "CPU Utilization (%)", "Energy (Joules)"]
+    polling_vals = [pol_res.avg_latency_ms, pol_res.max_latency_ms, pol_res.cpu_utilization_pct, pol_res.energy_consumed_joules]
+    interrupt_vals = [int_res.avg_latency_ms, int_res.max_latency_ms, int_res.cpu_utilization_pct, int_res.energy_consumed_joules]
+
+    x = np.arange(len(metrics))
+    width = 0.35
+
+    rects1 = ax2.bar(x - width/2, polling_vals, width, label="Polling", color="#E57373", edgecolor="#B71C1C", linewidth=1.2)
+    rects2 = ax2.bar(x + width/2, interrupt_vals, width, label="Interrupt", color="#81C784", edgecolor="#2E7D32", linewidth=1.2)
+
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(metrics, fontsize=9.5, fontweight="bold", color="#1A237E")
+    ax2.set_title("(C) ポーリング vs 割り込み駆動の性能・省電力メトリクス定量的比較",
+                  fontsize=10.5, fontweight="bold", color="#1A237E", pad=10)
+    ax2.set_ylabel("Measured Value", fontsize=9, fontweight="bold")
+    ax2.legend(loc="upper right", fontsize=8.5)
+    ax2.grid(True, axis="y", linestyle=":", alpha=0.5)
+
+    # 数値ラベル
+    for rect in rects1:
+        h = rect.get_height()
+        ax2.annotate(f"{h:.1f}", xy=(rect.get_x() + rect.get_width() / 2, h),
+                     xytext=(0, 3), textcoords="offset points", ha="center", va="bottom",
+                     fontsize=8, fontweight="bold", color="#B71C1C")
+    for rect in rects2:
+        h = rect.get_height()
+        val_str = f"{h:.3f}" if h < 0.1 else f"{h:.1f}"
+        ax2.annotate(val_str, xy=(rect.get_x() + rect.get_width() / 2, h),
+                     xytext=(0, 3), textcoords="offset points", ha="center", va="bottom",
+                     fontsize=8, fontweight="bold", color="#1B5E20")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig7_02_interrupt_classification_and_lifecycle(
+    output_path: str = "7/result/fig7_02_interrupt_classification_and_lifecycle.png"
+) -> str:
+    """Figure 7.02: x86-64 割り込み・例外の分類体系およびハードウェア割り込みライフサイクルとスタック退避図"""
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8), gridspec_kw={'width_ratios': [1.1, 1.0]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # 1. 割り込み・例外の3大分類体系
+    ax0 = axes[0]
+    ax0.set_facecolor("#FFFFFF")
+    ax0.set_xlim(0, 10)
+    ax0.set_ylim(0, 10)
+    ax0.axis("off")
+
+    ax0.text(5, 9.6, "x86-64 割り込み・例外の分類体系 (Interrupt & Exception Taxonomies)",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#1A237E")
+
+    # 分類ボックス
+    categories = [
+        ("① 外部ハードウェア割り込み (External Hardware IRQ)",
+         "#E8EAF6", "#3F51B5",
+         ["• 非同期イベント (Asynchronous): CPUの命令実行と無関係に発生",
+          "• 周辺機器: PCI/MSI, Local APIC Timer, USB xHCI, キーボード",
+          "• マスク可能 (INTR: IF=0 で抑制) / マスク不能 (NMI: 重大障害)"]),
+        ("② ソフトウェア割り込み (Software Interrupts)",
+         "#E0F2F1", "#00897B",
+         ["• 同期イベント (Synchronous): ソフトウェア命令によって明示的に要求",
+          "• 代表命令: INT n (レガシーシステムコール), INT3 (デバッガ)",
+          "• カーネルモードへの特権遷移インターフェース"]),
+        ("③ CPU例外 (CPU Exceptions / Fault, Trap, Abort)",
+         "#FFF3E0", "#E65100",
+         ["• フォールト (Fault): 命令実行前に検出。修復後、同一命令を再実行 (例: #PF 14, #GP 13)",
+          "• トラップ (Trap): 命令完了後に検出。次の命令から実行継続 (例: #DB 1, #BP 3)",
+          "• アボート (Abort): 深刻なハードウェア/システム障害。復帰不能 (例: #DF 8, #MC 18)"]),
+    ]
+
+    y_pos = 8.5
+    for title, bg_col, border_col, items in categories:
+        rect = plt.Rectangle((0.5, y_pos - 2.2), 9.0, 2.1, facecolor=bg_col, edgecolor=border_col,
+                             linewidth=1.5)
+        ax0.add_patch(rect)
+        ax0.text(0.8, y_pos - 0.35, title, fontsize=9.5, fontweight="bold", color=border_col)
+        for idx, item in enumerate(items):
+            ax0.text(1.0, y_pos - 0.75 - idx * 0.42, item, fontsize=8.2, color="#37474F")
+        y_pos -= 2.6
+
+    # 2. ハードウェア割り込みライフサイクルとスタック退避構造
+    ax1 = axes[1]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+
+    ax1.text(5, 9.6, "割り込み発生時の CPU 自動退避スタックフレーム (64-bit Long Mode)",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#1A237E")
+
+    # スタックフレーム構造 (SS, RSP, RFLAGS, CS, RIP, [Error Code])
+    stack_elements = [
+        ("SS (Stack Segment Selector)", "0x0020 (RSP+32)", "#E1F5FE", "#0288D1"),
+        ("RSP (Stack Pointer before Interrupt)", "0x7FFF... (RSP+24)", "#E1F5FE", "#0288D1"),
+        ("RFLAGS (Flags Register)", "IF, IOPL, etc. (RSP+16)", "#E8F5E9", "#388E3C"),
+        ("CS (Code Segment Selector)", "0x0008 (RSP+8)", "#FFF8E1", "#FFA000"),
+        ("RIP (Return Instruction Pointer)", "Next RIP to execute (RSP+0)", "#FFEBEE", "#D32F2F"),
+        ("[Error Code] (例外時のみ自動Push)", "ErrorCode / Dummy (RSP-8)", "#F3E5F5", "#8E24AA"),
+    ]
+
+    y_stack = 8.6
+    for name, desc, bg_c, border_c in stack_elements:
+        rect = plt.Rectangle((1.0, y_stack - 0.95), 8.0, 0.85, facecolor=bg_c, edgecolor=border_c,
+                             linewidth=1.4)
+        ax1.add_patch(rect)
+        ax1.text(1.3, y_stack - 0.48, name, fontsize=8.8, fontweight="bold", color=border_c)
+        ax1.text(8.7, y_stack - 0.48, desc, fontsize=8.0, color="#546E7A", ha="right")
+        y_stack -= 1.05
+
+    # ライフサイクル説明文
+    ax1.text(5, y_stack - 0.3, "【ハードウェア割り込み処理シーケンス】\n"
+                               "① 周辺機器 (xHCI) が MSI 割り込みを発行 → Local APIC が受信\n"
+                               "② CPU は現在命令を完了後、RSP/SS/RFLAGS/CS/RIP をスタックに自動退避\n"
+                               "③ IDT (Interrupt Descriptor Table) を参照し、対応ハンドラ (ISR) へ分岐\n"
+                               "④ ハンドラ終了時、IRETQ 命令によりスタックから全レジスタを復元して復帰",
+             ha="center", va="top", fontsize=8.2, color="#263238",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#ECEFF1", edgecolor="#90A4AE", alpha=0.9))
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
