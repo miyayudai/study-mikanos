@@ -22862,3 +22862,437 @@ def plot_fig6_06_pci_bus_tree_and_recursive_scan_algorithm(output_path: str = "6
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+
+
+# =============================================================================
+# Chapter 6.4: Mouse Input via xHCI Polling & BAR Simulators
+# =============================================================================
+
+from enum import IntEnum
+
+class LogLevel(IntEnum):
+    ERROR = 3
+    WARN = 4
+    INFO = 6
+    DEBUG = 7
+
+
+@dataclass
+class KernelLogger:
+    """
+    Simulates MikanOS Kernel Logger (logger.cpp, Column 6.1).
+    Filters log messages based on a global threshold level.
+    """
+    level: LogLevel = LogLevel.WARN
+    logs: list[tuple[LogLevel, str]] = field(default_factory=list)
+
+    def set_level(self, level: LogLevel) -> None:
+        self.level = level
+
+    def log(self, level: LogLevel, msg: str) -> bool:
+        if int(level) <= int(self.level):
+            self.logs.append((level, msg))
+            return True
+        return False
+
+    def clear(self) -> None:
+        self.logs.clear()
+
+
+@dataclass
+class PCIBAR:
+    """
+    Representation of a PCI Base Address Register (BAR).
+    
+    Memory BAR Layout:
+    - Bit 0: Memory Space Indicator (0 = Memory, 1 = I/O)
+    - Bits 2-1: Type (00b = 32-bit, 10b = 64-bit)
+    - Bit 3: Prefetchable (1 = Prefetchable, 0 = Non-prefetchable)
+    - Bits 31-4: Base Address (16-byte aligned)
+    
+    If 64-bit (Type == 10b), the next consecutive BAR register contains the upper 32 bits.
+    """
+    raw_lower: int
+    raw_upper: int = 0
+    bar_index: int = 0
+
+    @property
+    def is_io(self) -> bool:
+        return bool(self.raw_lower & 0x1)
+
+    @property
+    def is_mmio(self) -> bool:
+        return not self.is_io
+
+    @property
+    def bar_type(self) -> int:
+        """Type bits (Bits 2:1): 00b = 32-bit, 10b = 64-bit"""
+        return (self.raw_lower >> 1) & 0x3
+
+    @property
+    def is_64bit(self) -> bool:
+        return self.bar_type == 0x2
+
+    @property
+    def is_prefetchable(self) -> bool:
+        return bool(self.raw_lower & 0x8)
+
+    @property
+    def raw_combined(self) -> int:
+        if self.is_64bit:
+            return (self.raw_upper << 32) | self.raw_lower
+        return self.raw_lower
+
+    @property
+    def base_address(self) -> int:
+        """
+        Calculates the physical MMIO base address by clearing the lower 4 flag bits.
+        Demonstrates the math of Column 6.2: `& ~static_cast<uint64_t>(0xf)`
+        """
+        mask = (~0xF) & 0xFFFF_FFFF_FFFF_FFFF
+        return self.raw_combined & mask
+
+    @staticmethod
+    def explain_static_cast_mystery() -> dict[str, str]:
+        """
+        Column 6.2 Explanation:
+        Why `static_cast<uint64_t>(0xf)` is required in C++.
+        """
+        return {
+            "issue": (
+                "In C++, literal `0xf` has type `int` (signed 32-bit). "
+                "Bitwise NOT `~0xf` produces `0xFFFFFFF0` (signed int, value -16). "
+                "When operating with 64-bit uint64_t, sign extension or narrowing conversion "
+                "can produce subtle platform-dependent bugs or compiler warnings. "
+                "By casting to uint64_t first: static_cast<uint64_t>(0xf) == 0x000000000000000FULL, "
+                "then taking ~ produces 0xFFFFFFFFFFFFFFF0ULL, safely clearing only the lowest 4 bits."
+            ),
+            "literal_0xf": "int (32-bit signed): 0x0000000F",
+            "tilde_literal": "int (32-bit signed): 0xFFFFFFF0",
+            "cast_then_tilde": "uint64_t (64-bit unsigned): 0xFFFFFFFFFFFFFFF0",
+        }
+
+
+class MouseMovementSimulator:
+    """
+    Simulates MikanOS MouseCursor class (Chapter 6.1 & 6.4).
+    Maintains pixel coordinates, performs relative movement, and handles
+    erasing with background color followed by redrawing the sprite.
+    """
+    WIDTH = 15
+    HEIGHT = 24
+    SHAPE = [
+        "@              ",
+        "@@             ",
+        "@.@            ",
+        "@..@           ",
+        "@...@          ",
+        "@....@         ",
+        "@.....@        ",
+        "@......@       ",
+        "@.......@      ",
+        "@........@     ",
+        "@.........@    ",
+        "@..........@   ",
+        "@...........@  ",
+        "@............@ ",
+        "@......@@@@@@@@",
+        "@......@       ",
+        "@....@@.@      ",
+        "@...@ @.@      ",
+        "@..@   @.@     ",
+        "@.@    @.@     ",
+        "@@      @.@    ",
+        "@       @.@    ",
+        "         @.@   ",
+        "         @@@   ",
+    ]
+
+    def __init__(self, fb_width: int = 800, fb_height: int = 600,
+                 initial_pos: tuple[int, int] = (300, 200),
+                 bg_color: tuple[int, int, int] = (45, 118, 237)):
+        self.fb_width = fb_width
+        self.fb_height = fb_height
+        self.x, self.y = initial_pos
+        self.bg_color = bg_color
+        self.history: list[tuple[int, int]] = [(self.x, self.y)]
+        self.erased_positions: list[tuple[int, int]] = []
+        self.drawn_positions: list[tuple[int, int]] = [(self.x, self.y)]
+
+    def move_relative(self, dx: int, dy: int) -> None:
+        # 1. Erase at old position
+        self.erased_positions.append((self.x, self.y))
+        # 2. Update position
+        self.x += dx
+        self.y += dy
+        # 3. Draw at new position
+        self.drawn_positions.append((self.x, self.y))
+        self.history.append((self.x, self.y))
+
+    @property
+    def current_position(self) -> tuple[int, int]:
+        return (self.x, self.y)
+
+    def render_to_numpy(self, bg_img: np.ndarray | None = None) -> np.ndarray:
+        if bg_img is None:
+            img = np.full((self.fb_height, self.fb_width, 3), self.bg_color, dtype=np.uint8)
+        else:
+            img = bg_img.copy()
+
+        for dy in range(self.HEIGHT):
+            for dx in range(self.WIDTH):
+                ch = self.SHAPE[dy][dx]
+                px = self.x + dx
+                py = self.y + dy
+                if 0 <= px < self.fb_width and 0 <= py < self.fb_height:
+                    if ch == "@":
+                        img[py, px] = [0, 0, 0]
+                    elif ch == ".":
+                        img[py, px] = [255, 255, 255]
+        return img
+
+
+@dataclass
+class XHCIPollingSimulator:
+    """
+    Simulates xHCI Controller and event loop polling (ProcessEvent).
+    Queues mouse displacement events and dispatches them to a registered observer.
+    """
+    mmio_base: int
+    is_running: bool = False
+    ports_connected: list[int] = field(default_factory=lambda: [1])
+    event_queue: list[tuple[int, int]] = field(default_factory=list)
+    observer_events: list[tuple[int, int]] = field(default_factory=list)
+    processed_count: int = 0
+
+    def initialize(self) -> bool:
+        return True
+
+    def run(self) -> None:
+        self.is_running = True
+
+    def queue_mouse_packet(self, dx: int, dy: int) -> None:
+        self.event_queue.append((dx, dy))
+
+    def process_event(self) -> bool:
+        if not self.event_queue:
+            return False
+        dx, dy = self.event_queue.pop(0)
+        self.observer_events.append((dx, dy))
+        self.processed_count += 1
+        return True
+
+    def poll_all(self) -> int:
+        count = 0
+        while self.process_event():
+            count += 1
+        return count
+
+
+def plot_fig6_07_pci_bar_and_mmio_mapping(output_path: str = "6/result/fig6_07_pci_bar_and_mmio_mapping.png") -> str:
+    """
+    Figure 6.07: PCI BAR0 レジスタ構造（32bit/64bit判定、フラグビット、下位4bitマスク数理）
+    および MMIO アドレス空間へのマッピング高解像度アーキテクチャ図版 (DPI 300) を生成する。
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 9), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.2, 1.0], height_ratios=[1.0, 1.1], hspace=0.35, wspace=0.25)
+
+    # Subplot 1: Top-Left -> PCI BAR Register Binary Layout
+    ax_bar = fig.add_subplot(gs[0, 0])
+    ax_bar.set_xlim(-0.5, 32.5)
+    ax_bar.set_ylim(-0.8, 4.2)
+    ax_bar.axis("off")
+    ax_bar.text(16, 3.8, "【PCI Base Address Register (BAR) ビットレイアウト構造】",
+                ha="center", va="center", fontsize=12, weight="bold", color="#0D47A1")
+
+    # BAR Bitfields
+    # 31:4 Base Address, 3: Prefetchable, 2:1 Type, 0: Memory Space Indicator
+    fields = [
+        (4, 32, "Base Address [31:4]\n(16-byte aligned physical base)", "#BBDEFB", "#1976D2", "28 bits"),
+        (3, 4, "PF\n[3]", "#C8E6C9", "#388E3C", "1b"),
+        (1, 3, "Type\n[2:1]", "#FFE0B2", "#F57C00", "2b"),
+        (0, 1, "MI\n[0]", "#FFCDD2", "#D32F2F", "1b")
+    ]
+
+    for bit_start, bit_end, label, bg, edge, width_str in fields:
+        w = bit_end - bit_start
+        x = 32 - bit_end
+        p = FancyBboxPatch((x, 1.2), w, 1.6, boxstyle="square,pad=0.0",
+                           facecolor=bg, edgecolor=edge, lw=1.5)
+        ax_bar.add_patch(p)
+        ax_bar.text(x + w / 2.0, 2.0, label, ha="center", va="center", fontsize=8.5, weight="bold", color="#212121")
+        ax_bar.text(x + w / 2.0, 0.8, width_str, ha="center", va="center", fontsize=7.5, color="#555555")
+
+    # Bit rulers
+    for bit in range(33):
+        ax_bar.text(32 - bit, 2.9, str(bit) if bit in [0, 1, 2, 3, 4, 16, 31] else "",
+                    ha="center", va="bottom", fontsize=7, color="#616161")
+
+    # Field explanations
+    expl = (
+        "• Bit 0 (Memory Space Indicator): 0 = メモリ空間 (MMIO), 1 = I/Oポート空間 (PMIO)\n"
+        "• Bits 2:1 (Type): 00b = 32ビットアドレス, 10b = 64ビットアドレス (BAR0+BAR1ペア)\n"
+        "• Bit 3 (Prefetchable): 1 = 投機的先読み可能, 0 = 非先読み (xHCI MMIOは通常 0)\n"
+        "• Bits 31:4 (Base Address): 下位4bitがフラグのため、ベースアドレスは必ず16バイト境界"
+    )
+    p_expl = FancyBboxPatch((-0.2, -0.7), 32.4, 1.2, boxstyle="round,pad=0.05",
+                            facecolor="#ECEFF1", edgecolor="#90A4AE", lw=1.0)
+    ax_bar.add_patch(p_expl)
+    ax_bar.text(0.2, -0.1, expl, ha="left", va="center", fontsize=7.8, color="#263238")
+
+    # Subplot 2: Bottom-Left -> Column 6.2: static_cast<uint64_t>(0xf) Mathematical Derivation
+    ax_cast = fig.add_subplot(gs[1, 0])
+    ax_cast.set_xlim(0, 10)
+    ax_cast.set_ylim(0, 10)
+    ax_cast.axis("off")
+
+    ax_cast.text(5.0, 9.4, "【コラム6.2: static_cast<uint64_t>(0xf) の数理と落とし穴】",
+                 ha="center", va="center", fontsize=12, weight="bold", color="#B71C1C")
+
+    trap_text = (
+        "【危険な書き方: ~0xf の暗黙の符号拡張トラップ】\n"
+        "  1. リテラル `0xf` は C++ 規格上 32ビット符号付き整数 `int` (0x0000000F)\n"
+        "  2. ビット反転 `~0xf` は 32ビット `int` の 0xFFFFFFF0 (-16)\n"
+        "  3. これを 64ビット `uint64_t` と `&` 演算すると、実装依存で符号拡張され\n"
+        "     意図せず上位32bitが 0xFFFFFFFF に反転したり警告・未定義挙動の原因になる！\n\n"
+        "【安全な正規コード: static_cast<uint64_t>(0xf) による完全制御】\n"
+        "  1. 先に 64bit にキャスト: static_cast<uint64_t>(0xf) = 0x0000_0000_0000_000F\n"
+        "  2. 64bit でビット反転: ~0x0000_0000_0000_000F = 0xFFFF_FFFF_FFFF_FFF0\n"
+        "  3. 64bit MMIO アドレスとの AND: 下位 4 ビット（フラグ群）のみを厳密にゼロクリア！"
+    )
+    p_trap = FancyBboxPatch((0.2, 0.4), 9.6, 8.4, boxstyle="round,pad=0.08",
+                            facecolor="#FFF3E0", edgecolor="#E65100", lw=1.4)
+    ax_cast.add_patch(p_trap)
+    ax_cast.text(0.5, 4.6, trap_text, ha="left", va="center", fontsize=8.2, color="#BF360C")
+
+    # Subplot 3: Right (Span rows 0-1) -> Physical Memory Map & MMIO Address Space
+    ax_map = fig.add_subplot(gs[:, 1])
+    ax_map.set_xlim(-1.0, 11.0)
+    ax_map.set_ylim(-0.5, 11.5)
+    ax_map.axis("off")
+
+    ax_map.text(5.0, 11.1, "【CPU 物理メモリ空間における xHCI MMIO マッピング】",
+                ha="center", va="center", fontsize=12, weight="bold", color="#1B5E20")
+
+    # Physical Address Stack
+    mem_blocks = [
+        (10.0, 0.8, "0xFFFF_FFFF_FFFF_FFFF\nTop of 64-bit Address Space", "#CFD8DC", "#455A64"),
+        (8.5, 1.2, "高位 MMIO 空間 (64-bit PCI Holes)\nBAR0+BAR1 64bit アドレス配置可能領域", "#FFF9C4", "#FBC02D"),
+        (6.8, 1.4, "xHCI MMIO レジスタ領域 (例: 0xFEA0_0000 - 0xFEA0_FFFF)\nCapability Regs / Operational Regs / Doorbell", "#FFCDD2", "#C62828"),
+        (4.8, 1.6, "32-bit PCI MMIO Hole (例: 0xC000_0000 - 0xFEFF_FFFF)\nグラフィック VRAM, PCI デバイス MMIO", "#FFE0B2", "#F57C00"),
+        (2.6, 1.8, "メインメモリ RAM (DRAM)\nカーネル (0x10_0000), スタック, DCBAA, Ring バッファ", "#C8E6C9", "#2E7D32"),
+        (0.8, 1.4, "レガシー空間 (0x0000_0000 - 0x000F_FFFF / 1MiB)\nUEFI ファームウェア, 割り込みベクタ, BIOS予約", "#E0E0E0", "#757575"),
+    ]
+
+    for y, h, label, bg, edge in mem_blocks:
+        p = FancyBboxPatch((1.5, y - h / 2.0), 7.0, h, boxstyle="round,pad=0.06",
+                           facecolor=bg, edgecolor=edge, lw=1.4)
+        ax_map.add_patch(p)
+        ax_map.text(5.0, y, label, ha="center", va="center", fontsize=8.0, color="#212121", weight="bold" if "xHCI" in label else "normal")
+
+    # Connector annotations
+    ax_map.annotate("", xy=(1.5, 6.8), xytext=(0.2, 6.8),
+                    arrowprops=dict(arrowstyle="->", lw=2.2, color="#C62828"))
+    ax_map.text(0.0, 6.8, "BAR0 取得\nMMIO Base", ha="right", va="center", fontsize=8.5, weight="bold", color="#C62828")
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig6_08_xhci_polling_sequence_and_mouse_event_flow(output_path: str = "6/result/fig6_08_xhci_polling_sequence_and_mouse_event_flow.png") -> str:
+    """
+    Figure 6.08: xHCI 初期化・USB HID ポート列挙・ポーリングイベント処理ループの
+    シーケンスとデータフロー高解像度アーキテクチャ図版 (DPI 300) を生成する。
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 9), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.1, 1.1], wspace=0.25)
+
+    # Subplot 1: Left -> Sequence Diagram
+    ax_seq = fig.add_subplot(gs[0])
+    ax_seq.set_xlim(-0.5, 10.5)
+    ax_seq.set_ylim(-0.5, 11.5)
+    ax_seq.axis("off")
+
+    ax_seq.text(5.0, 11.1, "【xHCI 初期化とポーリングイベント処理シーケンス】",
+                ha="center", va="center", fontsize=12, weight="bold", color="#0D47A1")
+
+    # Lifelines: KernelMain, Controller (xhc), Port/Dev, MouseCursor
+    actors = [
+        (1.0, "KernelMain\n(Main Thread)", "#BBDEFB", "#1976D2"),
+        (4.0, "Controller\n(xhc MMIO)", "#C8E6C9", "#2E7D32"),
+        (7.0, "USB Port / Dev\n(HID Mouse)", "#FFE0B2", "#F57C00"),
+        (9.5, "MouseCursor\n(Screen/VRAM)", "#E1BEE7", "#7B1FA2")
+    ]
+
+    for x, name, bg, edge in actors:
+        p = FancyBboxPatch((x - 0.9, 9.8), 1.8, 0.9, boxstyle="round,pad=0.06",
+                           facecolor=bg, edgecolor=edge, lw=1.2)
+        ax_seq.add_patch(p)
+        ax_seq.text(x, 10.25, name, ha="center", va="center", fontsize=7.8, weight="bold", color="#212121")
+        ax_seq.plot([x, x], [0.5, 9.7], lw=1.0, ls="--", color="#9E9E9E")
+
+    # Sequence Messages
+    seq_msgs = [
+        (9.2, 1.0, 4.0, "1. xhc.Initialize() & Run()", "#1976D2"),
+        (8.4, 1.0, 7.0, "2. ConfigurePort(xhc, port)", "#388E3C"),
+        (7.6, 7.0, 7.0, "3. Address Device & Enable Slot", "#E65100"),
+        (6.8, 1.0, 9.5, "4. new MouseCursor(300, 200)", "#7B1FA2"),
+        (6.0, 1.0, 4.0, "5. while(1): ProcessEvent(xhc)", "#C2185B"),
+        (5.2, 4.0, 4.0, "6. PrimaryEventRing()->Front()", "#455A64"),
+        (4.3, 4.0, 1.0, "7. MouseObserver(dx, dy)", "#D32F2F"),
+        (3.4, 1.0, 9.5, "8. MoveRelative({dx, dy})", "#512DA8"),
+        (2.5, 9.5, 9.5, "9. EraseMouseCursor(old_pos)", "#455A64"),
+        (1.6, 9.5, 9.5, "10. DrawMouseCursor(new_pos)", "#1B5E20"),
+    ]
+
+    for y, x1, x2, msg, color in seq_msgs:
+        if x1 == x2:
+            # Self arrow
+            ax_seq.annotate("", xy=(x1, y - 0.3), xytext=(x1, y),
+                            arrowprops=dict(arrowstyle="->", lw=1.4, color=color, connectionstyle="arc3,rad=-0.8"))
+            ax_seq.text(x1 + 0.3, y - 0.15, msg, ha="left", va="center", fontsize=7.5, color=color, weight="bold")
+        else:
+            ax_seq.annotate("", xy=(x2, y), xytext=(x1, y),
+                            arrowprops=dict(arrowstyle="->", lw=1.4, color=color))
+            mid_x = (x1 + x2) / 2.0
+            ax_seq.text(mid_x, y + 0.18, msg, ha="center", va="bottom", fontsize=7.5, color=color, weight="bold")
+
+    # Subplot 2: Right -> Mouse Movement & Background Erasing Mechanism
+    ax_flow = fig.add_subplot(gs[1])
+    ax_flow.set_xlim(-0.5, 10.5)
+    ax_flow.set_ylim(-0.5, 11.5)
+    ax_flow.axis("off")
+
+    ax_flow.text(5.0, 11.1, "【マウスカーソル消去・再描画とポーリングループ構造】",
+                ha="center", va="center", fontsize=12, weight="bold", color="#1B5E20")
+
+    flow_boxes = [
+        (5.0, 9.8, "メインループ: while (1)\nProcessEvent(xhc) を無限呼び出し (ポーリング方式)", "#E8F5E9", "#2E7D32"),
+        (5.0, 8.1, "イベント判定: Event Ring に未処理 TRB は存在するか？\nHasFront() == true なら EventTRB をデキュー", "#FFF9C4", "#F57F17"),
+        (5.0, 6.4, "TransferEventTRB の処理:\nUSB HID マウスの割り込み転送パケットをデコード (dx, dy)", "#FFE0B2", "#E65100"),
+        (5.0, 4.7, "MouseObserver(displacement_x, displacement_y)\nオブザーバ関数に相対変位ベクトルが伝達される", "#E1BEE7", "#6A1B9A"),
+        (5.0, 3.0, "MouseCursor::MoveRelative(Vector2D<int> disp):\n① EraseMouseCursor: 旧座標のカーソルを背景色で上書き消去\n② position_ += disp; (座標加算)\n③ DrawMouseCursor: 新座標に白黒カーソルスプライトを描画", "#FFCDD2", "#C62828"),
+        (5.0, 0.9, "画面更新完了: VRAM フレームバッファ上でカーソルが滑らかに移動！\n(※第7章では割り込み駆動化により CPU 100% 負荷を解消予定)", "#DCEDC8", "#33691E")
+    ]
+
+    for x, y, text, bg, edge in flow_boxes:
+        h = 1.1 if "\n" not in text else 1.35
+        p = FancyBboxPatch((x - 4.5, y - h / 2.0), 9.0, h, boxstyle="round,pad=0.07",
+                           facecolor=bg, edgecolor=edge, lw=1.3)
+        ax_flow.add_patch(p)
+        ax_flow.text(x, y, text, ha="center", va="center", fontsize=8.0, color="#212121")
+
+    for i in range(len(flow_boxes) - 1):
+        y1 = flow_boxes[i][1] - (0.65 if "\n" not in flow_boxes[i][2] else 0.72)
+        y2 = flow_boxes[i+1][1] + (0.65 if "\n" not in flow_boxes[i+1][2] else 0.72)
+        ax_flow.annotate("", xy=(5.0, y2), xytext=(5.0, y1),
+                         arrowprops=dict(arrowstyle="->", lw=1.6, color="#37474F"))
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

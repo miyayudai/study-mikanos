@@ -376,6 +376,13 @@ from common.os_sim import (
     PCIConfigSpaceSimulator,
     plot_fig6_05_pci_config_address_and_header_layout,
     plot_fig6_06_pci_bus_tree_and_recursive_scan_algorithm,
+    LogLevel,
+    KernelLogger,
+    PCIBAR,
+    MouseMovementSimulator,
+    XHCIPollingSimulator,
+    plot_fig6_07_pci_bar_and_mmio_mapping,
+    plot_fig6_08_xhci_polling_sequence_and_mouse_event_flow,
 )
 
 __all__ = [
@@ -754,4 +761,11 @@ __all__ = [
     "PCIConfigSpaceSimulator",
     "plot_fig6_05_pci_config_address_and_header_layout",
     "plot_fig6_06_pci_bus_tree_and_recursive_scan_algorithm",
+    "LogLevel",
+    "KernelLogger",
+    "PCIBAR",
+    "MouseMovementSimulator",
+    "XHCIPollingSimulator",
+    "plot_fig6_07_pci_bar_and_mmio_mapping",
+    "plot_fig6_08_xhci_polling_sequence_and_mouse_event_flow",
 ]

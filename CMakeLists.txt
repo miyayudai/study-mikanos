@@ -166,6 +166,9 @@ add_test(NAME test_ch06_xhci_arch_sim COMMAND ch06_xhci_arch_sim --test)
 add_executable(ch06_pci_scan_sim src/ch06/pci_scan_sim.cpp)
 add_test(NAME test_ch06_pci_scan_sim COMMAND ch06_pci_scan_sim --test)
 
+add_executable(ch06_mouse_polling_sim src/ch06/mouse_polling_sim.cpp)
+add_test(NAME test_ch06_mouse_polling_sim COMMAND ch06_mouse_polling_sim --test)
+
 
 
 
