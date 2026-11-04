@@ -23296,3 +23296,452 @@ def plot_fig6_08_xhci_polling_sequence_and_mouse_event_flow(output_path: str = "
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# =============================================================================
+# Chapter 6 Exercises: Comprehensive Verification & Quiz Engine
+# =============================================================================
+
+class Chapter6Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 6.1 to 6.4."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="6.1",
+                topic="Vector2D 演算とマウスカーソルスプライト描画数理",
+                question="Vector2D<T> を用いたマウスカーソル描画において、画面解像度 800x600、カーソルサイズ 15x24 ドットのとき、カーソル座標 (x, y) = (200, 150) に描画する際、スプライト内ローカル座標 (dx, dy) = (5, 10) が配置される VRAM フレームバッファの絶対座標として正しいものはどれか？",
+                options=[
+                    "(x + dx, y + dy) = (205, 160) であり、フレームバッファ配列インデックスは (160 * pixels_per_scan_line + 205)",
+                    "(x * dx, y * dy) = (1000, 1500) であり、スケーリング乗算を行う",
+                    "(x - dx, y - dy) = (195, 140) であり、原点逆方向へ減算する",
+                    "(dx, dy) = (5, 10) であり、画面左上原点にそのまま固定描画される",
+                ],
+                correct_index=0,
+                explanation="マウスカーソルを描画する際、基準位置 position_ (x, y) に対してスプライトの各ドット (dx, dy) を加算した `(x + dx, y + dy)` が VRAM 上の絶対ピクセル座標となります。スキャンライン数 stride を掛けて `(y + dy) * stride + (x + dx)` のインデックスに書き込みます。",
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="6.1",
+                topic="マウスカーソル移動時の背景消去と再描画（残像防止）",
+                question="マウスカーソルを旧位置 pos_old から新位置 pos_new へ移動させる際、マウスカーソルの残像（軌跡）を残さず正常に更新するための正しい処理手順はどれか？",
+                options=[
+                    "画面全体の VRAM を黒（0,0,0）でゼロクリアしてから新位置にカーソルを描画する",
+                    "旧位置 pos_old におけるカーソル領域をデスクトップ背景色で塗りつぶし（EraseMouseCursor）、pos_new を計算した上で新位置に白黒カーソルを再描画（DrawMouseCursor）する",
+                    "新位置に上書き描画するだけで十分であり、旧位置のピクセルは何もしなくても自動的に消滅する",
+                    "GPU のハードウェアオーバーレイレジスタに新座標を書き込み、VRAM には一切描画しない",
+                ],
+                correct_index=1,
+                explanation="レイヤマネージャ（第9章）が導入される前の MikanOS（day06c時点）では、マウス移動時に旧位置のスプライトをデスクトップ背景色で塗りつぶして消去（EraseMouseCursor）したのち、新位置にカーソルスプライトを再描画（DrawMouseCursor）することで残像を防ぎます。",
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="6.2",
+                topic="USB 3.0 / xHCI の 3大リング構造と役割",
+                question="USB 3.0 ホストコントローラ（xHCI）アーキテクチャにおける 3種類のリングバッファ（Command Ring, Event Ring, Transfer Ring）の役割分担として正しいものはどれか？",
+                options=[
+                    "Command Ring はCPUへの割り込みを通知し、Event Ring はデバイスへのデータ送信を行い、Transfer Ring はBIOS設定を保持する",
+                    "Command Ring はホストOSがコントローラ全体への制御コマンドを投入し、Transfer Ring は各エンドポイントへのデータ転送を要求し、Event Ring はコントローラからOSへ処理完了や割り込みイベントを通知する",
+                    "3つのリングはいずれも同一のリングであり、名前が違うだけでハードウェア的な区別はない",
+                    "Transfer Ring は存在せず、Command Ring と Event Ring の2つのみで構成される",
+                ],
+                correct_index=1,
+                explanation="xHCI では、OSがホストコントローラ全体への制御指示（スロット有効化やアドレス設定など）を Command Ring に投入し、各USBデバイスのエンドポイントとの送受信はエンドポイントごとの Transfer Ring で行います。ホストコントローラからの完了通知やポート変更イベントは Event Ring を介してOSに返されます。",
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="6.2",
+                topic="16バイト TRB (Transfer Request Block) の内部構造",
+                question="xHCI の基本データ単位である TRB（Transfer Request Block）のバイナリ構造およびサイズとして正しいものはどれか？",
+                options=[
+                    "合計16バイト（64ビット Parameter、32ビット Status、32ビット Control）で構成され、Control フィールドの上位ビットに TRB Type、最下位ビット (Bit 0) に Cycle Bit が格納される",
+                    "合計64バイトのキャッシュラインサイズであり、内部にイーサネットヘッダを含む",
+                    "可変長（4〜128バイト）であり、先頭1バイトでサイズを指定する",
+                    "8バイト（32ビット Address、32ビット Data）のレジスタ対である",
+                ],
+                correct_index=0,
+                explanation="xHCI の TRB は厳密に 16 バイト固定サイズ（Parameter 8B, Status 4B, Control 4B）です。Control フィールドの bits 15:10 に TRB Type、bit 0 に Cycle Bit が配置されています。",
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="6.2",
+                topic="Producer / Consumer Cycle State (PCS/CCS) とトグル同期機構",
+                question="xHCI のリングバッファにおいて、OS（ソフトウェア）とホストコントローラ（ハードウェア）がポインタの追い越しや競合を防ぎ、リング一周を検出するための Cycle Bit の動作原理として正しいものはどれか？",
+                options=[
+                    "OS は常に Cycle Bit = 1 を書き込み続け、コントローラは Cycle Bit を無視する",
+                    "リングを1周（ラップアラウンド）するたびに、書き込み側（Producer）が書き込む Cycle Bit の論理値（0/1）を反転（トグル）させ、読み取り側（Consumer）は自身の Cycle State と一致する TRB のみを有効と判定する",
+                    "Cycle Bit は CPU のクロックサイクル数を格納する 64 ビットカウンタである",
+                    "コントローラがリング内のすべての TRB を毎回 0xFF で上書き消去することで一周を検知する",
+                ],
+                correct_index=1,
+                explanation="xHCI はリングが一周するたびに書き込む Cycle Bit を 1 → 0 → 1 → ... と反転（トグル）させます。これにより、メモリのゼロクリアなしに「新しく書き込まれたTRB」と「前周回の古いTRB」を判別でき、ロックフリーかつ高速な送受信同期が実現されます。",
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="6.3",
+                topic="PCI Configuration 空間アクセスと MakeAddress 数理",
+                question="x86 PC における PCI Configuration 空間アクセス機構（Mechanism #1）において、I/O ポート 0xCF8 (CONFIG_ADDRESS) に書き込む 32 ビットアドレスを生成する MakeAddress(bus, device, function, reg_addr) のビット配置として正しいものはどれか？",
+                options=[
+                    "Bit 31 = Enable(1), Bits 23:16 = Bus, Bits 15:11 = Device, Bits 10:8 = Function, Bits 7:2 = RegOffset (下位2ビットは常に0)",
+                    "Bit 0 = Enable(1), Bits 8:1 = Bus, Bits 16:9 = Device, Bits 24:17 = Function",
+                    "Bits 31:24 = RegOffset, Bits 23:16 = Function, Bits 15:8 = Device, Bits 7:0 = Bus",
+                    "すべてのフィールドが 4 ビットずつ均等に 8 個並んでいる",
+                ],
+                correct_index=0,
+                explanation="PCI Configuration Address (0xCF8) は、Bit 31: Enable (1), Bits 23-16: Bus番号 (8bit), Bits 15-11: Device番号 (5bit, 0-31), Bits 10-8: Function番号 (3bit, 0-7), Bits 7-2: Register Offset (6bit, 4バイト境界アライメント) で構成されます。",
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="6.3",
+                topic="PCI バス探索と USB xHCI ホストコントローラの特定",
+                question="MikanOS の PCI バス全探索において、存在しないデバイスの判定方法、マルチファンクションデバイスの判定方法、および xHCI コントローラの特定条件の組み合わせとして正しいものはどれか？",
+                options=[
+                    "存在なし: Vendor ID == 0x0000、マルチファンクション: Header Type == 0x00、xHCI: Class Code == 0x010100",
+                    "存在なし: Vendor ID == 0xFFFF、マルチファンクション: Header Type の Bit 7 (0x80) が 1、xHCI: Base Class == 0x0C (Serial Bus), Sub Class == 0x03 (USB), Interface == 0x30 (xHCI)",
+                    "存在なし: I/O エラー例外発生、マルチファンクション: Function番号が 7 以上、xHCI: Device ID == 0x1234",
+                    "存在なし: Ping応答なし、マルチファンクション: BIOS設定で有効化、xHCI: Class Code == 0xFFFFFF",
+                ],
+                correct_index=1,
+                explanation="PCI バス上にデバイスが存在しない場合、プルアップ抵抗によりバスリードは全ビット 1 (Vendor ID = 0xFFFF) を返します。Header Type の最上位ビット (Bit 7, 0x80) が 1 の場合は複数ファンクションを持つマルチファンクションデバイスです。また USB xHCI コントローラは Class=0x0C (Serial Bus), SubClass=0x03 (USB), Interface=0x30 (xHCI) として一意に識別されます。",
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="6.4",
+                topic="PCI BAR0 と MMIO (Memory Mapped I/O) 物理アドレス取得",
+                question="PCI デバイスの BAR0 (Base Address Register 0) を読み取って xHCI の MMIO ベース物理アドレスを取得する際、正しい手順として適切なものはどれか？",
+                options=[
+                    "BAR0 の値をそのままポインタにキャストして利用する（下位ビットのフラグ処理は不要）",
+                    "Bit 0 が 0（Memory Space）であることを確認し、Bits 2:1 を見て 64ビット（10b）なら BAR1（上位32ビット）と結合し、下位 4 ビット（フラグ領域）をマスク除去して MMIO ベースアドレスを算出する",
+                    "BAR0 は常に I/O ポート番号を示すため、in/out 命令でのみアクセスする",
+                    "BAR0 から 1024 を引いたアドレスがカーネルヒープアドレスとなる",
+                ],
+                correct_index=1,
+                explanation="BAR0 の Bit 0 は 0 で Memory Space（1 なら I/O Space）を表します。Bits 2:1 が 10b (2) の場合は 64 ビット BAR であり、BAR0 (下位32ビット) と BAR1 (上位32ビット) を `(BAR1 << 32) | BAR0` で結合します。そして下位 4 ビットのフラグを除去したものが MMIO の物理ベースアドレスとなります。",
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="6.4",
+                topic="64ビットアドレスマスクと符号拡張バグの防止 (コラム 6.2)",
+                question="C++ において 64ビットアドレス addr の下位4ビットをゼロクリアする際、~0xf ではなく ~static_cast<uint64_t>(0xf) と記述すべき理由（コラム6.2）として正しいものはどれか？",
+                options=[
+                    "0xf は 32 ビット符号付き整数（int）リテラルであり、~0xf は 0xfffffff0 となる。これを 64 ビット整数に暗黙変換する際に符号ビット（最上位ビット1）が符号拡張されて上位32ビットがすべて 1 で埋まり、意図しない値や警告の原因となるのを防ぐため",
+                    "0xf と書くとコンパイラが 10 進数の 15 として解釈してしまい構文エラーになるため",
+                    "static_cast を書かないと CPU の浮動小数点演算器（FPU）が誤作動するため",
+                    "~ 演算子は 64 ビット型に対してのみ定義されており、32 ビット型に適用すると未定義動作となるため",
+                ],
+                correct_index=0,
+                explanation="リテラル `0xf` は `int`（符号付き32ビット）型です。`~0xf` は `0xfffffff0` となり、最上位ビットが 1 のため符号付きとみなされます。これを 64 ビット型変数とのビット演算で暗黙型変換すると、符号拡張（Sign Extension）によって上位 32 ビットがすべて 1 (`0xfffffffffffffff0`) となり、型安全性や警告、バグの原因となります。`~static_cast<uint64_t>(0xf)` により明示的に 64 ビット符号なしとして反転させることが安全です。",
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="6.4",
+                topic="xHCI ポーリングによるマウス入力とオブザーバパターン",
+                question="MikanOS (day06c) のカーネルメインループにおけるマウス入力処理の流れとして正しいものはどれか？",
+                options=[
+                    "マウスからハードウェア割り込みが届くまで CPU が完全に HLT 停止し、割り込みハンドラ内ですべての再描画を行う",
+                    "メインループ while(true) 内で xhc.ProcessEvent() を呼び出してイベントリングをポーリングし、マウスパケット受信時に登録された MouseObserver コールバック関数を呼び出して相対変位 (dx, dy) を反映・カーソルを再描画する",
+                    "USB マウスは PS/2 マウスポートに直接フォールバックして I/O ポート 0x60 から読み取る",
+                    "フレームバッファの全ピクセルを毎フレームスキャンしてマウスの存在を画像認識する",
+                ],
+                correct_index=1,
+                explanation="第6章（day06c）の MikanOS では、まだ割り込み（IDT）を導入していないため、メインループ内で `xhc.ProcessEvent()` を定期的に呼び出すポーリング（Polling）方式を採用しています。マウスの移動パケットが届くと登録されたオブザーバ関数（`MouseObserver`）が呼ばれ、相対変位 `(dx, dy)` を受け取ってカーソル位置を更新します。",
+            ),
+        ]
+
+    def evaluate(self, user_answers: dict[int, int]) -> dict[str, any]:
+        """Evaluate answers and calculate total score, percentage, and per-section mastery rates."""
+        correct_count = 0
+        total_questions = len(self.questions)
+        section_results: dict[str, list[bool]] = {}
+
+        for q in self.questions:
+            user_ans = user_answers.get(q.question_id)
+            is_correct = (user_ans == q.correct_index)
+            if is_correct:
+                correct_count += 1
+            if q.section not in section_results:
+                section_results[q.section] = []
+            section_results[q.section].append(is_correct)
+
+        percentage = (correct_count / total_questions) * 100.0
+        passed = (percentage >= 80.0)
+
+        mastery_rates = {}
+        for sec, results in section_results.items():
+            mastery_rates[sec] = (sum(results) / len(results)) * 100.0
+
+        return {
+            "total_questions": total_questions,
+            "correct_count": correct_count,
+            "percentage": percentage,
+            "passed": passed,
+            "mastery_rates": mastery_rates,
+        }
+
+
+class Chapter6TheoryValidator:
+    """Validation helper for Chapter 6 systems theory, Vector2D, xHCI, PCI scanning, and MMIO."""
+
+    @staticmethod
+    def validate_vector2d_math(math_dict: dict[str, any]) -> tuple[bool, str]:
+        """Validate Vector2D relative movement and boundary clamping."""
+        pos_x = math_dict.get("pos_x", 100)
+        pos_y = math_dict.get("pos_y", 100)
+        disp_x = math_dict.get("disp_x", 10)
+        disp_y = math_dict.get("disp_y", -5)
+        new_x = math_dict.get("new_x")
+        new_y = math_dict.get("new_y")
+
+        expected_x = pos_x + disp_x
+        expected_y = pos_y + disp_y
+
+        if new_x == expected_x and new_y == expected_y:
+            return True, f"正解！Vector2D 相対変位加算 ({pos_x}, {pos_y}) + ({disp_x}, {disp_y}) = ({new_x}, {new_y}) を正しく検証しました。"
+        return False, f"不正解です。期待値=({expected_x}, {expected_y}), 入力値=({new_x}, {new_y})"
+
+    @staticmethod
+    def validate_xhci_trb_type(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate xHCI TRB Type bitfield extraction (bits 15:10 of control field)."""
+        control = data.get("control", 0)
+        trb_type = data.get("trb_type")
+        cycle_bit = data.get("cycle_bit")
+
+        expected_type = (control >> 10) & 0x3f
+        expected_cycle = (control & 1) != 0
+
+        errors = []
+        if trb_type != expected_type:
+            errors.append(f"TRB Type: 期待値={expected_type}, 入力値={trb_type}")
+        if cycle_bit != expected_cycle:
+            errors.append(f"Cycle Bit: 期待値={expected_cycle}, 入力値={cycle_bit}")
+
+        if not errors:
+            return True, f"正解！16バイトTRB Controlフィールド (0x{control:08x}) から Type={trb_type}, CycleBit={cycle_bit} を正確に抽出しました。"
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_pci_make_address(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate PCI MakeAddress calculation."""
+        bus = data.get("bus", 0)
+        dev = data.get("device", 0)
+        func = data.get("function", 0)
+        reg = data.get("reg_addr", 0)
+        calculated = data.get("address")
+
+        expected = (1 << 31) | (bus << 16) | (dev << 11) | (func << 8) | (reg & 0xfc)
+        if calculated == expected:
+            return True, f"正解！PCI Configuration Address (Bus={bus}, Dev={dev}, Func={func}, Reg=0x{reg:02x}) -> 0x{calculated:08x} を正確に導出しました。"
+        return False, f"不正解です。期待値=0x{expected:08x}, 入力値=0x{calculated:08x}"
+
+    @staticmethod
+    def validate_pci_class_code(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate xHCI Class Code (0x0C, 0x03, 0x30)."""
+        base_class = data.get("base_class")
+        sub_class = data.get("sub_class")
+        interface = data.get("interface")
+
+        if base_class == 0x0C and sub_class == 0x03 and interface == 0x30:
+            return True, "正解！USB 3.0 xHCI ホストコントローラのクラスコード (Class=0x0C, SubClass=0x03, ProgIF=0x30) を正しく識別しました。"
+        return False, f"不正解です。xHCI のクラスコードは (Base=0x0C, Sub=0x03, Interface=0x30) です。入力値=({base_class}, {sub_class}, {interface})"
+
+    @staticmethod
+    def validate_bar0_mmio(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate BAR0 MMIO 64-bit address extraction."""
+        bar0 = data.get("bar0", 0)
+        bar1 = data.get("bar1", 0)
+        mmio_addr = data.get("mmio_addr")
+
+        is_64bit = ((bar0 >> 1) & 0x3) == 0x02
+        if is_64bit:
+            expected = ((bar1 << 32) | bar0) & ~0xf
+        else:
+            expected = bar0 & ~0xf
+
+        if mmio_addr == expected:
+            return True, f"正解！BAR0/BAR1 から MMIO 物理ベースアドレス 0x{mmio_addr:016x} を正しく抽出しました (64-bit BAR={is_64bit})。"
+        return False, f"不正解です。期待値=0x{expected:016x}, 入力値=0x{mmio_addr:016x}"
+
+    @staticmethod
+    def validate_sign_extension_safety(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate sign extension prevention rule."""
+        raw_mask = data.get("mask_value")
+        expected = 0xFFFFFFFFFFFFFFF0
+        if raw_mask == expected:
+            return True, "正解！~static_cast<uint64_t>(0xf) による符号拡張バグの防止と安全な64ビットマスクを検証しました。"
+        return False, f"不正解です。期待値=0x{expected:016x}, 入力値=0x{raw_mask:016x}"
+
+
+def plot_chapter6_exercises_summary(output_path: Path | str) -> Path:
+    """Generate Chapter 6 comprehensive exercises curriculum and evaluation summary chart."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle(
+        "第6章 総合演習問題カリキュラム & 理論・実装評価マップ\n"
+        "(Chapter 6 Comprehensive Exercises & Systems Verification Architecture)",
+        fontsize=14, fontweight="bold", color="#1A237E", y=0.98,
+    )
+
+    # 1. 4大トピック構成 (Top-Left)
+    ax1 = axes[0, 0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 第6章の学習・演習 4大コアトピック", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    topics = [
+        ("6.1 マウスカーソル", "Vector2D数理・15x24白黒スプライト・旧位置背景消去と再描画", "#E3F2FD", "#1565C0"),
+        ("6.2 xHCIアーキテクチャ", "USB 3.0・Command/Event/Transfer Ring・16B TRB・Cycle Bitトグル同期", "#E8F5E9", "#2E7D32"),
+        ("6.3 PCIデバイス探索", "I/Oポート 0xCF8/0xCFC・MakeAddress 32bit導出・xHCI Class Code (0x0C0330)", "#FFF3E0", "#E65100"),
+        ("6.4 マウスポーリング入力", "BAR0 MMIO物理アドレスデコード・符号拡張防止・オブザーバ移動ループ", "#F3E5F5", "#6A1B9A"),
+    ]
+
+    y_pos = 0.82
+    for title, desc, bg, border in topics:
+        box = FancyBboxPatch((0.03, y_pos - 0.06), 0.94, 0.13, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax1.add_patch(box)
+        ax1.text(0.06, y_pos, title, fontsize=9.2, fontweight="bold", color=border)
+        ax1.text(0.35, y_pos, desc, fontsize=7.6, color="#263238")
+        y_pos -= 0.20
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. 演習問題構成比率 (Top-Right)
+    ax2 = axes[0, 1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 演習問題の配点・カテゴリ比率 (10問)", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    categories = [
+        "カーソル描画 & 消去 (6.1)",
+        "xHCI & TRB & CycleBit (6.2)",
+        "PCI探索 & MakeAddress (6.3)",
+        "BAR0 MMIO & ポーリング (6.4)",
+    ]
+    counts = [2, 3, 2, 3]
+    colors = ["#42A5F5", "#66BB6A", "#FFA726", "#AB47BC"]
+
+    wedges, texts, autotexts = ax2.pie(
+        counts, labels=categories, autopct="%1.0f%%", startangle=140,
+        colors=colors, textprops=dict(fontsize=8.2, color="#263238"),
+        wedgeprops=dict(width=0.45, edgecolor="white", lw=2),
+    )
+    for at in autotexts:
+        at.set_fontsize(8.6)
+        at.set_fontweight("bold")
+        at.set_color("#FFFFFF")
+
+    # 3. 理論検証フロー (Bottom-Left)
+    ax3 = axes[1, 0]
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 自動採点 & 理論検証エンジン (Chapter6TheoryValidator)", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    val_steps = [
+        ("Step 1", "Vector2D 相対座標加算 & 画面境界クランプ検証", "#E1F5FE", "#0288D1"),
+        ("Step 2", "xHCI 16バイト TRB Type & Cycle Bit 抽出数理", "#E8F8F5", "#1ABC9C"),
+        ("Step 3", "PCI MakeAddress (Bus/Dev/Func/Reg) 32bit ビットシフト導出", "#FEF9E7", "#F39C12"),
+        ("Step 4", "USB 3.0 xHCI クラスコード (0x0C, 0x03, 0x30) マッチ判定", "#F4ECF7", "#8E44AD"),
+        ("Step 5", "PCI BAR0 32bit/64bit MMIO 物理ベースアドレス抽出", "#FDEDEC", "#E74C3C"),
+        ("Step 6", "~static_cast<uint64_t>(0xf) 符号拡張バグ防止マスク検証", "#FCE4EC", "#AD1457"),
+    ]
+
+    y_pos = 0.88
+    for step_num, desc, bg, border in val_steps:
+        box = FancyBboxPatch((0.04, y_pos - 0.05), 0.92, 0.105, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax3.add_patch(box)
+        ax3.text(0.08, y_pos, step_num, fontsize=8.0, fontweight="bold", color=border)
+        ax3.text(0.24, y_pos, desc, fontsize=7.4, color="#263238")
+        y_pos -= 0.145
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    # 4. C++20 / Python ハイブリッド検証基盤 (Bottom-Right)
+    ax4 = axes[1, 1]
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. C++20 スタンドアロン検証 & pytest 統合", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    comp_items = [
+        ("C++20 Standalone", "src/ch06/os_chapter6_exercises.cpp\n(CMake: ch06_os_chapter6_exercises)", "#2E7D32"),
+        ("Python Module", "common/os_sim.py\n(Chapter6Quiz, Chapter6TheoryValidator)", "#1565C0"),
+        ("Unit Testing", "tests/test_ch6_exercises.py\n(pytest tests/ -v)", "#C62828"),
+        ("Visual Verification", "6/result/fig6_ex1_exercises_summary.png\n6/result/fig6_ex2_ch6_mastery_radar.png", "#6A1B9A"),
+    ]
+
+    y_pos = 0.82
+    for label, desc, col in comp_items:
+        box = FancyBboxPatch((0.05, y_pos - 0.08), 0.90, 0.15, boxstyle="round,pad=0.015",
+                             facecolor="#F5F5F5", edgecolor=col, lw=1.5)
+        ax4.add_patch(box)
+        ax4.text(0.09, y_pos + 0.02, label, fontsize=8.8, fontweight="bold", color=col)
+        ax4.text(0.09, y_pos - 0.05, desc, fontsize=7.4, color="#37474F")
+        y_pos -= 0.21
+
+    ax4.set_xlim(0, 1.0)
+    ax4.set_ylim(0, 1.0)
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_chapter6_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float]) -> Path:
+    """Generate radar chart showing mastery rates across all 4 sections of Chapter 6."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    sections = [
+        "6.1\nマウスカーソル\n&スプライト",
+        "6.2\nxHCI構造\n&TRB/CycleBit",
+        "6.3\nPCI探索\n&MakeAddress",
+        "6.4\nBAR0 MMIO\n&ポーリング入力",
+    ]
+    sec_keys = ["6.1", "6.2", "6.3", "6.4"]
+    rates = [mastery_rates.get(k, 100.0) for k in sec_keys]
+
+    num_vars = len(sections)
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    rates_closed = rates + rates[:1]
+    angles_closed = angles + angles[:1]
+
+    fig = plt.figure(figsize=(8, 8))
+    fig.patch.set_facecolor("#FAFAFA")
+    ax = fig.add_subplot(111, polar=True)
+    ax.set_facecolor("#FFFFFF")
+
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+
+    ax.set_xticks(angles)
+    ax.set_xticklabels(sections, fontsize=9.2, fontweight="bold", color="#1A237E")
+
+    ax.set_rlabel_position(0)
+    plt.yticks([20, 40, 60, 80, 100], ["20%", "40%", "60%", "80%", "100%"],
+               color="#78909C", size=8)
+    plt.ylim(0, 105)
+
+    ax.plot(angles_closed, rates_closed, color="#1565C0", linewidth=2.2, linestyle="solid")
+    ax.fill(angles_closed, rates_closed, color="#42A5F5", alpha=0.35)
+
+    for angle, rate in zip(angles, rates):
+        ax.plot(angle, rate, marker="o", markersize=6, color="#0D47A1")
+        ax.text(angle, rate + 6, f"{rate:.0f}%", ha="center", va="center",
+                fontsize=8.5, fontweight="bold", color="#0D47A1")
+
+    avg_score = sum(rates) / len(rates)
+    plt.title(f"第6章 理解度自己採点レーダーチャート (平均: {avg_score:.1f}%)\nChapter 6 Mastery Radar Chart",
+              size=12, fontweight="bold", color="#1A237E", pad=22)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

@@ -169,6 +169,10 @@ add_test(NAME test_ch06_pci_scan_sim COMMAND ch06_pci_scan_sim --test)
 add_executable(ch06_mouse_polling_sim src/ch06/mouse_polling_sim.cpp)
 add_test(NAME test_ch06_mouse_polling_sim COMMAND ch06_mouse_polling_sim --test)
 
+add_executable(ch06_os_chapter6_exercises src/ch06/os_chapter6_exercises.cpp)
+add_test(NAME test_ch06_os_chapter6_exercises COMMAND ch06_os_chapter6_exercises --test)
+
+
 
 
 

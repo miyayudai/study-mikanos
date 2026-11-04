@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-412%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-22.4%25%20(51%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-423%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-22.8%25%20(52%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -93,7 +93,7 @@ cmake --build build
 | **第3章** | 画面表示の練習とブートローダ | 7 | `day03a`–`03d` | QEMUモニタ、x86-64レジスタ、GOP描画、Red Zone | [`3_Exercises.ipynb`](3/3_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | [`5_Exercises.ipynb`](5/5_Exercises.ipynb) | `[x]` 完了 (7/7) |
-| **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | `6_Exercises.ipynb` | `[-]` 進行中 (4/5) |
+| **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | `[x]` 完了 (5/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 未着手 (0/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -209,6 +209,7 @@ cmake --build build
 | [`6.2_USB_3_0_xHCI_Architecture.ipynb`](6/6.2_USB_3_0_xHCI_Architecture.ipynb) | 6.2 USBホストドライバ（UHCI/OHCI/EHCIからxHCIへの進化・Companion Controller解消・USB階層トポロジー・4大転送モード・DCBAA・Device Context・Transfer/Command/Event 3大リング・Doorbellレジスタ・16バイト固定長TRB・Cycle Bit (PCS/CCS) ロックフリー同期数理・Link TRB Toggle Cycle・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/6/6.2_USB_3_0_xHCI_Architecture.ipynb) |
 | [`6.3_Scanning_PCI_Configuration_Space.ipynb`](6/6.3_Scanning_PCI_Configuration_Space.ipynb) | 6.3 PCIデバイスの探索（`osbook_day06b`・PCIバストポロジー・PMIO vs MMIO・`in`/`out`命令と`IoIn32`/`IoOut32`・`CONFIG_ADDRESS` 0x0CF8ビット数理・Type 00h/01hヘッダ・単一/多重ファンクション走査・PCI-to-PCIブリッジ再帰探索・xHCIクラスコード`0x0C0330`特定・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/6/6.3_Scanning_PCI_Configuration_Space.ipynb) |
 | [`6.4_Mouse_Input_via_xHCI_Polling.ipynb`](6/6.4_Mouse_Input_via_xHCI_Polling.ipynb) | 6.4 ポーリングでマウス入力（`osbook_day06c`・PCI BAR0 32bit/64bit数理・MMIOベースアドレス取得・コラム6.2 `static_cast<uint64_t>(0xf)` の謎と符号拡張安全性・Intel `SwitchEhci2Xhci`・xHCI初期化と`Run()`・`ConfigurePort`・HIDマウスドライバ・`MouseCursor`消去と相対移動・ポーリングイベントループ`ProcessEvent`・コラム6.1 カーネルログ関数`Log`/`SetLogLevel`・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/6/6.4_Mouse_Input_via_xHCI_Polling.ipynb) |
+| [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | 第6章 演習問題（Vector2D数理・マウスカーソル背景消去再描画・xHCI 16B TRBとCycle Bitトグル同期・PCI MakeAddress 32bit導出・xHCI Class Code・BAR0 MMIO 64bitアドレスデコード・符号拡張バグ防止・C++20検証・10問自己採点テスト・レーダーチャート） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/6/6_Exercises.ipynb) |
 
 
 
