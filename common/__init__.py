@@ -396,6 +396,11 @@ from common.os_sim import (
     InterruptHandlerSimulator,
     plot_regular_call_vs_interrupt_stack,
     plot_compiler_attribute_interrupt_mechanism,
+    ExceptionType,
+    CPUExceptionSpec,
+    InterruptVectorSpace,
+    plot_interrupt_vector_space_map,
+    plot_cpu_exception_types_and_handling,
 )
 
 __all__ = [
@@ -794,4 +799,9 @@ __all__ = [
     "InterruptHandlerSimulator",
     "plot_regular_call_vs_interrupt_stack",
     "plot_compiler_attribute_interrupt_mechanism",
+    "ExceptionType",
+    "CPUExceptionSpec",
+    "InterruptVectorSpace",
+    "plot_interrupt_vector_space_map",
+    "plot_cpu_exception_types_and_handling",
 ]

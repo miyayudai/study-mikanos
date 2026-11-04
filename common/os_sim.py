@@ -24533,3 +24533,435 @@ def plot_compiler_attribute_interrupt_mechanism(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# 第7章 7.3: 割り込みベクタ (Interrupt Vectors in x86-64) シミュレーション & 可視化
+# ==============================================================================
+
+class ExceptionType(Enum):
+    """CPU例外および割り込みの分類種別"""
+    FAULT = "Fault"          # 命令再実行可能 (保存RIP = 例外発生命令自身)
+    TRAP = "Trap"            # 命令完了後通知 (保存RIP = 次の実行予定命令)
+    ABORT = "Abort"          # 回復不能な重大エラー (保存RIP = 不確定/再実行不可)
+    INTERRUPT = "Interrupt"  # 外部非同期割り込み (保存RIP = 次の実行予定命令)
+
+
+@dataclass(frozen=True)
+class CPUExceptionSpec:
+    """x86-64 CPU例外 (Architecture-Defined Exceptions) の仕様"""
+    vector: int
+    mnemonic: str
+    name: str
+    exception_type: ExceptionType
+    has_error_code: bool
+    description: str
+    error_code_details: str = "なし"
+
+
+class InterruptVectorSpace:
+    """
+    x86-64 アーキテクチャにおける全256個の割り込みベクタ空間 (0〜255) の管理と
+    例外ディスパッチ・エラーコードスタックシミュレーション
+    """
+    # ベクタ番号範囲の定数
+    CPU_EXCEPTION_MIN = 0
+    CPU_EXCEPTION_MAX = 31
+    USER_DEFINED_MIN = 32
+    USER_DEFINED_MAX = 255
+    TOTAL_VECTORS = 256
+
+    # MikanOS で定義されているベクタ
+    MIKANOS_VECTOR_XHCI = 0x40  # 64: USB 3.0 xHCI ホストコントローラ
+
+    # Intel SDM Vol.3A / AMD64 Architecture Programmer's Manual に準拠した CPU 例外一覧
+    EXCEPTIONS: dict[int, CPUExceptionSpec] = {
+        0: CPUExceptionSpec(0, "#DE", "Divide Error", ExceptionType.FAULT, False,
+                            "DIV/IDIV 命令で除数が0または商がレジスタに収まらない"),
+        1: CPUExceptionSpec(1, "#DB", "Debug Exception", ExceptionType.FAULT, False,  # Fault or Trap
+                            "ハードウェアブレークポイント (DR0-DR3) やトラップフラグ (TF=1)"),
+        2: CPUExceptionSpec(2, "NMI", "Non-Maskable Interrupt", ExceptionType.INTERRUPT, False,
+                            "マスク不可能外部割り込み (パリティエラー、不可逆ハードウェア障害)"),
+        3: CPUExceptionSpec(3, "#BP", "Breakpoint", ExceptionType.TRAP, False,
+                            "デバッガブレークポイント命令 (INT 3: 0xCC) の実行"),
+        4: CPUExceptionSpec(4, "#OF", "Overflow", ExceptionType.TRAP, False,
+                            "INTO 命令実行時にオーバーフローフラグ (OF=1) がセットされている"),
+        5: CPUExceptionSpec(5, "#BR", "BOUND Range Exceeded", ExceptionType.FAULT, False,
+                            "BOUND 命令で配列境界外アクセスを検出 (レガシー)"),
+        6: CPUExceptionSpec(6, "#UD", "Invalid Opcode", ExceptionType.FAULT, False,
+                            "未定義の機械語命令の実行、または無効なプレフィックス"),
+        7: CPUExceptionSpec(7, "#NM", "Device Not Available", ExceptionType.FAULT, False,
+                            "CR0.TS=1 の状態で x87 FPU / SSE 命令を実行 (コプロセッサ遅延退避用)"),
+        8: CPUExceptionSpec(8, "#DF", "Double Fault", ExceptionType.ABORT, True,
+                            "例外処理中に追加の例外が発生 (通常エラーコード 0 を push)"),
+        9: CPUExceptionSpec(9, "#MF", "Coprocessor Segment Overrun", ExceptionType.ABORT, False,
+                            "レガシーFPUセグメント超過 (現代CPUでは発生しない)"),
+        10: CPUExceptionSpec(10, "#TS", "Invalid TSS", ExceptionType.FAULT, True,
+                             "タスクスイッチ時の TSS (Task State Segment) 記述子が無効"),
+        11: CPUExceptionSpec(11, "#NP", "Segment Not Present", ExceptionType.FAULT, True,
+                             "アクセスしたセグメント記述子の Present ビットが 0"),
+        12: CPUExceptionSpec(12, "#SS", "Stack-Segment Fault", ExceptionType.FAULT, True,
+                             "スタックセグメントの制限超過、または SS 不在"),
+        13: CPUExceptionSpec(13, "#GP", "General Protection Fault", ExceptionType.FAULT, True,
+                             "特権違反、未整列メモリアクセス (SSE/AVX)、無効アドレス参照など広範な保護違反"),
+        14: CPUExceptionSpec(14, "#PF", "Page Fault", ExceptionType.FAULT, True,
+                             "ページが存在しない、またはページ権限違反 (CR2 にフォルトアドレス保存)",
+                             "P(存在), W/R(書込), U/S(特権), RSVD(予約), I/D(命令フェッチ) ビット"),
+        15: CPUExceptionSpec(15, "#RSVD", "Intel Reserved", ExceptionType.FAULT, False,
+                             "Intel 予約領域 (通常発生しない)"),
+        16: CPUExceptionSpec(16, "#MF", "x87 FPU Floating-Point Error", ExceptionType.FAULT, False,
+                             "x87 FPU 演算エラー (ゼロ除算、アンダーフロー、不正確結果など)"),
+        17: CPUExceptionSpec(17, "#AC", "Alignment Check", ExceptionType.FAULT, True,
+                             "CR0.AM=1 かつ EFLAGS.AC=1 の状態での未整列データメモリアクセス", "常に 0"),
+        18: CPUExceptionSpec(18, "#MC", "Machine Check", ExceptionType.ABORT, False,
+                             "内部バスエラー、ECCエラーなどハードウェア物理障害"),
+        19: CPUExceptionSpec(19, "#XM", "SIMD Floating-Point Exception", ExceptionType.FAULT, False,
+                             "SSE / AVX 命令での浮動小数点数値エラー (MXCSR 参照)"),
+        20: CPUExceptionSpec(20, "#VE", "Virtualization Exception", ExceptionType.FAULT, False,
+                             "EPT (Extended Page Tables) 違反による仮想化例外"),
+        21: CPUExceptionSpec(21, "#CP", "Control Protection Exception", ExceptionType.FAULT, True,
+                             "CET (Control-flow Enforcement Technology) シャドウスタック障害", "CET エラーコード"),
+    }
+
+    @classmethod
+    def is_cpu_exception(cls, vector: int) -> bool:
+        """指定ベクタが CPU 予約・例外領域 (0〜31) かどうか判定"""
+        return cls.CPU_EXCEPTION_MIN <= vector <= cls.CPU_EXCEPTION_MAX
+
+    @classmethod
+    def is_user_defined(cls, vector: int) -> bool:
+        """指定ベクタがユーザー定義割り込み領域 (32〜255) かどうか判定"""
+        return cls.USER_DEFINED_MIN <= vector <= cls.USER_DEFINED_MAX
+
+    @classmethod
+    def get_exception_spec(cls, vector: int) -> Optional[CPUExceptionSpec]:
+        """CPU 例外の仕様定義を取得 (未定義予約は汎用オブジェクトを返す)"""
+        if not cls.is_cpu_exception(vector):
+            return None
+        if vector in cls.EXCEPTIONS:
+            return cls.EXCEPTIONS[vector]
+        return CPUExceptionSpec(vector, f"#RSVD{vector}", "Reserved Exception", ExceptionType.FAULT, False, "予約例外")
+
+    @classmethod
+    def get_vector_description(cls, vector: int) -> str:
+        """ベクタ番号の用途・説明文字列を返す"""
+        if not (0 <= vector <= 255):
+            raise ValueError(f"無効なベクタ番号: {vector} (有効範囲: 0〜255)")
+        if cls.is_cpu_exception(vector):
+            spec = cls.get_exception_spec(vector)
+            return f"{spec.mnemonic}: {spec.name} ({spec.exception_type.value}, ErrorCode={'あり' if spec.has_error_code else 'なし'})"
+        if vector == cls.MIKANOS_VECTOR_XHCI:
+            return "MikanOS xHCI USB 3.0 ホストコントローラ (MSI割り込み)"
+        return f"ユーザー定義割り込み (ベクタ 0x{vector:02X} / {vector})"
+
+    @classmethod
+    def simulate_dispatch(cls, vector: int, current_rip: int, next_rip: int, error_code_val: int = 0) -> dict:
+        """
+        CPU が指定ベクタ番号の割り込み・例外を受け取った際のハードウェア動作をシミュレーション
+        - push_rip: スタックに保存される RIP (Fault: 自身, Trap/Interrupt: 次命令)
+        - has_error_code: スタックに ErrorCode が push されるか
+        - error_code: push されるエラーコード値 (存在する場合)
+        - return_target: ハンドラ復帰 (IRETQ) 後の再開アドレス
+        """
+        if not (0 <= vector <= 255):
+            raise ValueError(f"無効なベクタ番号: {vector}")
+
+        if cls.is_cpu_exception(vector):
+            spec = cls.get_exception_spec(vector)
+            etype = spec.exception_type
+            has_ec = spec.has_error_code
+        else:
+            etype = ExceptionType.INTERRUPT
+            has_ec = False
+
+        if etype == ExceptionType.FAULT:
+            saved_rip = current_rip
+            return_target = current_rip  # 原因修復後に命令を再実行
+        elif etype in (ExceptionType.TRAP, ExceptionType.INTERRUPT):
+            saved_rip = next_rip
+            return_target = next_rip     # 次の命令から継続
+        else:  # ABORT
+            saved_rip = current_rip
+            return_target = None         # 回復不能、復帰不可
+
+        stack_elements = ["SS", "RSP", "RFLAGS", "CS", "RIP"]
+        if has_ec:
+            stack_elements.append(f"ErrorCode(0x{error_code_val:X})")
+
+        return {
+            "vector": vector,
+            "category": "CPU Exception" if cls.is_cpu_exception(vector) else "User Interrupt",
+            "type": etype.value,
+            "has_error_code": has_ec,
+            "error_code_value": error_code_val if has_ec else None,
+            "saved_rip": hex(saved_rip),
+            "return_target": hex(return_target) if return_target is not None else "CRASH / HALT",
+            "stack_elements_pushed_by_hardware": stack_elements,
+            "stack_bytes_pushed": (6 if has_ec else 5) * 8
+        }
+
+
+def plot_interrupt_vector_space_map(output_path: str) -> str:
+    """
+    Figure 7.05: x86-64 割り込みベクタ空間マップ (0〜255)
+    左: 256ベクタの全体領域マップ (CPU例外 0〜31、ユーザー定義 32〜255、MikanOS 0x40)
+    右: CPU例外 (0〜31) の詳細一覧テーブル (Fault/Trap/Abort, エラーコード有無)
+    """
+    setup_plot_style()
+    fig = plt.figure(figsize=(15, 9), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle("図 7.05: x86-64 割り込みベクタ空間マップ (全256ベクタの完全分類とMikanOS設計)",
+                 fontsize=14, fontweight="bold", y=0.98, color="#1A237E")
+
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.1, 1.3], wspace=0.18)
+
+    # 1. 左側: 256 ベクタ空間の区分マップ
+    ax0 = fig.add_subplot(gs[0, 0])
+    ax0.set_facecolor("#FFFFFF")
+    ax0.set_xlim(0, 10)
+    ax0.set_ylim(0, 10)
+    ax0.axis("off")
+
+    ax0.text(5, 9.4, "【全 256 個の割り込みベクタ空間 (0x00 〜 0xFF)】",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#0D47A1")
+
+    regions = [
+        ("ベクタ 0 〜 31 (0x00 〜 0x1F) : 計32個",
+         "CPU アーキテクチャ定義 例外 (Architecture Exceptions)\n"
+         "• CPU 自身が内部状態異常やトラップを検知して発生\n"
+         "• ゼロ除算(#DE), ページフォルト(#PF), 一般保護例外(#GP) 等\n"
+         "• 外部周辺機器の割り込みには絶対に使用不可！",
+         "#FFEBEE", "#C62828", 2.2),
+        ("ベクタ 32 〜 63 (0x20 〜 0x3F) : 計32個",
+         "ユーザー定義 / レガシー予約領域\n"
+         "• 伝統的な PC/AT 互換機では 8259 PIC (IRQ 0〜15) が配置\n"
+         "• MikanOS では将来の拡張・予約用に空きとして温存",
+         "#FFF3E0", "#E65100", 1.8),
+        ("ベクタ 64 (0x40) : MikanOS xHCI 割り込み",
+         "★ MikanOS 採用ベクタ: InterruptVector::kXHCI\n"
+         "• USB 3.0 ホストコントローラの MSI 割り込みに割り当て\n"
+         "• 衝突を避けた安全なベースベクタ番号",
+         "#E8F5E9", "#2E7D32", 1.7),
+        ("ベクタ 65 〜 255 (0x41 〜 0xFF) : 計191個",
+         "ユーザー定義 自由利用領域 (Available User Interrupts)\n"
+         "• Local APIC タイマ割り込み、PCI デバイス、システムコール\n"
+         "• OS 設計者が優先度や目的に応じて自由に割り当て可能",
+         "#E1F5FE", "#0277BD", 2.0),
+    ]
+
+    y_cur = 8.6
+    for title, desc, bg_c, border_c, height in regions:
+        rect = plt.Rectangle((0.5, y_cur - height), 9.0, height, facecolor=bg_c, edgecolor=border_c,
+                             linewidth=1.6)
+        ax0.add_patch(rect)
+        ax0.text(0.8, y_cur - 0.32, title, fontsize=9.2, fontweight="bold", color=border_c)
+        ax0.text(0.9, y_cur - 0.70, desc, fontsize=8.0, fontfamily="monospace", color="#263238")
+        y_cur -= (height + 0.3)
+
+    # 2. 右側: CPU 例外 (0〜21) の仕様一覧テーブル
+    ax1 = fig.add_subplot(gs[0, 1])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+
+    ax1.text(5, 9.4, "【x86-64 CPU 例外一覧 (ベクタ 0 〜 21 の主要仕様)】",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#B71C1C")
+
+    # テーブルヘッダー
+    ax1.text(0.2, 8.8, "Vec", fontsize=8.2, fontweight="bold", color="#37474F")
+    ax1.text(1.0, 8.8, "Mnemonic", fontsize=8.2, fontweight="bold", color="#37474F")
+    ax1.text(2.6, 8.8, "Exception Name", fontsize=8.2, fontweight="bold", color="#37474F")
+    ax1.text(6.0, 8.8, "Type", fontsize=8.2, fontweight="bold", color="#37474F")
+    ax1.text(7.2, 8.8, "ErrorCode", fontsize=8.2, fontweight="bold", color="#37474F")
+    ax1.text(8.7, 8.8, "MikanOS", fontsize=8.2, fontweight="bold", color="#37474F")
+    ax1.axhline(8.65, xmin=0.02, xmax=0.98, color="#90A4AE", linewidth=1.2)
+
+    table_data = [
+        (0, "#DE", "Divide Error", "Fault", "なし", "-"),
+        (1, "#DB", "Debug", "Fault/Trap", "なし", "-"),
+        (2, "NMI", "Non-Maskable Interrupt", "Interrupt", "なし", "-"),
+        (3, "#BP", "Breakpoint (INT 3)", "Trap", "なし", "-"),
+        (4, "#OF", "Overflow (INTO)", "Trap", "なし", "-"),
+        (5, "#BR", "BOUND Range Exceeded", "Fault", "なし", "-"),
+        (6, "#UD", "Invalid Opcode", "Fault", "なし", "-"),
+        (7, "#NM", "Device Not Available", "Fault", "なし", "-"),
+        (8, "#DF", "Double Fault", "Abort", "あり(0)", "-"),
+        (10, "#TS", "Invalid TSS", "Fault", "あり", "-"),
+        (11, "#NP", "Segment Not Present", "Fault", "あり", "-"),
+        (12, "#SS", "Stack-Segment Fault", "Fault", "あり", "-"),
+        (13, "#GP", "General Protection Fault", "Fault", "あり", "後章で捕捉"),
+        (14, "#PF", "Page Fault (CR2)", "Fault", "あり", "第20章/27章"),
+        (16, "#MF", "x87 FPU Floating-Point", "Fault", "なし", "-"),
+        (17, "#AC", "Alignment Check", "Fault", "あり(0)", "-"),
+        (18, "#MC", "Machine Check", "Abort", "なし", "-"),
+        (19, "#XM", "SIMD Floating-Point", "Fault", "なし", "-"),
+        (64, "kXHCI", "xHCI USB Host Controller", "Interrupt", "なし", "★ 第7章採用"),
+    ]
+
+    y_pos = 8.35
+    for vec, mnem, name, etype, ec, mikan in table_data:
+        bg_col = "#E8F5E9" if vec == 64 else ("#FFF8E1" if ec != "なし" else "#FFFFFF")
+        text_col = "#1B5E20" if vec == 64 else ("#C62828" if etype == "Abort" else "#263238")
+        rect = plt.Rectangle((0.15, y_pos - 0.26), 9.6, 0.35, facecolor=bg_col, edgecolor="none")
+        ax1.add_patch(rect)
+
+        ax1.text(0.2, y_pos - 0.18, f"0x{vec:02X}", fontsize=7.5, fontfamily="monospace", color=text_col)
+        ax1.text(1.0, y_pos - 0.18, mnem, fontsize=7.5, fontfamily="monospace", fontweight="bold", color=text_col)
+        ax1.text(2.6, y_pos - 0.18, name[:24], fontsize=7.5, color=text_col)
+        ax1.text(6.0, y_pos - 0.18, etype, fontsize=7.5, fontweight="bold",
+                 color="#0D47A1" if etype == "Fault" else ("#E65100" if etype == "Trap" else ("#C62828" if etype == "Abort" else "#2E7D32")))
+        ax1.text(7.2, y_pos - 0.18, ec, fontsize=7.5, fontweight="bold" if ec != "なし" else "normal",
+                 color="#D84315" if ec != "なし" else "#78909C")
+        ax1.text(8.7, y_pos - 0.18, mikan, fontsize=7.3, fontweight="bold" if "★" in mikan else "normal",
+                 color="#2E7D32" if "★" in mikan else "#546E7A")
+
+        y_pos -= 0.38
+
+    # 凡例ボックス
+    note_rect = plt.Rectangle((0.15, 0.4), 9.6, 1.0, facecolor="#F5F5F5", edgecolor="#BDBDBD", linewidth=1.0)
+    ax1.add_patch(note_rect)
+    ax1.text(0.3, 1.15, "💡 ベクタ分類のポイント:", fontsize=8.0, fontweight="bold", color="#37474F")
+    ax1.text(0.3, 0.85, "• Fault: エラー修復後に再実行 (RIP=自命令)。Page Fault 等によるデマンドページングの根幹。", fontsize=7.3, color="#263238")
+    ax1.text(0.3, 0.55, "• ErrorCode: #GP や #PF ではハードウェアが 64bit エラーコードをスタックに自動 push する！", fontsize=7.3, color="#C62828", fontweight="bold")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_cpu_exception_types_and_handling(output_path: str) -> str:
+    """
+    Figure 7.06: CPU 例外の3大分類 (Fault / Trap / Abort) とスタック・復帰動作
+    左: Fault vs Trap vs Abort の命令実行・保存RIP・再開挙動の比較フロー
+    右: スタック構造の比較 (通常割り込み 5クワッドワード vs エラーコード付き例外 6クワッドワード)
+    """
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 8.5), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle("図 7.06: CPU 例外の3大分類 (Fault / Trap / Abort) とエラーコードスタック機構",
+                 fontsize=14, fontweight="bold", y=0.98, color="#1A237E")
+
+    # 1. 左側: Fault / Trap / Abort の動作フロー比較
+    ax0 = axes[0]
+    ax0.set_facecolor("#FFFFFF")
+    ax0.set_xlim(0, 10)
+    ax0.set_ylim(0, 10)
+    ax0.axis("off")
+
+    ax0.text(5, 9.4, "【例外の3大分類 (Fault / Trap / Abort) の挙動比較】",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#283593")
+
+    behaviors = [
+        ("① Fault (フォールト): 命令再実行型",
+         "• 発生契機: 命令の実行前または実行途中で異常を検出 (#PF, #GP, #UD)\n"
+         "• 保存される RIP: 【例外を引き起こした命令自身】のアドレス\n"
+         "• OS の対処: 原因を解決 (例: 物理ページ割当) 後、IRETQ で復帰\n"
+         "• 復帰後の挙動: 失敗した同一命令が再度実行される (修復成功なら継続)",
+         "#E8F5E9", "#2E7D32"),
+        ("② Trap (トラップ): 命令完了通知型",
+         "• 発生契機: 命令の実行完了直後に通知 (#BP / INT 3, INTO, 単歩実行)\n"
+         "• 保存される RIP: 【次に実行すべき後続命令】のアドレス\n"
+         "• OS の対処: デバッガへの制御移行やシステム状態の記録\n"
+         "• 復帰後の挙動: 次の命令から通常通り実行を継続する",
+         "#FFF3E0", "#E65100"),
+        ("③ Abort (アボート): 回復不能障害型",
+         "• 発生契機: システムを安全に継続できない致命的異常 (#DF, #MC)\n"
+         "• 保存される RIP: 不確定 (信頼できない)\n"
+         "• OS の対処: カーネルパニック、エラーログ記録、CPU 停止 (HLT)\n"
+         "• 復帰後の挙動: アプリやOSの継続は不可能 (再起動または停止)",
+         "#FFEBEE", "#C62828"),
+        ("④ Hardware Interrupt (外部ハードウェア割り込み)",
+         "• 発生契機: CPUクロックと非同期に外部端子/MSIから到着 (xHCI 0x40)\n"
+         "• 保存される RIP: 割り込み時に実行予定だった【次の命令】のアドレス\n"
+         "• OS の対処: イベント通知、EOI 送信、IRETQ による復帰",
+         "#E1F5FE", "#0277BD"),
+    ]
+
+    y_cur = 8.6
+    for title, desc, bg_c, border_c in behaviors:
+        height = 1.7
+        rect = plt.Rectangle((0.5, y_cur - height), 9.0, height, facecolor=bg_c, edgecolor=border_c,
+                             linewidth=1.5)
+        ax0.add_patch(rect)
+        ax0.text(0.8, y_cur - 0.32, title, fontsize=9.2, fontweight="bold", color=border_c)
+        ax0.text(0.9, y_cur - 0.65, desc, fontsize=7.8, fontfamily="monospace", color="#263238")
+        y_cur -= (height + 0.35)
+
+    # 2. 右側: スタック構造の比較 (ErrorCode なし vs あり)
+    ax1 = axes[1]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+
+    ax1.text(5, 9.4, "【スタック構造の比較: エラーコードの有無とハンドラ引数】",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#004D40")
+
+    # 左列: エラーコードなし (通常割り込み・大半の例外: 40バイト)
+    ax1.text(2.6, 8.8, "ErrorCode なし (通常/xHCI)\n[40バイト PUSH]", ha="center", fontsize=8.8, fontweight="bold", color="#1B5E20")
+    stack_no_ec = [
+        ("SS (0x0020)", "#ECEFF1", "#607D8B"),
+        ("RSP (割り込み前)", "#E3F2FD", "#1565C0"),
+        ("RFLAGS", "#E8F5E9", "#2E7D32"),
+        ("CS (0x0008)", "#FFF8E1", "#FFA000"),
+        ("RIP (再開アドレス)", "#FFEBEE", "#C62828"),
+    ]
+    y_s = 8.0
+    for label, bg_c, border_c in stack_no_ec:
+        rect = plt.Rectangle((0.6, y_s - 0.7), 4.0, 0.65, facecolor=bg_c, edgecolor=border_c, linewidth=1.2)
+        ax1.add_patch(rect)
+        ax1.text(2.6, y_s - 0.35, label, ha="center", va="center", fontsize=8.0, fontfamily="monospace", fontweight="bold", color=border_c)
+        y_s -= 0.85
+
+    sig_no_ec = (
+        "__attribute__((interrupt))\n"
+        "void Handler(InterruptFrame* f);\n"
+        "// 第1引数: RIP を指すポインタ"
+    )
+    rect_sig0 = plt.Rectangle((0.6, 2.2), 4.0, 1.4, facecolor="#F1F8E9", edgecolor="#689F38", linewidth=1.2)
+    ax1.add_patch(rect_sig0)
+    ax1.text(0.8, 3.2, sig_no_ec, fontsize=7.2, fontfamily="monospace", color="#33691E", fontweight="bold")
+
+    # 右列: エラーコードあり (#GP, #PF 等: 48バイト)
+    ax1.text(7.4, 8.8, "ErrorCode あり (#GP, #PF 等)\n[48バイト PUSH]", ha="center", fontsize=8.8, fontweight="bold", color="#B71C1C")
+    stack_with_ec = [
+        ("SS (0x0020)", "#ECEFF1", "#607D8B"),
+        ("RSP (割り込み前)", "#E3F2FD", "#1565C0"),
+        ("RFLAGS", "#E8F5E9", "#2E7D32"),
+        ("CS (0x0008)", "#FFF8E1", "#FFA000"),
+        ("RIP (自命令 RIP)", "#FFEBEE", "#C62828"),
+        ("ErrorCode (ハード自動PUSH)", "#FCE4EC", "#AD1457"),
+    ]
+    y_s2 = 8.0
+    for label, bg_c, border_c in stack_with_ec:
+        rect = plt.Rectangle((5.4, y_s2 - 0.7), 4.0, 0.65, facecolor=bg_c, edgecolor=border_c, linewidth=1.4 if "ErrorCode" in label else 1.2)
+        ax1.add_patch(rect)
+        ax1.text(7.4, y_s2 - 0.35, label, ha="center", va="center", fontsize=8.0, fontfamily="monospace", fontweight="bold", color=border_c)
+        y_s2 -= 0.72
+
+    sig_with_ec = (
+        "__attribute__((interrupt))\n"
+        "void FaultHandler(\n"
+        "    InterruptFrame* f,\n"
+        "    uint64_t error_code);\n"
+        "// 第2引数: エラーコード値"
+    )
+    rect_sig1 = plt.Rectangle((5.4, 2.2), 4.0, 1.4, facecolor="#FCE4EC", edgecolor="#C2185B", linewidth=1.2)
+    ax1.add_patch(rect_sig1)
+    ax1.text(5.6, 3.2, sig_with_ec, fontsize=7.2, fontfamily="monospace", color="#880E4F", fontweight="bold")
+
+    # 警告ボックス
+    rect_warn = plt.Rectangle((0.6, 0.5), 8.8, 1.3, facecolor="#FFF9C4", edgecolor="#FBC02D", linewidth=1.2)
+    ax1.add_patch(rect_warn)
+    ax1.text(0.8, 1.5, "⚠️ コンパイラ・ハンドラシグネチャの超重要ルール:", fontsize=8.2, fontweight="bold", color="#F57F17")
+    ax1.text(0.8, 1.15, "• #GP や #PF 等のエラーコードあり例外では、ハンドラが error_code 引数を持たないと", fontsize=7.4, color="#37474F")
+    ax1.text(0.8, 0.85, "  IRETQ 実行時に ErrorCode がスタックに残り、RIP ではなく ErrorCode を POP して即死暴走する！", fontsize=7.4, color="#B71C1C", fontweight="bold")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
