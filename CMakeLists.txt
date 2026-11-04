@@ -174,6 +174,8 @@ add_test(NAME test_ch06_os_chapter6_exercises COMMAND ch06_os_chapter6_exercises
 
 add_executable(ch07_interrupt_concept_sim src/ch07/interrupt_concept_sim.cpp)
 add_test(NAME test_ch07_interrupt_concept_sim COMMAND ch07_interrupt_concept_sim)
+add_executable(ch07_interrupt_handler_sim src/ch07/interrupt_handler_sim.cpp)
+add_test(NAME test_ch07_interrupt_handler_sim COMMAND ch07_interrupt_handler_sim)
 
 
 

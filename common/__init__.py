@@ -389,6 +389,13 @@ from common.os_sim import (
     PollingVsInterruptBenchmarker,
     plot_fig7_01_polling_vs_interrupt_timeline,
     plot_fig7_02_interrupt_classification_and_lifecycle,
+    RegisterProtectionType,
+    X86RegisterSpec,
+    SYSTEM_V_AMD64_REGISTERS,
+    StackFrameAlignmentSimulator,
+    InterruptHandlerSimulator,
+    plot_regular_call_vs_interrupt_stack,
+    plot_compiler_attribute_interrupt_mechanism,
 )
 
 __all__ = [
@@ -780,4 +787,11 @@ __all__ = [
     "PollingVsInterruptBenchmarker",
     "plot_fig7_01_polling_vs_interrupt_timeline",
     "plot_fig7_02_interrupt_classification_and_lifecycle",
+    "RegisterProtectionType",
+    "X86RegisterSpec",
+    "SYSTEM_V_AMD64_REGISTERS",
+    "StackFrameAlignmentSimulator",
+    "InterruptHandlerSimulator",
+    "plot_regular_call_vs_interrupt_stack",
+    "plot_compiler_attribute_interrupt_mechanism",
 ]

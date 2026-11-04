@@ -24152,3 +24152,384 @@ def plot_fig7_02_interrupt_classification_and_lifecycle(
     plt.close()
     return output_path
 
+
+
+# ==============================================================================
+# Chapter 7.2: 割り込みハンドラ (__attribute__((interrupt)) & InterruptFrame)
+# ==============================================================================
+
+class RegisterProtectionType(Enum):
+    """System V AMD64 ABI におけるレジスタ保護種別"""
+    CALLER_SAVED = "caller_saved"  # 呼び出し側退避 (Scratch / 揮発性)
+    CALLEE_SAVED = "callee_saved"  # 被呼び出し側退避 (Preserved / 不揮発性)
+    SPECIAL = "special"            # 特殊レジスタ (スタック/命令ポインタ/フラグ)
+
+
+@dataclass
+class X86RegisterSpec:
+    """x86-64 レジスタ仕様と保護規則"""
+    name: str
+    bit_width: int
+    protection_type: RegisterProtectionType
+    role_description: str
+
+
+SYSTEM_V_AMD64_REGISTERS: Dict[str, X86RegisterSpec] = {
+    "rax": X86RegisterSpec("rax", 64, RegisterProtectionType.CALLER_SAVED, "第1戻り値 / 一時計算"),
+    "rcx": X86RegisterSpec("rcx", 64, RegisterProtectionType.CALLER_SAVED, "第4引数 / ループカウンタ"),
+    "rdx": X86RegisterSpec("rdx", 64, RegisterProtectionType.CALLER_SAVED, "第3引数 / 第2戻り値"),
+    "rsi": X86RegisterSpec("rsi", 64, RegisterProtectionType.CALLER_SAVED, "第2引数 / 転送元ポインタ"),
+    "rdi": X86RegisterSpec("rdi", 64, RegisterProtectionType.CALLER_SAVED, "第1引数 / 転送先ポインタ"),
+    "r8":  X86RegisterSpec("r8",  64, RegisterProtectionType.CALLER_SAVED, "第5引数"),
+    "r9":  X86RegisterSpec("r9",  64, RegisterProtectionType.CALLER_SAVED, "第6引数"),
+    "r10": X86RegisterSpec("r10", 64, RegisterProtectionType.CALLER_SAVED, "スタティックチェーン / 一時レジスタ"),
+    "r11": X86RegisterSpec("r11", 64, RegisterProtectionType.CALLER_SAVED, "SYSCALL/SYSRET 時の RFLAGS 退避 / 一時レジスタ"),
+    "rbx": X86RegisterSpec("rbx", 64, RegisterProtectionType.CALLEE_SAVED, "ベースレジスタ (不揮発性)"),
+    "rsp": X86RegisterSpec("rsp", 64, RegisterProtectionType.SPECIAL,      "スタックポインタ"),
+    "rbp": X86RegisterSpec("rbp", 64, RegisterProtectionType.CALLEE_SAVED, "ベースポインタ / フレームポインタ"),
+    "r12": X86RegisterSpec("r12", 64, RegisterProtectionType.CALLEE_SAVED, "汎用レジスタ (不揮発性)"),
+    "r13": X86RegisterSpec("r13", 64, RegisterProtectionType.CALLEE_SAVED, "汎用レジスタ (不揮発性)"),
+    "r14": X86RegisterSpec("r14", 64, RegisterProtectionType.CALLEE_SAVED, "汎用レジスタ (不揮発性)"),
+    "r15": X86RegisterSpec("r15", 64, RegisterProtectionType.CALLEE_SAVED, "汎用レジスタ (不揮発性)"),
+    "rip": X86RegisterSpec("rip", 64, RegisterProtectionType.SPECIAL,      "命令ポインタ (Program Counter)"),
+    "rflags": X86RegisterSpec("rflags", 64, RegisterProtectionType.SPECIAL, "CPUステータス & 制御フラグ"),
+}
+
+
+class StackFrameAlignmentSimulator:
+    """x86-64 スタックアライメントおよび割り込みスタックフレーム計算シミュレータ"""
+
+    @staticmethod
+    def is_16byte_aligned(address: int) -> bool:
+        """指定アドレスが 16 バイト境界に整列されているかを判定"""
+        return (address % 16) == 0
+
+    @classmethod
+    def simulate_interrupt_entry(cls, rsp_interrupted: int, has_error_code: bool = False) -> Dict[str, Any]:
+        """
+        ハードウェア割り込み発生時のスタックポインタ遷移と退避レイアウトをシミュレート
+        x86-64 アーキテクチャでは、割り込み発生時に CPU が自動的に以下を PUSH する:
+        1. SS (8 bytes)
+        2. RSP (8 bytes)
+        3. RFLAGS (8 bytes)
+        4. CS (8 bytes)
+        5. RIP (8 bytes)
+        (例外時のみ) Error Code (8 bytes)
+        """
+        hardware_push_size = 48 if has_error_code else 40
+        rsp_after_hw_push = rsp_interrupted - hardware_push_size
+
+        # x86-64 Long Mode では、割り込み受付時に CPU は RSP を 16 バイト境界へ整列させることが可能
+        # (ハンドラ突入時に RSP % 16 == 0 となるようにスタック調整される)
+        is_hw_aligned = cls.is_16byte_aligned(rsp_after_hw_push)
+
+        return {
+            "rsp_interrupted": rsp_interrupted,
+            "is_interrupted_rsp_16aligned": cls.is_16byte_aligned(rsp_interrupted),
+            "hardware_push_size": hardware_push_size,
+            "rsp_after_hw_push": rsp_after_hw_push,
+            "is_hw_pushed_rsp_16aligned": is_hw_aligned,
+            "has_error_code": has_error_code,
+            "frame_offsets": {
+                "rip": 0,
+                "cs": 8,
+                "rflags": 16,
+                "rsp": 24,
+                "ss": 32,
+                "error_code": 40 if has_error_code else None,
+            }
+        }
+
+
+class InterruptHandlerSimulator:
+    """通常関数呼び出し vs 割り込みハンドラのレジスタ保護挙動シミュレータ"""
+
+    def __init__(self):
+        # 被割り込みタスクのレジスタ初期状態
+        self.initial_registers: Dict[str, int] = {
+            "rax": 0x1111_2222_3333_4444,
+            "rbx": 0xAAAA_BBBB_CCCC_DDDD,
+            "rcx": 0x5555_6666_7777_8888,
+            "rdx": 0x9999_AAAA_BBBB_CCCC,
+            "rsi": 0x1234_5678_9ABC_DEF0,
+            "rdi": 0x0FED_CBA9_8765_4321,
+            "rsp": 0x7FFF_FFFF_E000,
+            "rbp": 0x7FFF_FFFF_E100,
+            "r8":  0x8888_8888_8888_8888,
+            "r9":  0x9999_9999_9999_9999,
+            "r10": 0xAAAA_0000_BBBB_1111,
+            "r11": 0xCCCC_2222_DDDD_3333,
+            "r12": 0xEEEE_4444_FFFF_5555,
+            "r13": 0x1111_0000_1111_0000,
+            "r14": 0x2222_0000_2222_0000,
+            "r15": 0x3333_0000_3333_0000,
+        }
+        self.current_registers = dict(self.initial_registers)
+
+    def simulate_corrupting_regular_handler(self, handler_used_regs: List[str]) -> Dict[str, Any]:
+        """
+        __attribute__((interrupt)) を使わずに通常関数を割り込みハンドラとした場合のシミュレーション
+        通常関数の ABI では Caller-saved レジスタの退避義務がないため、それらの値が上書き・破壊される
+        """
+        regs = dict(self.initial_registers)
+        corrupted_regs = {}
+        for reg in handler_used_regs:
+            spec = SYSTEM_V_AMD64_REGISTERS.get(reg)
+            if spec and spec.protection_type == RegisterProtectionType.CALLER_SAVED:
+                # 破壊される (通常関数は呼び出し側退避なので勝手に変更して RET する)
+                regs[reg] = 0xDEAD_BEEF_CAFE_BABE
+                corrupted_regs[reg] = {
+                    "original": self.initial_registers[reg],
+                    "corrupted": regs[reg],
+                    "reason": "Caller-saved register overwritten without save/restore",
+                }
+        return {
+            "preserved": len(corrupted_regs) == 0,
+            "corrupted_count": len(corrupted_regs),
+            "corrupted_registers": corrupted_regs,
+            "final_registers": regs,
+        }
+
+    def simulate_attributed_interrupt_handler(self, handler_used_regs: List[str]) -> Dict[str, Any]:
+        """
+        __attribute__((interrupt)) を付与したハンドラのシミュレーション
+        コンパイラがプロローグで使用レジスタを全退避し、エピローグで全復元して IRETQ で戻るため、
+        すべてのレジスタが 100% 保持される
+        """
+        saved_stack: List[Tuple[str, int]] = []
+        # プロローグ: 使用レジスタを退避
+        for reg in handler_used_regs:
+            saved_stack.append((reg, self.initial_registers[reg]))
+
+        # ハンドラ実行中 (一時的に値が書き換わる)
+        active_regs = dict(self.initial_registers)
+        for reg in handler_used_regs:
+            active_regs[reg] = 0xCAFE_BABE_0000_0000
+
+        # エピローグ: PUSH したレジスタを逆順で POP 復元
+        restored_regs = dict(active_regs)
+        while saved_stack:
+            reg, val = saved_stack.pop()
+            restored_regs[reg] = val
+
+        is_identical = (restored_regs == self.initial_registers)
+        return {
+            "preserved": is_identical,
+            "corrupted_count": 0 if is_identical else -1,
+            "saved_and_restored": handler_used_regs,
+            "final_registers": restored_regs,
+        }
+
+
+def plot_regular_call_vs_interrupt_stack(
+    output_path: str = "7/result/fig7_03_regular_call_vs_interrupt_stack.png"
+) -> str:
+    """
+    Figure 7.03: 通常関数呼び出し (CALL/RET) vs 割り込みハンドラ (IRETQ) の
+    スタックフレームおよびレジスタ退避の完全対比図
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle("図 7.03: 通常関数呼び出し (CALL/RET) vs 割り込みハンドラ (IRETQ) のスタック・レジスタ保護対比",
+                 fontsize=13, fontweight="bold", y=0.98, color="#1A237E")
+
+    # 1. 通常の関数呼び出し (CALL / RET)
+    ax0 = axes[0]
+    ax0.set_facecolor("#FFFFFF")
+    ax0.set_xlim(0, 10)
+    ax0.set_ylim(0, 10)
+    ax0.axis("off")
+
+    ax0.text(5, 9.4, "【通常関数呼び出し: CALL / RET】\n(System V AMD64 ABI)",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#C62828")
+
+    # スタック要素
+    call_stack = [
+        ("呼び出し元のスタックフレーム", "呼び出し元のローカル変数など", "#ECEFF1", "#78909C"),
+        ("引数7以降 (存在する場合のみ)", "スタック渡し引数 (8B単位)", "#FFF3E0", "#FB8C00"),
+        ("リターンアドレス (RIP)", "CALL命令で自動PUSH (8 bytes)", "#FFCDD2", "#E53935"),
+        ("旧 RBP (ベースポインタ)", "push rbp (プロローグで退避)", "#E1F5FE", "#039BE5"),
+        ("関数のローカル変数・バッファ", "sub rsp, N (スタック領域確保)", "#E8F5E9", "#43A047"),
+    ]
+
+    y_pos = 8.3
+    for name, desc, bg_c, border_c in call_stack:
+        rect = plt.Rectangle((0.8, y_pos - 0.9), 8.4, 0.8, facecolor=bg_c, edgecolor=border_c,
+                             linewidth=1.4)
+        ax0.add_patch(rect)
+        ax0.text(1.1, y_pos - 0.45, name, fontsize=8.8, fontweight="bold", color=border_c)
+        ax0.text(8.9, y_pos - 0.45, desc, fontsize=7.8, color="#37474F", ha="right")
+        y_pos -= 1.0
+
+    call_notes = [
+        "⚠️ レジスタ保護規則の落とし穴:",
+        "• Caller-saved (RAX, RCX, RDX, RSI, RDI, R8-R11) は退避されない！",
+        "• 被呼び出し関数がこれらのレジスタを自由に上書きして RET する。",
+        "• 割り込みで通常関数を使うと、実行中コードのレジスタが破壊されパニック！",
+        "• 戻り命令: RET (スタックから RIP のみを POP して復帰)"
+    ]
+    y_note = y_pos - 0.2
+    rect_box = plt.Rectangle((0.8, 0.5), 8.4, y_note - 0.3, facecolor="#FFEBEE", edgecolor="#EF5350",
+                             linewidth=1.2, linestyle="--")
+    ax0.add_patch(rect_box)
+    for idx, note in enumerate(call_notes):
+        col = "#B71C1C" if idx == 0 else "#263238"
+        weight = "bold" if idx == 0 else "normal"
+        ax0.text(1.0, y_note - 0.4 - idx * 0.45, note, fontsize=8.2, color=col, fontweight=weight)
+
+    # 2. 割り込みハンドラ (IRETQ + __attribute__((interrupt)))
+    ax1 = axes[1]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+
+    ax1.text(5, 9.4, "【割り込みハンドラ: IRETQ + 属性付与】\n(CPUハードウェア自動退避 + 全レジスタ保護)",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#1565C0")
+
+    interrupt_stack = [
+        ("SS (Stack Segment)", "割り込み前SS (RSP+32)", "#E3F2FD", "#1976D2"),
+        ("RSP (Stack Pointer)", "割り込み前RSP (RSP+24)", "#E3F2FD", "#1976D2"),
+        ("RFLAGS (CPU Flags)", "割り込み前フラグ (RSP+16)", "#E8F5E9", "#2E7D32"),
+        ("CS (Code Segment)", "割り込み前CS (RSP+8)", "#FFF8E1", "#FFA000"),
+        ("RIP (Return Instruction Pointer)", "割り込み前RIP (RSP+0: InterruptFrame)", "#FFEBEE", "#C62828"),
+        ("コンパイラ自動退避レジスタ", "RAX, RCX, RDX, RSI, RDI, R8-R11...", "#EDE7F6", "#512DA8"),
+        ("16バイトアライメント調整パディング", "SSE/AVX 命令安全確保用 (RSP調整)", "#FCE4EC", "#C2185B"),
+    ]
+
+    y_pos1 = 8.3
+    for name, desc, bg_c, border_c in interrupt_stack:
+        rect = plt.Rectangle((0.8, y_pos1 - 0.75), 8.4, 0.68, facecolor=bg_c, edgecolor=border_c,
+                             linewidth=1.4)
+        ax1.add_patch(rect)
+        ax1.text(1.1, y_pos1 - 0.38, name, fontsize=8.5, fontweight="bold", color=border_c)
+        ax1.text(8.9, y_pos1 - 0.38, desc, fontsize=7.8, color="#37474F", ha="right")
+        y_pos1 -= 0.85
+
+    isr_notes = [
+        "🛡️ 割り込みハンドラの完全保護機構:",
+        "• CPUが SS, RSP, RFLAGS, CS, RIP の計40バイトをスタックへ自動退避",
+        "• __attribute__((interrupt)) により使用全レジスタをプロローグで自動退避",
+        "• 16バイトアライメントを維持し SSE/AVX (movaps等) クラッシュを防止",
+        "• 戻り命令: IRETQ (スタックから5レジスタを完全復元し、不可分に復帰)"
+    ]
+    rect_box1 = plt.Rectangle((0.8, 0.5), 8.4, y_pos1 - 0.5, facecolor="#E8EAF6", edgecolor="#3F51B5",
+                              linewidth=1.2)
+    ax1.add_patch(rect_box1)
+    for idx, note in enumerate(isr_notes):
+        col = "#1A237E" if idx == 0 else "#263238"
+        weight = "bold" if idx == 0 else "normal"
+        ax1.text(1.0, y_pos1 - 0.3 - idx * 0.42, note, fontsize=8.2, color=col, fontweight=weight)
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_compiler_attribute_interrupt_mechanism(
+    output_path: str = "7/result/fig7_04_compiler_attribute_interrupt_mechanism.png"
+) -> str:
+    """
+    Figure 7.04: __attribute__((interrupt)) によるアセンブリプロローグ・エピローグ展開と
+    16バイトスタックアライメント機構図
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle("図 7.04: __attribute__((interrupt)) の内部動作メカニズムとアセンブリ展開",
+                 fontsize=13, fontweight="bold", y=0.98, color="#1A237E")
+
+    # 1. コンパイラが生成するアセンブリコード構造
+    ax0 = axes[0]
+    ax0.set_facecolor("#FFFFFF")
+    ax0.set_xlim(0, 10)
+    ax0.set_ylim(0, 10)
+    ax0.axis("off")
+
+    ax0.text(5, 9.4, "【__attribute__((interrupt)) が生成するアセンブリ展開】",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#00695C")
+
+    asm_blocks = [
+        ("① ハードウェアによる自動PUSH (CPU)",
+         "CPUが SS, RSP, RFLAGS, CS, RIP (40B) をスタックへプッシュ\nInterruptFrame* frame ポインタはこの先頭(RIP)を指す",
+         "#E0F2F1", "#00897B"),
+        ("② プロローグ: レジスタ全退避 (Compiler)",
+         "cld                     ; 方向フラグクリア (DF=0)\n"
+         "push rax; push rcx; push rdx ... ; 使用する汎用レジスタ退避\n"
+         "test rsp, 0xF           ; スタックが 16B 整列されているか判定\n"
+         "sub rsp, 8              ; 必要に応じて 16B アライメント調整",
+         "#E8F5E9", "#2E7D32"),
+        ("③ ハンドラ本体実行 (C++ Code)",
+         "// frame ポインタから割り込み時の RIP, RSP, RFLAGS を参照可能\n"
+         "task_manager->SendMessage(1, Message{...});\n"
+         "NotifyEndOfInterrupt();  // EOI レジスタ (0xFEE000B0) に 0 書込",
+         "#FFF8E1", "#F57F17"),
+        ("④ エピローグ: レジスタ全復元 (Compiler)",
+         "add rsp, 8              ; アライメント調整の復元\n"
+         "pop r11; pop r10 ... pop rax ; PUSH したレジスタを完全復元",
+         "#EDE7F6", "#512DA8"),
+        ("⑤ 割り込み復帰命令 (IRETQ)",
+         "iretq                   ; スタックから RIP, CS, RFLAGS, RSP, SS を\n"
+         "                        ; アトミックに復元し、被割り込み処理へ復帰",
+         "#FFEBEE", "#C62828"),
+    ]
+
+    y_cur = 8.5
+    for title, code_text, bg_c, border_c in asm_blocks:
+        height = 1.25 if "プロローグ" in title else (1.1 if "本体" in title else 0.95)
+        rect = plt.Rectangle((0.6, y_cur - height), 8.8, height, facecolor=bg_c, edgecolor=border_c,
+                             linewidth=1.4)
+        ax0.add_patch(rect)
+        ax0.text(0.9, y_cur - 0.28, title, fontsize=8.8, fontweight="bold", color=border_c)
+        ax0.text(1.1, y_cur - 0.55, code_text, fontsize=7.5, fontfamily="monospace", color="#263238")
+        y_cur -= (height + 0.18)
+
+    # 2. 16バイトスタックアライメントと InterruptFrame のメモリ空間図
+    ax1 = axes[1]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+
+    ax1.text(5, 9.4, "【InterruptFrame メモリ構造 & 16B アライメント制約】",
+             ha="center", va="center", fontsize=11, fontweight="bold", color="#283593")
+
+    frame_layout = [
+        ("高位アドレス", "[RSP + 32]  SS : 0x0020 (スタックセグメントセレクタ)", "#ECEFF1", "#607D8B"),
+        ("↑",          "[RSP + 24]  RSP: 割り込み前のスタックポインタ値", "#E3F2FD", "#1565C0"),
+        ("│",          "[RSP + 16]  RFLAGS: 割り込み前のCPUフラグレジスタ", "#E8F5E9", "#2E7D32"),
+        ("│",          "[RSP + 8]   CS : 0x0008 (カーネルコードセグメント)", "#FFF8E1", "#FFA000"),
+        ("低位アドレス", "[RSP + 0]   RIP: 割り込み発生時に次に実行する命令アドレス", "#FFEBEE", "#C62828"),
+    ]
+
+    y_f = 8.5
+    for prefix, desc, bg_c, border_c in frame_layout:
+        rect = plt.Rectangle((0.8, y_f - 0.8), 8.4, 0.72, facecolor=bg_c, edgecolor=border_c,
+                             linewidth=1.4)
+        ax1.add_patch(rect)
+        ax1.text(1.1, y_f - 0.42, prefix, fontsize=8.0, fontweight="bold", color="#78909C")
+        ax1.text(2.2, y_f - 0.42, desc, fontsize=8.0, fontfamily="monospace", color=border_c, fontweight="bold")
+        y_f -= 0.95
+
+    alignment_box = [
+        "📐 なぜ 16 バイトアライメントが必要なのか？",
+        "• System V AMD64 ABI では、関数呼び出し時に RSP % 16 == 0 を要求。",
+        "• SSE / AVX の高速命令 (movaps, movdqa 等) はメモリアドレスが 16 バイト",
+        "  境界に整列していないと #GP (一般保護例外) を発生させて即死する！",
+        "• 割り込み前 RSP が 16B整列の場合、CPUが40B pushすると RSP % 16 == 8 となる。",
+        "• コンパイラはプロローグで RSP を検査し、必要なら sub rsp, 8 等で整列を補正する。"
+    ]
+    rect_box2 = plt.Rectangle((0.8, 0.6), 8.4, y_f - 0.6, facecolor="#F3E5F5", edgecolor="#7B1FA2",
+                              linewidth=1.2)
+    ax1.add_patch(rect_box2)
+    for idx, text in enumerate(alignment_box):
+        col = "#4A148C" if idx == 0 else "#263238"
+        weight = "bold" if idx == 0 else "normal"
+        ax1.text(1.0, y_f - 0.45 - idx * 0.43, text, fontsize=7.8, color=col, fontweight=weight)
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
