@@ -29840,3 +29840,445 @@ def plot_fig8_06_available_memory_distribution(output_path: str = "8/result/fig8
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 8.3: Relocating Kernel Data Structures Simulator & Figures
+# ==============================================================================
+
+@dataclass
+class RelocatedFBConfigSim:
+    """Simulates FrameBufferConfig structure passed from bootloader to kernel in Chapter 8.3."""
+    frame_buffer: int = 0xE000_0000
+    pixels_per_scan_line: int = 1024
+    horizontal_resolution: int = 1024
+    vertical_resolution: int = 768
+    pixel_format: int = 0  # kPixelRGBResv8BitPerColor
+
+    def copy(self) -> "RelocatedFBConfigSim":
+        return RelocatedFBConfigSim(
+            frame_buffer=self.frame_buffer,
+            pixels_per_scan_line=self.pixels_per_scan_line,
+            horizontal_resolution=self.horizontal_resolution,
+            vertical_resolution=self.vertical_resolution,
+            pixel_format=self.pixel_format,
+        )
+
+
+@dataclass
+class MemoryMapSim:
+    """Simulates MemoryMap structure passed from bootloader to kernel."""
+    buffer_size: int = 4096
+    buffer: int = 0x07E0_0000
+    map_size: int = 1200
+    map_key: int = 42
+    descriptor_size: int = 48
+    descriptor_version: int = 1
+
+    def copy(self) -> "MemoryMapSim":
+        """Simulates C++ default copy constructor (shallow copy of buffer pointer)."""
+        return MemoryMapSim(
+            buffer_size=self.buffer_size,
+            buffer=self.buffer,
+            map_size=self.map_size,
+            map_key=self.map_key,
+            descriptor_size=self.descriptor_size,
+            descriptor_version=self.descriptor_version,
+        )
+
+
+class DataRelocationSimulator:
+    """
+    Simulates UEFI-to-Kernel data relocation mechanism in MikanOS day08b.
+    Analyzes vulnerability of transient UEFI memory vs safety of kernel stack copies.
+    """
+
+    UEFI_STACK_ADDR = 0x07EE_F000
+    KERNEL_STACK_ADDR = 0x0012_0000
+    UEFI_MEMMAP_BUF_ADDR = 0x07E0_0000
+
+    @staticmethod
+    def is_available(mtype: UefiMemoryType | int) -> bool:
+        """Inline equivalent of MikanOS IsAvailable() function in memory_map.hpp."""
+        if isinstance(mtype, int):
+            try:
+                mtype = UefiMemoryType(mtype)
+            except ValueError:
+                return False
+        return mtype in (
+            UefiMemoryType.EfiBootServicesCode,
+            UefiMemoryType.EfiBootServicesData,
+            UefiMemoryType.EfiConventionalMemory,
+        )
+
+    def __init__(self):
+        # Initial structures on UEFI Bootloader stack
+        self.uefi_fb_config = RelocatedFBConfigSim()
+        self.uefi_mem_map = MemoryMapSim()
+
+    def simulate_unprotected_reference_corruption(self) -> dict[str, Any]:
+        """
+        Simulate disaster scenario: kernel retains raw references pointing to
+        UEFI bootloader stack. Once memory manager or stack allocator reuses
+        the released UEFI BootServices area, the referenced data is overwritten with garbage.
+        """
+        initial_fb = self.uefi_fb_config.frame_buffer
+        initial_map_size = self.uefi_mem_map.map_size
+
+        corrupted_fb_config = RelocatedFBConfigSim(
+            frame_buffer=0x0000_0000,
+            pixels_per_scan_line=0,
+            horizontal_resolution=0,
+            vertical_resolution=0,
+            pixel_format=255,
+        )
+        corrupted_mem_map = MemoryMapSim(
+            buffer_size=0,
+            buffer=0xDEAD_BEEF_CAFE_BABE,
+            map_size=0,
+            map_key=0,
+            descriptor_size=0,
+            descriptor_version=0,
+        )
+
+        return {
+            "safe": False,
+            "original_fb_addr": initial_fb,
+            "corrupted_fb_addr": corrupted_fb_config.frame_buffer,
+            "original_map_size": initial_map_size,
+            "corrupted_map_size": corrupted_mem_map.map_size,
+            "failure_mode": "Kernel crashes on page fault when dereferencing frame_buffer or invalid map size",
+        }
+
+    def simulate_relocated_value_copy(self) -> dict[str, Any]:
+        """
+        Simulate MikanOS day08b solution: copying reference parameters into local
+        variables allocated on the newly established kernel stack.
+        Even when UEFI memory is overwritten, kernel stack copies remain pristine.
+        """
+        kernel_fb_config = self.uefi_fb_config.copy()
+        kernel_mem_map = self.uefi_mem_map.copy()
+
+        assert kernel_fb_config.frame_buffer == 0xE000_0000
+        assert kernel_fb_config.pixels_per_scan_line == 1024
+        assert kernel_fb_config.horizontal_resolution == 1024
+        assert kernel_fb_config.vertical_resolution == 768
+        assert kernel_mem_map.buffer == 0x07E0_0000
+        assert kernel_mem_map.map_size == 1200
+        assert kernel_mem_map.descriptor_size == 48
+
+        return {
+            "safe": True,
+            "kernel_fb_addr": kernel_fb_config.frame_buffer,
+            "kernel_map_size": kernel_mem_map.map_size,
+            "uefi_stack_status": "Overwritten with garbage (safely isolated)",
+            "kernel_stack_status": "Intact and fully valid",
+        }
+
+    def analyze_shallow_copy_lifetime(self) -> dict[str, Any]:
+        """
+        Analyze lifetime and safety boundaries of the shallow-copied memory_map.buffer.
+        """
+        return {
+            "struct_location": "Kernel Stack (Isolated, Safe)",
+            "buffer_location": "UEFI BootServicesData (Transient, Reusable)",
+            "phase1_scanning": {
+                "active_allocator": False,
+                "is_buffer_safe": True,
+                "reason": "Memory manager only scans and aggregates descriptors; does not allocate memory yet.",
+            },
+            "phase2_allocation": {
+                "active_allocator": True,
+                "is_buffer_safe": False,
+                "reason": "Allocations may overwrite UEFI memory; however, memory_map.buffer is no longer accessed.",
+            },
+            "permanent_retention_requirement": "Requires deep copy or marking buffer physical pages as reserved in bitmap.",
+        }
+
+
+def plot_fig8_07_data_structure_relocation_danger(
+    output_path: str = "8/result/fig8_07_data_structure_relocation_danger.png",
+) -> str:
+    """
+    Generate Figure 8.7: Danger of Transient UEFI Memory and Unprotected Reference Corruption.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 9), gridspec_kw={"height_ratios": [1, 1]})
+
+    # --- Subplot 1: Phase A - Dangerous Unprotected Reference Scenario ---
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+    ax1.set_title(
+        "(A) Vulnerable State: Raw References Pointing to Transient UEFI Bootloader Memory",
+        fontsize=12,
+        fontweight="bold",
+        color="#C62828",
+        pad=10,
+    )
+
+    # UEFI Memory Box
+    r_uefi = plt.Rectangle((5, 1.5), 40, 7.5, facecolor="#FFEBEE", edgecolor="#C62828", linewidth=2.0, linestyle="--")
+    ax1.add_patch(r_uefi)
+    ax1.text(25, 8.3, "UEFI Boot Services Region (0x0700_0000 - 0x07FF_FFFF)\n[Status: Released after ExitBootServices()!]",
+             fontsize=9, fontweight="bold", color="#B71C1C", ha="center")
+
+    # UEFI Stack Frame
+    r_uefi_stack = plt.Rectangle((8, 2.5), 34, 4.8, facecolor="#FFCDD2", edgecolor="#E53935", linewidth=1.5)
+    ax1.add_patch(r_uefi_stack)
+    ax1.text(25, 6.7, "Bootloader Stack Frame (RSP ~ 0x07EE_F000)", fontsize=9, fontweight="bold", color="#B71C1C", ha="center")
+
+    r_item1 = plt.Rectangle((10, 4.8), 30, 1.4, facecolor="#FFFFFF", edgecolor="#E53935", linewidth=1.0)
+    ax1.add_patch(r_item1)
+    ax1.text(25, 5.5, "FrameBufferConfig { fb: 0xE000_0000, res: 1024x768 }", fontsize=8.5, fontfamily="monospace", color="#263238", ha="center")
+
+    r_item2 = plt.Rectangle((10, 3.0), 30, 1.4, facecolor="#FFFFFF", edgecolor="#E53935", linewidth=1.0)
+    ax1.add_patch(r_item2)
+    ax1.text(25, 3.7, "MemoryMap { buffer: 0x07E0_0000, map_size: 1200 }", fontsize=8.5, fontfamily="monospace", color="#263238", ha="center")
+
+    # Kernel execution box
+    r_k = plt.Rectangle((55, 1.5), 40, 7.5, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=2.0)
+    ax1.add_patch(r_k)
+    ax1.text(75, 8.3, "MikanOS Kernel Execution Space\n[KernelMain(const FrameBufferConfig&, const MemoryMap&)]",
+             fontsize=9, fontweight="bold", color="#1B5E20", ha="center")
+
+    r_k_args = plt.Rectangle((58, 3.0), 34, 4.2, facecolor="#C8E6C9", edgecolor="#388E3C", linewidth=1.5)
+    ax1.add_patch(r_k_args)
+    ax1.text(75, 6.5, "C++ Reference Arguments", fontsize=9, fontweight="bold", color="#1B5E20", ha="center")
+    ax1.text(75, 5.2, "frame_buffer_config_ref: %rdi -> 0x07EE_F040", fontsize=8.5, fontfamily="monospace", color="#2E7D32", ha="center")
+    ax1.text(75, 3.8, "memory_map_ref: %rsi -> 0x07EE_F070", fontsize=8.5, fontfamily="monospace", color="#2E7D32", ha="center")
+
+    # Arrows indicating raw reference pointer access
+    ax1.annotate("", xy=(40, 5.5), xytext=(58, 5.2),
+                 arrowprops=dict(arrowstyle="->", color="#C62828", lw=2, linestyle="--"))
+    ax1.annotate("", xy=(40, 3.7), xytext=(58, 3.8),
+                 arrowprops=dict(arrowstyle="->", color="#C62828", lw=2, linestyle="--"))
+    ax1.text(49, 4.8, "Direct Pointer\nReference!", fontsize=8, color="#C62828", fontweight="bold", ha="center")
+
+    # --- Subplot 2: Phase B - Memory Corruption Disaster Scenario ---
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+    ax2.set_title(
+        "(B) Disaster Scenario: OS Allocator Overwrites UEFI Stack -> Null Pointer Dereference & Crash",
+        fontsize=12,
+        fontweight="bold",
+        color="#B71C1C",
+        pad=10,
+    )
+
+    # Overwritten UEFI Memory Box
+    r_uefi_bad = plt.Rectangle((5, 1.5), 40, 7.5, facecolor="#FBE9E7", edgecolor="#D84315", linewidth=2.0)
+    ax2.add_patch(r_uefi_bad)
+    ax2.text(25, 8.3, "UEFI Region Reused by OS Allocator\n[Status: Overwritten by OS Heap / Temp Buffers!]",
+             fontsize=9, fontweight="bold", color="#D84315", ha="center")
+
+    r_uefi_stack_bad = plt.Rectangle((8, 2.5), 34, 4.8, facecolor="#FFCCBC", edgecolor="#FF5722", linewidth=1.5)
+    ax2.add_patch(r_uefi_stack_bad)
+    ax2.text(25, 6.7, "Old UEFI Stack Overwritten with 0x00 / Garbage", fontsize=8.5, fontweight="bold", color="#BF360C", ha="center")
+
+    r_bad_item1 = plt.Rectangle((10, 4.8), 30, 1.4, facecolor="#FFEBEE", edgecolor="#D32F2F", linewidth=1.0)
+    ax2.add_patch(r_bad_item1)
+    ax2.text(25, 5.5, "CORRUPTED: { fb: 0x0000_0000, res: 0x0 }", fontsize=8.5, fontfamily="monospace", color="#D32F2F", fontweight="bold", ha="center")
+
+    r_bad_item2 = plt.Rectangle((10, 3.0), 30, 1.4, facecolor="#FFEBEE", edgecolor="#D32F2F", linewidth=1.0)
+    ax2.add_patch(r_bad_item2)
+    ax2.text(25, 3.7, "CORRUPTED: { buffer: 0xDEADBEEF, size: 0 }", fontsize=8.5, fontfamily="monospace", color="#D32F2F", fontweight="bold", ha="center")
+
+    # Crash Box
+    r_crash = plt.Rectangle((55, 1.5), 40, 7.5, facecolor="#FFEBEE", edgecolor="#B71C1C", linewidth=2.0)
+    ax2.add_patch(r_crash)
+    ax2.text(75, 8.3, "[CRASH] Kernel Crash (#PF Page Fault / Triple Fault)\nPixelWriter writes to NULL (0x0000_0000)!",
+             fontsize=9, fontweight="bold", color="#B71C1C", ha="center")
+
+    r_crash_detail = plt.Rectangle((58, 2.5), 34, 4.8, facecolor="#FFFFFF", edgecolor="#C62828", linewidth=1.5)
+    ax2.add_patch(r_crash_detail)
+    crash_lines = [
+        "1. Kernel allocates buffer for drivers",
+        "2. Allocator reclaims BootServicesData",
+        "3. UEFI stack memory gets wiped out",
+        "4. Kernel dereferences frame_buffer_config",
+        "5. VRAM address is 0x0 -> Fatal Exception!",
+    ]
+    for idx, l in enumerate(crash_lines):
+        ax2.text(60, 6.5 - idx * 0.8, l, fontsize=8.5, fontfamily="monospace", color="#C62828")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_08_copy_constructor_and_stack_isolation(
+    output_path: str = "8/result/fig8_08_copy_constructor_and_stack_isolation.png",
+) -> str:
+    """
+    Generate Figure 8.8: Stack Isolation and Value-Copy Relocation Architecture in Kernel.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 10)
+    ax.axis("off")
+    ax.set_title(
+        "Figure 8.8: Stack Isolation & Copy-Constructor Relocation in KernelMainNewStack (osbook_day08b)",
+        fontsize=13,
+        fontweight="bold",
+        color="#1565C0",
+        pad=15,
+    )
+
+    # Left: UEFI Stack (Transient)
+    r_uefi = plt.Rectangle((5, 1.0), 32, 8.0, facecolor="#FFF3E0", edgecolor="#E65100", linewidth=2.0)
+    ax.add_patch(r_uefi)
+    ax.text(21, 8.5, "UEFI Bootloader Stack\n(Transient / Released Memory)", fontsize=10, fontweight="bold", color="#BF360C", ha="center")
+
+    r_uefi_fb = plt.Rectangle((8, 5.2), 26, 2.4, facecolor="#FFE0B2", edgecolor="#F57C00", linewidth=1.2)
+    ax.add_patch(r_uefi_fb)
+    ax.text(21, 7.0, "FrameBufferConfig (Original)", fontsize=8.5, fontweight="bold", color="#E65100", ha="center")
+    ax.text(21, 6.2, "frame_buffer: 0xE000_0000\n1024x768, stride=1024", fontsize=8, fontfamily="monospace", color="#37474F", ha="center")
+
+    r_uefi_mm = plt.Rectangle((8, 2.0), 26, 2.4, facecolor="#FFE0B2", edgecolor="#F57C00", linewidth=1.2)
+    ax.add_patch(r_uefi_mm)
+    ax.text(21, 3.8, "MemoryMap (Original)", fontsize=8.5, fontweight="bold", color="#E65100", ha="center")
+    ax.text(21, 3.0, "buffer: 0x07E0_0000\nsize: 1200, desc_size: 48", fontsize=8, fontfamily="monospace", color="#37474F", ha="center")
+
+    # Center: Register Passing & Value Copy Action
+    r_action = plt.Rectangle((40, 2.5), 20, 5.2, facecolor="#EDE7F6", edgecolor="#512DA8", linewidth=1.5, linestyle="--")
+    ax.add_patch(r_action)
+    ax.text(50, 7.2, "C++ Value Copy Relocation\n(Copy Constructor)", fontsize=9, fontweight="bold", color="#311B92", ha="center")
+    ax.text(50, 5.7, "FrameBufferConfig config{\n  config_ref};\n\nMemoryMap map{\n  map_ref};",
+            fontsize=8.5, fontfamily="monospace", color="#4A148C", ha="center")
+    ax.text(50, 3.2, "ABI Registers:\n%rdi = &config_ref\n%rsi = &map_ref",
+            fontsize=8, fontfamily="monospace", color="#263238", ha="center")
+
+    # Right: New Dedicated Kernel Stack (.bss)
+    r_kstack = plt.Rectangle((63, 1.0), 32, 8.0, facecolor="#E8F5E9", edgecolor="#1B5E20", linewidth=2.0)
+    ax.add_patch(r_kstack)
+    ax.text(79, 8.5, "Dedicated Kernel Stack (.bss)\nkernel_main_stack[1024 * 1024] (1 MiB)", fontsize=10, fontweight="bold", color="#1B5E20", ha="center")
+
+    r_k_fb = plt.Rectangle((66, 5.2), 26, 2.4, facecolor="#C8E6C9", edgecolor="#2E7D32", linewidth=1.2)
+    ax.add_patch(r_k_fb)
+    ax.text(79, 7.0, "FrameBufferConfig (Local Value Copy)", fontsize=8.5, fontweight="bold", color="#1B5E20", ha="center")
+    ax.text(79, 6.2, "frame_buffer: 0xE000_0000\n1024x768, stride=1024", fontsize=8, fontfamily="monospace", color="#1B5E20", ha="center")
+
+    r_k_mm = plt.Rectangle((66, 2.0), 26, 2.4, facecolor="#C8E6C9", edgecolor="#2E7D32", linewidth=1.2)
+    ax.add_patch(r_k_mm)
+    ax.text(79, 3.8, "MemoryMap (Local Value Copy)", fontsize=8.5, fontweight="bold", color="#1B5E20", ha="center")
+    ax.text(79, 3.0, "buffer: 0x07E0_0000\nsize: 1200, desc_size: 48", fontsize=8, fontfamily="monospace", color="#1B5E20", ha="center")
+
+    # Flow arrows
+    ax.annotate("", xy=(40, 6.2), xytext=(34, 6.2), arrowprops=dict(arrowstyle="->", color="#512DA8", lw=2))
+    ax.annotate("", xy=(66, 6.2), xytext=(60, 6.2), arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2))
+
+    ax.annotate("", xy=(40, 3.2), xytext=(34, 3.2), arrowprops=dict(arrowstyle="->", color="#512DA8", lw=2))
+    ax.annotate("", xy=(66, 3.2), xytext=(60, 3.2), arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2))
+
+    # Bottom badge
+    r_badge = plt.Rectangle((15, 0.2), 70, 0.6, facecolor="#E3F2FD", edgecolor="#1976D2", linewidth=1.0)
+    ax.add_patch(r_badge)
+    ax.text(50, 0.5, "[ISOLATED] Complete Stack Isolation: Old UEFI stack can be completely wiped out without harming kernel variables!",
+            fontsize=8.5, fontweight="bold", color="#0D47A1", ha="center")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_09_memory_map_buffer_lifetime_safety(
+    output_path: str = "8/result/fig8_09_memory_map_buffer_lifetime_safety.png",
+) -> str:
+    """
+    Generate Figure 8.9: Shallow-Copy Lifetime Analysis & Safe Execution Phases.
+    """
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7), gridspec_kw={"width_ratios": [1, 1.2]})
+
+    # Left Panel: Shallow Copy Memory Structure
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+    ax1.set_title("MemoryMap Shallow Copy Architecture", fontsize=11, fontweight="bold", color="#37474F", pad=12)
+
+    # Kernel Stack Box (Value Copied Struct)
+    r_struct = plt.Rectangle((5, 4.5), 38, 4.5, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.5)
+    ax1.add_patch(r_struct)
+    ax1.text(24, 8.4, "MemoryMap Struct (on Kernel Stack)\n[SAFE / ISOLATED]", fontsize=8.5, fontweight="bold", color="#1B5E20", ha="center")
+    fields = [
+        "buffer_size: 4096 (64-bit)",
+        "buffer: 0x07E0_0000 (Pointer)",
+        "map_size: 1200 (64-bit)",
+        "descriptor_size: 48 (64-bit)",
+    ]
+    for idx, f in enumerate(fields):
+        ax1.text(7, 7.2 - idx * 0.8, f, fontsize=8, fontfamily="monospace", color="#263238")
+
+    # Physical Buffer in UEFI RAM (Transient)
+    r_buf = plt.Rectangle((55, 1.5), 40, 7.5, facecolor="#FFF3E0", edgecolor="#EF6C00", linewidth=1.5)
+    ax1.add_patch(r_buf)
+    ax1.text(75, 8.4, "Physical Descriptor Buffer\n(in UEFI BootServicesData)\n[TRANSIENT / SHALLOW POINTER]", fontsize=8.5, fontweight="bold", color="#E65100", ha="center")
+
+    buf_slots = [
+        "Desc #0: Conventional (1MB..64MB)",
+        "Desc #1: BootServicesCode (64..72MB)",
+        "Desc #2: BootServicesData (72..88MB)",
+        "Desc #3: Conventional (88MB..3GB)",
+        "Desc #4: ACPI / Runtime / MMIO...",
+    ]
+    for idx, b in enumerate(buf_slots):
+        r_slot = plt.Rectangle((58, 6.5 - idx * 1.1), 34, 0.9, facecolor="#FFE0B2", edgecolor="#FB8C00", linewidth=1.0)
+        ax1.add_patch(r_slot)
+        ax1.text(75, 6.95 - idx * 1.1, b, fontsize=7.5, fontfamily="monospace", color="#3E2723", ha="center")
+
+    # Shallow pointer arrow
+    ax1.annotate("", xy=(55, 6.0), xytext=(43, 6.0),
+                 arrowprops=dict(arrowstyle="->", color="#D84315", lw=2.5))
+    ax1.text(49, 6.4, "Shallow\nPointer", fontsize=7.5, fontweight="bold", color="#D84315", ha="center")
+
+    # Right Panel: Phase Timeline & Safety Boundary
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+    ax2.set_title("Execution Phases & Lifetime Safety Boundary", fontsize=11, fontweight="bold", color="#37474F", pad=12)
+
+    # Phase 1: Scanning Phase (Safe)
+    r_p1 = plt.Rectangle((5, 5.5), 90, 3.8, facecolor="#E8F5E9", edgecolor="#388E3C", linewidth=1.5)
+    ax2.add_patch(r_p1)
+    ax2.text(10, 8.6, "PHASE 1: Kernel Initialization & Memory Scanning (8.2 ~ 8.6節)", fontsize=9, fontweight="bold", color="#1B5E20")
+    p1_details = [
+        "• MemoryMap pointer buffer is actively scanned to aggregate free RAM",
+        "• NO DYNAMIC MEMORY ALLOCATION is performed yet",
+        "• GDT, Paging, IDT are configured using static .bss / .data structures",
+        "[OK] Result: UEFI buffer remains 100% untouched and safe to read",
+    ]
+    for idx, d in enumerate(p1_details):
+        ax2.text(12, 7.8 - idx * 0.7, d, fontsize=8, color="#2E7D32")
+
+    # Safety Barrier Line
+    ax2.plot([5, 95], [4.8, 4.8], color="#C62828", linewidth=2.0, linestyle="--")
+    ax2.text(50, 4.95, "[SAFETY BARRIER]: BitmapMemoryManager Activated (8.7節)", fontsize=8, fontweight="bold", color="#C62828", ha="center")
+
+    # Phase 2: Memory Allocation Phase (Safe because buffer is no longer needed!)
+    r_p2 = plt.Rectangle((5, 0.8), 90, 3.8, facecolor="#E3F2FD", edgecolor="#1976D2", linewidth=1.5)
+    ax2.add_patch(r_p2)
+    ax2.text(10, 3.9, "PHASE 2: BitmapMemoryManager Active & Memory Allocations (8.7節〜)", fontsize=9, fontweight="bold", color="#0D47A1")
+    p2_details = [
+        "• Free RAM is now managed entirely by BitmapMemoryManager bit array",
+        "• MemoryMap struct and its buffer are NEVER ACCESSED AGAIN by the OS",
+        "• Allocating and overwriting UEFI BootServicesData causes ZERO problems",
+        "[OK] Conclusion: Shallow copy is 100% mathematically sufficient!",
+    ]
+    for idx, d in enumerate(p2_details):
+        ax2.text(12, 3.1 - idx * 0.7, d, fontsize=8, color="#1565C0")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

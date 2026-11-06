@@ -465,6 +465,12 @@ from common.os_sim import (
     plot_fig8_04_uefi_memory_map_kernel_handoff,
     plot_fig8_05_memory_descriptor_stepping_math,
     plot_fig8_06_available_memory_distribution,
+    RelocatedFBConfigSim,
+    MemoryMapSim,
+    DataRelocationSimulator,
+    plot_fig8_07_data_structure_relocation_danger,
+    plot_fig8_08_copy_constructor_and_stack_isolation,
+    plot_fig8_09_memory_map_buffer_lifetime_safety,
 )
 
 __all__ = [
@@ -932,4 +938,10 @@ __all__ = [
     "plot_fig8_04_uefi_memory_map_kernel_handoff",
     "plot_fig8_05_memory_descriptor_stepping_math",
     "plot_fig8_06_available_memory_distribution",
+    "RelocatedFBConfigSim",
+    "MemoryMapSim",
+    "DataRelocationSimulator",
+    "plot_fig8_07_data_structure_relocation_danger",
+    "plot_fig8_08_copy_constructor_and_stack_isolation",
+    "plot_fig8_09_memory_map_buffer_lifetime_safety",
 ]
