@@ -431,6 +431,15 @@ from common.os_sim import (
     plot_monolithic_vs_split_interrupt_timeline,
     plot_top_half_bottom_half_architecture,
     plot_queueing_latency_model,
+    EventRecord,
+    ProcessedRecord,
+    EventOrderSimResult,
+    FifoQueueSim,
+    FiloStackSim,
+    simulate_fifo_vs_filo_ordering,
+    plot_fifo_vs_filo_concept,
+    plot_event_order_inversion_timeline,
+    plot_data_structure_comparison,
 )
 
 __all__ = [
@@ -864,4 +873,13 @@ __all__ = [
     "plot_monolithic_vs_split_interrupt_timeline",
     "plot_top_half_bottom_half_architecture",
     "plot_queueing_latency_model",
+    "EventRecord",
+    "ProcessedRecord",
+    "EventOrderSimResult",
+    "FifoQueueSim",
+    "FiloStackSim",
+    "simulate_fifo_vs_filo_ordering",
+    "plot_fifo_vs_filo_concept",
+    "plot_event_order_inversion_timeline",
+    "plot_data_structure_comparison",
 ]

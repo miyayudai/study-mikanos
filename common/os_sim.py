@@ -26974,3 +26974,513 @@ def plot_queueing_latency_model(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ============================================================================
+# Section 7.8: FIFO vs FILO Data Structures & Event Ordering Simulator
+# ============================================================================
+
+from collections import deque
+
+@dataclass
+class EventRecord:
+    """Represents a single input/interrupt event in the OS queue simulator."""
+    event_id: int
+    name: str
+    arrival_us: float
+    duration_us: float = 30.0
+    event_type: str = "input"
+    payload: Optional[Any] = None
+
+
+@dataclass
+class ProcessedRecord:
+    """Result of processing a single event."""
+    event: EventRecord
+    start_us: float
+    end_us: float
+    wait_time_us: float
+    process_order: int
+
+
+@dataclass
+class EventOrderSimResult:
+    """Aggregated simulation result for FIFO vs FILO comparison."""
+    mode: str
+    processed_events: list[ProcessedRecord]
+    inversion_count: int
+    avg_wait_time_us: float
+    max_wait_time_us: float
+    wait_time_variance: float
+    starved_events_count: int
+
+
+class FifoQueueSim:
+    """Fixed-capacity First-In First-Out (FIFO) Queue simulator."""
+
+    def __init__(self, capacity: int = 64):
+        self.capacity = capacity
+        self.items: deque[EventRecord] = deque()
+
+    def push(self, item: EventRecord) -> bool:
+        if len(self.items) >= self.capacity:
+            return False
+        self.items.append(item)
+        return True
+
+    def pop(self) -> Optional[EventRecord]:
+        if not self.items:
+            return None
+        return self.items.popleft()
+
+    def front(self) -> Optional[EventRecord]:
+        if not self.items:
+            return None
+        return self.items[0]
+
+    def count(self) -> int:
+        return len(self.items)
+
+    def is_empty(self) -> bool:
+        return len(self.items) == 0
+
+    def is_full(self) -> bool:
+        return len(self.items) >= self.capacity
+
+
+class FiloStackSim:
+    """Fixed-capacity First-In Last-Out (FILO / Stack) simulator."""
+
+    def __init__(self, capacity: int = 64):
+        self.capacity = capacity
+        self.items: list[EventRecord] = []
+
+    def push(self, item: EventRecord) -> bool:
+        if len(self.items) >= self.capacity:
+            return False
+        self.items.append(item)
+        return True
+
+    def pop(self) -> Optional[EventRecord]:
+        if not self.items:
+            return None
+        return self.items.pop()
+
+    def top(self) -> Optional[EventRecord]:
+        if not self.items:
+            return None
+        return self.items[-1]
+
+    def count(self) -> int:
+        return len(self.items)
+
+    def is_empty(self) -> bool:
+        return len(self.items) == 0
+
+    def is_full(self) -> bool:
+        return len(self.items) >= self.capacity
+
+
+def simulate_fifo_vs_filo_ordering(
+    events: list[EventRecord],
+    mode: str = "fifo",
+    service_time_us: float = 30.0,
+    starvation_threshold_us: float = 150.0,
+) -> EventOrderSimResult:
+    """
+    Simulate event arrival and processing under either FIFO (queue) or FILO (stack).
+    Tracks event processing order, latencies, inversions, and starvation.
+    """
+    container = FifoQueueSim(capacity=128) if mode.lower() == "fifo" else FiloStackSim(capacity=128)
+
+    # Sort incoming events by arrival time
+    unprocessed_arrivals = sorted(events, key=lambda e: e.arrival_us)
+    processed_records: list[ProcessedRecord] = []
+
+    current_time_us = 0.0
+    arr_idx = 0
+    num_events = len(unprocessed_arrivals)
+    order_counter = 0
+
+    while arr_idx < num_events or not container.is_empty():
+        # Advance time to next arrival if idle
+        if container.is_empty() and arr_idx < num_events:
+            if current_time_us < unprocessed_arrivals[arr_idx].arrival_us:
+                current_time_us = unprocessed_arrivals[arr_idx].arrival_us
+
+        # Push all events that have arrived up to current_time_us
+        while arr_idx < num_events and unprocessed_arrivals[arr_idx].arrival_us <= current_time_us:
+            container.push(unprocessed_arrivals[arr_idx])
+            arr_idx += 1
+
+        # Process one item
+        item = container.pop()
+        if item is not None:
+            start_us = current_time_us
+            dur = getattr(item, "duration_us", service_time_us)
+            end_us = start_us + dur
+            wait_us = start_us - item.arrival_us
+
+            # While processing this event, new arrivals may occur
+            current_time_us = end_us
+            while arr_idx < num_events and unprocessed_arrivals[arr_idx].arrival_us <= current_time_us:
+                container.push(unprocessed_arrivals[arr_idx])
+                arr_idx += 1
+
+            processed_records.append(
+                ProcessedRecord(
+                    event=item,
+                    start_us=start_us,
+                    end_us=end_us,
+                    wait_time_us=wait_us,
+                    process_order=order_counter,
+                )
+            )
+            order_counter += 1
+
+    # Calculate inversions: pairs (i, j) with i < j where event i arrived after event j
+    inversions = 0
+    for i in range(len(processed_records)):
+        for j in range(i + 1, len(processed_records)):
+            if processed_records[i].event.arrival_us > processed_records[j].event.arrival_us:
+                inversions += 1
+
+    wait_times = [p.wait_time_us for p in processed_records]
+    avg_wait = float(np.mean(wait_times)) if wait_times else 0.0
+    max_wait = float(np.max(wait_times)) if wait_times else 0.0
+    var_wait = float(np.var(wait_times)) if wait_times else 0.0
+    starved_count = sum(1 for w in wait_times if w >= starvation_threshold_us)
+
+    return EventOrderSimResult(
+        mode=mode.upper(),
+        processed_events=processed_records,
+        inversion_count=inversions,
+        avg_wait_time_us=avg_wait,
+        max_wait_time_us=max_wait,
+        wait_time_variance=var_wait,
+        starved_events_count=starved_count,
+    )
+
+
+def plot_fifo_vs_filo_concept(
+    output_path: str = "7/result/fig7_16_fifo_vs_filo_concept_and_flow.png"
+) -> str:
+    """
+    Figure 7.16: Conceptual structure and data flow comparison between FIFO (Queue) and FILO (Stack).
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7.5), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # ========================== Subplot 1: FIFO Queue ==========================
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+
+    ax1.text(5.0, 9.4, "FIFO (First In, First Out) / Queue", ha="center", fontsize=12, fontweight="bold", color="#1565C0")
+    ax1.text(5.0, 8.8, "Pipe / Conveyor Analogy — Preserves Temporal Order (Causality)", ha="center", fontsize=8.5, color="#546E7A")
+
+    # Horizontal tube for FIFO
+    tube = patches.Rectangle((2.0, 4.2), 6.0, 2.6, facecolor="#E3F2FD", edgecolor="#1565C0", linewidth=2.0, linestyle="-")
+    ax1.add_patch(tube)
+
+    # Slots inside FIFO
+    items_fifo = [("Msg #3\n(Key 'C')", 6.5, "#90CAF9"), ("Msg #2\n(Key 'B')", 4.5, "#64B5F6"), ("Msg #1\n(Key 'A')", 2.5, "#42A5F5")]
+    for label, x_pos, col in items_fifo:
+        box = patches.FancyBboxPatch((x_pos, 4.5), 1.6, 2.0, boxstyle="round,pad=0.1,rounding_size=0.1",
+                                     facecolor=col, edgecolor="#0D47A1", linewidth=1.2)
+        ax1.add_patch(box)
+        ax1.text(x_pos + 0.8, 5.5, label, ha="center", va="center", fontsize=8, fontweight="bold", color="#0D47A1")
+
+    # Enqueue Arrow (Right-to-Left or Left-to-Right: let's do Left In -> Right Out)
+    # Incoming arrow on Left: Push (Enqueue)
+    ax1.annotate("", xy=(1.9, 5.5), xytext=(0.4, 5.5), arrowprops=dict(arrowstyle="->", lw=2.5, color="#2E7D32"))
+    ax1.text(1.15, 6.0, "PUSH\n(Enqueue)", ha="center", fontsize=8.5, fontweight="bold", color="#2E7D32")
+    ax1.text(1.15, 4.8, "Tail (Write)", ha="center", fontsize=7.5, color="#37474F")
+
+    # Outgoing arrow on Right: Pop (Dequeue)
+    ax1.annotate("", xy=(9.6, 5.5), xytext=(8.1, 5.5), arrowprops=dict(arrowstyle="->", lw=2.5, color="#C62828"))
+    ax1.text(8.85, 6.0, "POP\n(Dequeue)", ha="center", fontsize=8.5, fontweight="bold", color="#C62828")
+    ax1.text(8.85, 4.8, "Head (Read)", ha="center", fontsize=7.5, color="#37474F")
+
+    # Properties card
+    prop_box1 = patches.FancyBboxPatch((0.8, 0.8), 8.4, 2.8, boxstyle="round,pad=0.15,rounding_size=0.15",
+                                      facecolor="#F1F8E9", edgecolor="#558B2F", linewidth=1.2)
+    ax1.add_patch(prop_box1)
+    ax1.text(1.1, 3.1, "Essential Characteristics & OS Roles:", fontsize=8.5, fontweight="bold", color="#2E7D32")
+    fifo_bullets = [
+        "• Fairness: Processing sequence strictly mirrors arrival sequence (Inversions = 0)",
+        "• Invariant: msg_processed[k] arrived BEFORE msg_processed[k+1]",
+        "• Primary OS Use: Hardware interrupt buffering, GUI mouse/key events, I/O queues",
+        "• Starvation-Free: No event is permanently postponed by newer incoming events",
+    ]
+    for i, b in enumerate(fifo_bullets):
+        ax1.text(1.2, 2.5 - i * 0.45, b, fontsize=7.2, color="#33691E")
+
+    # ========================== Subplot 2: FILO Stack ==========================
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+
+    ax2.text(5.0, 9.4, "FILO (First In, Last Out) / LIFO Stack", ha="center", fontsize=12, fontweight="bold", color="#C2185B")
+    ax2.text(5.0, 8.8, "Stack of Plates Analogy — Reverses Temporal Order (Last In First Out)", ha="center", fontsize=8.5, color="#546E7A")
+
+    # Vertical bucket for FILO (closed at bottom)
+    bucket_pts = [(3.2, 8.0), (3.2, 4.2), (6.8, 4.2), (6.8, 8.0)]
+    bucket = patches.Polygon(bucket_pts, closed=False, edgecolor="#C2185B", linewidth=2.5, fill=False)
+    ax2.add_patch(bucket)
+    ax2.fill([3.2, 3.2, 6.8, 6.8], [8.0, 4.2, 4.2, 8.0], facecolor="#FCE4EC", alpha=0.5)
+
+    # Stack items from bottom to top
+    items_filo = [
+        ("Msg #1 (Key 'A') [Bottom / Oldest]", 4.4, "#F8BBD0", "#880E4F"),
+        ("Msg #2 (Key 'B')", 5.5, "#F48FB1", "#880E4F"),
+        ("Msg #3 (Key 'C') [Top / Newest]", 6.6, "#F06292", "#880E4F"),
+    ]
+    for label, y_pos, bg_col, text_col in items_filo:
+        box = patches.FancyBboxPatch((3.5, y_pos), 3.0, 0.9, boxstyle="round,pad=0.08,rounding_size=0.08",
+                                     facecolor=bg_col, edgecolor=text_col, linewidth=1.1)
+        ax2.add_patch(box)
+        ax2.text(5.0, y_pos + 0.45, label, ha="center", va="center", fontsize=7.2, fontweight="bold", color=text_col)
+
+    # Bidirectional arrows at Top
+    ax2.annotate("", xy=(4.2, 8.1), xytext=(4.2, 9.1), arrowprops=dict(arrowstyle="->", lw=2.2, color="#2E7D32"))
+    ax2.text(3.6, 8.7, "PUSH\n(Top)", ha="center", fontsize=7.5, fontweight="bold", color="#2E7D32")
+
+    ax2.annotate("", xy=(5.8, 9.1), xytext=(5.8, 8.1), arrowprops=dict(arrowstyle="->", lw=2.2, color="#C62828"))
+    ax2.text(6.4, 8.7, "POP\n(Top)", ha="center", fontsize=7.5, fontweight="bold", color="#C62828")
+
+    # Starvation Warning indicator at bottom
+    ax2.annotate("Starvation Risk!\nOldest event trapped\nif input arrives continuously",
+                 xy=(6.85, 4.8), xytext=(7.8, 4.8),
+                 arrowprops=dict(arrowstyle="->", lw=1.5, color="#D50000"),
+                 fontsize=6.8, fontweight="bold", color="#D50000", va="center")
+
+    # Properties card
+    prop_box2 = patches.FancyBboxPatch((0.8, 0.8), 8.4, 2.8, boxstyle="round,pad=0.15,rounding_size=0.15",
+                                      facecolor="#FFF3E0", edgecolor="#E65100", linewidth=1.2)
+    ax2.add_patch(prop_box2)
+    ax2.text(1.1, 3.1, "Essential Characteristics & OS Roles:", fontsize=8.5, fontweight="bold", color="#E65100")
+    filo_bullets = [
+        "• Temporal Inversion: Most recently added item is retrieved first",
+        "• High Variance: Recent events finish in 0 µs, old events suffer extreme latency",
+        "• Primary OS Use: Call stack (RSP/RBP), CPU interrupt context frame, RPN calculators",
+        "• Fatal for Events: Causes key stroke transposition ('abc' -> 'cba') and UI desync",
+    ]
+    for i, b in enumerate(filo_bullets):
+        ax2.text(1.2, 2.5 - i * 0.45, b, fontsize=7.2, color="#BF360C")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_event_order_inversion_timeline(
+    output_path: str = "7/result/fig7_17_fifo_vs_filo_event_order_timeline.png"
+) -> str:
+    """
+    Figure 7.17: Timeline comparison showing temporal inversion and starvation under FILO vs FIFO.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Create sequence of typing events "M", "I", "K", "A", "N", "O", "S"
+    chars = ["M", "I", "K", "A", "N", "O", "S"]
+    events = [
+        EventRecord(event_id=i + 1, name=f"Key '{c}'", arrival_us=i * 20.0, duration_us=25.0)
+        for i, c in enumerate(chars)
+    ]
+
+    fifo_res = simulate_fifo_vs_filo_ordering(events, mode="fifo", service_time_us=25.0)
+    filo_res = simulate_fifo_vs_filo_ordering(events, mode="filo", service_time_us=25.0)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8.5), dpi=300, sharex=True)
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Plot FIFO
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title(f"FIFO Event Processing: Order Preserved (Inversions = {fifo_res.inversion_count}, Avg Wait = {fifo_res.avg_wait_time_us:.1f} µs, Max Wait = {fifo_res.max_wait_time_us:.1f} µs)",
+                  fontsize=11, fontweight="bold", color="#1565C0")
+    ax1.set_ylabel("Processed Output", fontsize=9.5, fontweight="bold")
+    ax1.grid(True, linestyle="--", alpha=0.5, axis="x")
+
+    y_pos = 0.5
+    for pr in fifo_res.processed_events:
+        # Arrival marker
+        ax1.scatter(pr.event.arrival_us, y_pos, color="#1565C0", s=60, zorder=5)
+        # Waiting line
+        ax1.plot([pr.event.arrival_us, pr.start_us], [y_pos, y_pos], color="#90CAF9", linestyle=":", lw=1.5)
+        # Processing bar
+        bar_len = pr.end_us - pr.start_us
+        rect = patches.Rectangle((pr.start_us, y_pos - 0.25), bar_len, 0.5,
+                                 facecolor="#64B5F6", edgecolor="#0D47A1", linewidth=1.0)
+        ax1.add_patch(rect)
+        ax1.text(pr.start_us + bar_len / 2, y_pos, f"#{pr.process_order+1}: {pr.event.name}",
+                 ha="center", va="center", fontsize=7.2, fontweight="bold", color="#0D47A1")
+
+    # Draw summary text
+    output_fifo_str = "".join([pr.event.name[-2] for pr in fifo_res.processed_events])
+    ax1.text(0.98, 0.82, f"Resulting String: '{output_fifo_str}' (CORRECT)\nCausality & Temporal Order Maintained",
+             transform=ax1.transAxes, ha="right", fontsize=9, fontweight="bold",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#E8F5E9", edgecolor="#2E7D32"))
+
+    # Plot FILO
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title(f"FILO Stack Processing: Temporal Inversion & Starvation (Inversions = {filo_res.inversion_count}, Avg Wait = {filo_res.avg_wait_time_us:.1f} µs, Max Wait = {filo_res.max_wait_time_us:.1f} µs)",
+                  fontsize=11, fontweight="bold", color="#C2185B")
+    ax2.set_xlabel("Time (microseconds / µs)", fontsize=9.5, fontweight="bold")
+    ax2.set_ylabel("Processed Output", fontsize=9.5, fontweight="bold")
+    ax2.grid(True, linestyle="--", alpha=0.5, axis="x")
+
+    for pr in filo_res.processed_events:
+        ax2.scatter(pr.event.arrival_us, y_pos, color="#C2185B", s=60, zorder=5)
+        ax2.plot([pr.event.arrival_us, pr.start_us], [y_pos, y_pos], color="#F48FB1", linestyle=":", lw=1.5)
+        bar_len = pr.end_us - pr.start_us
+        is_starved = pr.wait_time_us >= 100.0
+        bg_col = "#FF8A80" if is_starved else "#F06292"
+        border_col = "#B71C1C" if is_starved else "#880E4F"
+
+        rect = patches.Rectangle((pr.start_us, y_pos - 0.25), bar_len, 0.5,
+                                 facecolor=bg_col, edgecolor=border_col, linewidth=1.0)
+        ax2.add_patch(rect)
+        ax2.text(pr.start_us + bar_len / 2, y_pos, f"#{pr.process_order+1}: {pr.event.name}",
+                 ha="center", va="center", fontsize=7.2, fontweight="bold", color=border_col)
+
+    output_filo_str = "".join([pr.event.name[-2] for pr in filo_res.processed_events])
+    ax2.text(0.98, 0.82, f"Resulting String: '{output_filo_str}' (CORRUPTED / REVERSED!)\nInitial events ('M') suffer massive wait times",
+             transform=ax2.transAxes, ha="right", fontsize=9, fontweight="bold",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFEBEE", edgecolor="#C62828"))
+
+    ax1.set_ylim(0, 1.0)
+    ax1.set_yticks([])
+    ax2.set_ylim(0, 1.0)
+    ax2.set_yticks([])
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_data_structure_comparison(
+    output_path: str = "7/result/fig7_18_data_structure_memory_and_complexity_comparison.png"
+) -> str:
+    """
+    Figure 7.18: Comparison of Queue implementations in OS Kernels:
+    Linear Array with Shift vs Linked List vs Circular Ring Buffer.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(15, 8.5), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+    ax.set_facecolor("#FFFFFF")
+    ax.set_xlim(0, 15)
+    ax.set_ylim(0, 10)
+    ax.axis("off")
+
+    ax.text(7.5, 9.6, "Queue Data Structure Comparison in Bare-Metal OS Kernels",
+            ha="center", fontsize=13, fontweight="bold", color="#1A237E")
+    ax.text(7.5, 9.1, "Evaluating Memory Constraints, Complexity, Cache Locality, and Interrupt Safety",
+            ha="center", fontsize=9, color="#546E7A")
+
+    columns = [
+        ("Linear Array (with Shift)", "#D32F2F", "#FFEBEE", 0.6),
+        ("Singly Linked List", "#F57C00", "#FFF3E0", 5.3),
+        ("Circular Ring Buffer (ArrayQueue)", "#2E7D32", "#E8F5E9", 10.0),
+    ]
+
+    for title, header_col, bg_col, x_pos in columns:
+        # Container Card
+        card = patches.FancyBboxPatch((x_pos, 0.6), 4.4, 8.1, boxstyle="round,pad=0.15,rounding_size=0.15",
+                                      facecolor=bg_col, edgecolor=header_col, linewidth=1.5)
+        ax.add_patch(card)
+
+        # Header Title
+        ax.text(x_pos + 2.2, 8.35, title, ha="center", fontsize=10, fontweight="bold", color=header_col)
+
+    # Details for Column 1: Linear Array
+    c1_x = 0.8
+    ax.text(c1_x, 7.8, "1. Memory Layout:", fontsize=8.5, fontweight="bold", color="#B71C1C")
+    # Linear array slots
+    for i in range(5):
+        s_box = patches.Rectangle((c1_x + i * 0.75, 7.15), 0.7, 0.5, facecolor="#FFCDD2", edgecolor="#B71C1C", linewidth=0.9)
+        ax.add_patch(s_box)
+        ax.text(c1_x + i * 0.75 + 0.35, 7.4, f"[{i}]", ha="center", va="center", fontsize=6.8, fontfamily="monospace")
+    ax.text(c1_x, 6.75, "Continuous static array; fixed memory size.", fontsize=7.2, color="#424242")
+
+    ax.text(c1_x, 6.25, "2. Algorithmic Complexity:", fontsize=8.5, fontweight="bold", color="#B71C1C")
+    ax.text(c1_x + 0.2, 5.85, "• Push (Tail): O(1)", fontsize=7.5, color="#212121")
+    ax.text(c1_x + 0.2, 5.45, "• Pop (Head Shift): O(N) — FATAL!", fontsize=7.5, fontweight="bold", color="#C62828")
+    ax.text(c1_x + 0.2, 5.05, "  Must memmove all elements left", fontsize=7.0, color="#616161")
+
+    ax.text(c1_x, 4.55, "3. OS Kernel Constraints:", fontsize=8.5, fontweight="bold", color="#B71C1C")
+    ax.text(c1_x + 0.2, 4.15, "• Memory Allocation: None required (Static)", fontsize=7.2, color="#2E7D32")
+    ax.text(c1_x + 0.2, 3.75, "• Cache Locality: High (Contiguous)", fontsize=7.2, color="#2E7D32")
+    ax.text(c1_x + 0.2, 3.35, "• CPU Overhead: Very High under high throughput", fontsize=7.2, color="#C62828")
+    ax.text(c1_x + 0.2, 2.95, "• Interrupt Safety: Unusable in handlers due to O(N)", fontsize=7.2, color="#C62828")
+
+    ax.text(c1_x + 2.1, 1.4, "VERDICT: REJECTED\nO(N) data copying wastes CPU cycles\nduring event bursts.",
+            ha="center", fontsize=8.2, fontweight="bold", color="#B71C1C",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#B71C1C"))
+
+    # Details for Column 2: Linked List
+    c2_x = 5.5
+    ax.text(c2_x, 7.8, "1. Memory Layout:", fontsize=8.5, fontweight="bold", color="#E65100")
+    # Node boxes with arrows
+    for i in range(3):
+        nx = c2_x + i * 1.3
+        n_box = patches.Rectangle((nx, 7.15), 0.85, 0.5, facecolor="#FFE0B2", edgecolor="#E65100", linewidth=0.9)
+        ax.add_patch(n_box)
+        ax.text(nx + 0.42, 7.4, f"Node{i}", ha="center", va="center", fontsize=6.8, fontfamily="monospace")
+        if i < 2:
+            ax.annotate("", xy=(nx + 1.25, 7.4), xytext=(nx + 0.85, 7.4),
+                        arrowprops=dict(arrowstyle="->", lw=1.2, color="#E65100"))
+    ax.text(c2_x, 6.75, "Heap-allocated dynamic nodes; pointers.", fontsize=7.2, color="#424242")
+
+    ax.text(c2_x, 6.25, "2. Algorithmic Complexity:", fontsize=8.5, fontweight="bold", color="#E65100")
+    ax.text(c2_x + 0.2, 5.85, "• Push (Tail): O(1)", fontsize=7.5, color="#212121")
+    ax.text(c2_x + 0.2, 5.45, "• Pop (Head): O(1)", fontsize=7.5, color="#212121")
+    ax.text(c2_x + 0.2, 5.05, "  Pointers updated at head/tail", fontsize=7.0, color="#616161")
+
+    ax.text(c2_x, 4.55, "3. OS Kernel Constraints:", fontsize=8.5, fontweight="bold", color="#E65100")
+    ax.text(c2_x + 0.2, 4.15, "• Memory Allocation: malloc/new REQUIRED", fontsize=7.2, fontweight="bold", color="#C62828")
+    ax.text(c2_x + 0.2, 3.75, "  (MikanOS Ch 7 has NO heap memory yet!)", fontsize=6.8, color="#C62828")
+    ax.text(c2_x + 0.2, 3.35, "• Cache Locality: Poor (Pointer chasing)", fontsize=7.2, color="#C62828")
+    ax.text(c2_x + 0.2, 2.95, "• Overhead: 8-16 bytes pointer per message", fontsize=7.2, color="#546E7A")
+
+    ax.text(c2_x + 2.1, 1.4, "VERDICT: REJECTED\nRequires heap management (malloc) not yet\navailable; poor cache locality.",
+            ha="center", fontsize=8.2, fontweight="bold", color="#E65100",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#E65100"))
+
+    # Details for Column 3: Ring Buffer
+    c3_x = 10.2
+    ax.text(c3_x, 7.8, "1. Memory Layout:", fontsize=8.5, fontweight="bold", color="#1B5E20")
+    # Circular arrangement or wrapped linear array
+    for i in range(5):
+        s_box = patches.Rectangle((c3_x + i * 0.75, 7.15), 0.7, 0.5, facecolor="#C8E6C9", edgecolor="#2E7D32", linewidth=0.9)
+        ax.add_patch(s_box)
+        ax.text(c3_x + i * 0.75 + 0.35, 7.4, f"[{i}]", ha="center", va="center", fontsize=6.8, fontfamily="monospace")
+    ax.text(c3_x, 6.75, "Fixed continuous buffer with wrap-around pointers.", fontsize=7.2, color="#424242")
+
+    ax.text(c3_x, 6.25, "2. Algorithmic Complexity:", fontsize=8.5, fontweight="bold", color="#1B5E20")
+    ax.text(c3_x + 0.2, 5.85, "• Push (Tail): O(1) [Zero-copy]", fontsize=7.5, fontweight="bold", color="#2E7D32")
+    ax.text(c3_x + 0.2, 5.45, "• Pop (Head): O(1) [Index advance]", fontsize=7.5, fontweight="bold", color="#2E7D32")
+    ax.text(c3_x + 0.2, 5.05, "  index = (index + 1) % Capacity", fontsize=7.0, fontfamily="monospace", color="#1B5E20")
+
+    ax.text(c3_x, 4.55, "3. OS Kernel Constraints:", fontsize=8.5, fontweight="bold", color="#1B5E20")
+    ax.text(c3_x + 0.2, 4.15, "• Memory Allocation: ZERO dynamic allocation", fontsize=7.2, fontweight="bold", color="#2E7D32")
+    ax.text(c3_x + 0.2, 3.75, "• Cache Locality: Maximum (Contiguous cachelines)", fontsize=7.2, fontweight="bold", color="#2E7D32")
+    ax.text(c3_x + 0.2, 3.35, "• Bitmask Optimization: & (Capacity - 1) if power-of-2", fontsize=7.0, color="#1B5E20")
+    ax.text(c3_x + 0.2, 2.95, "• Interrupt Safe: Lock-free SPSC capable", fontsize=7.2, color="#2E7D32")
+
+    ax.text(c3_x + 2.1, 1.4, "VERDICT: OPTIMAL (MikanOS Choice)\nGuaranteed O(1), zero malloc dependency,\nand ideal cache hardware utilization.",
+            ha="center", fontsize=8.2, fontweight="bold", color="#1B5E20",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#2E7D32"))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
