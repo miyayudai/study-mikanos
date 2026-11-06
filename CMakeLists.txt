@@ -216,6 +216,9 @@ add_test(NAME test_ch08_kernel_stack_sim COMMAND ch08_kernel_stack_sim --test)
 add_executable(ch08_gdt_segmentation_sim src/ch08/gdt_segmentation_sim.cpp)
 add_test(NAME test_ch08_gdt_segmentation_sim COMMAND ch08_gdt_segmentation_sim --test)
 
+add_executable(ch08_identity_paging_sim src/ch08/identity_paging_sim.cpp)
+add_test(NAME test_ch08_identity_paging_sim COMMAND ch08_identity_paging_sim --test)
+
 add_executable(ch07_os_chapter7_exercises src/ch07/os_chapter7_exercises.cpp)
 add_test(NAME test_ch07_os_chapter7_exercises COMMAND ch07_os_chapter7_exercises --test)
 

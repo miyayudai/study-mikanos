@@ -64,6 +64,7 @@ osbook/
 .pytest_cache/
 .coverage
 htmlcov/
+Testing/
 
 # Accidental nested dirs
 1/1/

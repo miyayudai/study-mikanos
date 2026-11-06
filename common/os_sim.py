@@ -31072,3 +31072,624 @@ def plot_fig8_15_cs_switch_via_iretq_mechanism(output_path: str = "8/result/fig8
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 8.6: Identity Paging & 4-Level Paging Architecture Simulation
+# ==============================================================================
+
+class LinearAddress4LevelSim:
+    """Simulates x86-64 4-level linear (virtual) address decomposition.
+
+    Bit layout (48-bit Canonical Linear Address):
+    - bits [11:0]  : 12 bits Page Offset (4KiB)
+    - bits [20:12] : 9 bits Page Table (PT) Index
+    - bits [29:21] : 9 bits Page Directory (PD) Index
+    - bits [38:30] : 9 bits Page Directory Pointer Table (PDPT) Index
+    - bits [47:39] : 9 bits Page Map Level 4 (PML4) Index
+    - bits [63:48] : 16 bits Sign Extension (must match bit 47 for canonical address)
+
+    For 2MiB Huge Pages:
+    - bits [20:0]  : 21 bits Huge Page Offset (2MiB)
+    """
+
+    def __init__(self, value: int):
+        self.value = value & 0xFFFF_FFFF_FFFF_FFFF
+
+    @property
+    def offset(self) -> int:
+        """12-bit offset within a 4KiB page."""
+        return self.value & 0xFFF
+
+    @property
+    def offset_2mb(self) -> int:
+        """21-bit offset within a 2MiB huge page."""
+        return self.value & 0x1F_FFFF
+
+    @property
+    def page(self) -> int:
+        """9-bit Level 1 Page Table index (bits 12..20)."""
+        return (self.value >> 12) & 0x1FF
+
+    @property
+    def dir(self) -> int:
+        """9-bit Level 2 Page Directory index (bits 21..29)."""
+        return (self.value >> 21) & 0x1FF
+
+    @property
+    def pdp(self) -> int:
+        """9-bit Level 3 Page Directory Pointer Table index (bits 30..38)."""
+        return (self.value >> 30) & 0x1FF
+
+    @property
+    def pml4(self) -> int:
+        """9-bit Level 4 Page Map Level 4 index (bits 39..47)."""
+        return (self.value >> 39) & 0x1FF
+
+    @property
+    def sign_extension(self) -> int:
+        """Upper 16 bits [63:48]."""
+        return (self.value >> 48) & 0xFFFF
+
+    @property
+    def is_canonical(self) -> bool:
+        """Verify whether address is canonical (bits 63..47 are either all 0s or all 1s)."""
+        bit47 = (self.value >> 47) & 1
+        expected_sign = 0xFFFF if bit47 == 1 else 0x0000
+        return self.sign_extension == expected_sign
+
+    def part(self, level: int) -> int:
+        """Get index part for a given paging level (0=offset, 1=page, 2=dir, 3=pdp, 4=pml4)."""
+        if level == 0:
+            return self.offset
+        elif level == 1:
+            return self.page
+        elif level == 2:
+            return self.dir
+        elif level == 3:
+            return self.pdp
+        elif level == 4:
+            return self.pml4
+        raise ValueError(f"Invalid paging level: {level} (must be 0..4)")
+
+    def __repr__(self) -> str:
+        return (
+            f"LinearAddress4LevelSim(0x{self.value:016x}: "
+            f"PML4={self.pml4}, PDP={self.pdp}, PD={self.dir}, PT={self.page}, "
+            f"Offset4K=0x{self.offset:03x}, Offset2M=0x{self.offset_2mb:05x}, "
+            f"Canonical={self.is_canonical})"
+        )
+
+
+class PageTableEntrySim:
+    """Simulates an x86-64 64-bit Page Table Entry (PML4E, PDPTE, PDE, PTE).
+
+    Bit layout:
+    - bit 0      : Present (P)
+    - bit 1      : Read/Write (R/W)
+    - bit 2      : User/Supervisor (U/S)
+    - bit 3      : Page-level Write-Through (PWT)
+    - bit 4      : Page-level Cache Disable (PCD)
+    - bit 5      : Accessed (A)
+    - bit 6      : Dirty (D)
+    - bit 7      : Page Size / Huge Page (PS: 0=4KiB/table reference, 1=2MiB/1GiB page)
+    - bit 8      : Global Page (G)
+    - bits 11:9  : Available to OS
+    - bits 51:12 : Physical Frame Address / Next-Level Table Address
+    - bits 62:52 : Available to OS
+    - bit 63     : Execute-Disable (XD / NX)
+    """
+
+    def __init__(self, data: int = 0):
+        self.data = data & 0xFFFF_FFFF_FFFF_FFFF
+
+    @classmethod
+    def create(
+        cls,
+        base_address: int,
+        present: bool = True,
+        writable: bool = True,
+        huge_page: bool = False,
+        user: bool = False,
+        write_through: bool = False,
+        cache_disable: bool = False,
+        global_page: bool = False,
+        nx: bool = False,
+    ) -> "PageTableEntrySim":
+        """Create a page table entry with specified attributes and 4KiB/2MiB aligned base address."""
+        val = 0
+        if present:
+            val |= (1 << 0)
+        if writable:
+            val |= (1 << 1)
+        if user:
+            val |= (1 << 2)
+        if write_through:
+            val |= (1 << 3)
+        if cache_disable:
+            val |= (1 << 4)
+        if huge_page:
+            val |= (1 << 7)
+        if global_page:
+            val |= (1 << 8)
+        if nx:
+            val |= (1 << 63)
+
+        # Address bits [51:12]
+        aligned_addr = base_address & 0x000F_FFFF_FFFF_F000
+        val |= aligned_addr
+        return cls(val)
+
+    @property
+    def present(self) -> int:
+        return (self.data >> 0) & 1
+
+    @property
+    def writable(self) -> int:
+        return (self.data >> 1) & 1
+
+    @property
+    def user(self) -> int:
+        return (self.data >> 2) & 1
+
+    @property
+    def write_through(self) -> int:
+        return (self.data >> 3) & 1
+
+    @property
+    def cache_disable(self) -> int:
+        return (self.data >> 4) & 1
+
+    @property
+    def accessed(self) -> int:
+        return (self.data >> 5) & 1
+
+    @property
+    def dirty(self) -> int:
+        return (self.data >> 6) & 1
+
+    @property
+    def huge_page(self) -> int:
+        """Page Size (PS) bit. 1 indicates 2MiB page in PDE, or 1GiB in PDPTE."""
+        return (self.data >> 7) & 1
+
+    @property
+    def global_page(self) -> int:
+        return (self.data >> 8) & 1
+
+    @property
+    def physical_frame_address(self) -> int:
+        """Physical address pointed to by this entry (masked by 0x000F_FFFF_FFFF_F000)."""
+        return self.data & 0x000F_FFFF_FFFF_F000
+
+    @property
+    def huge_page_base_address(self) -> int:
+        """2MiB aligned physical base address (masked by 0x000F_FFFF_FFE0_0000)."""
+        return self.data & 0x000F_FFFF_FFE0_0000
+
+    @property
+    def execute_disable(self) -> int:
+        return (self.data >> 63) & 1
+
+    def __repr__(self) -> str:
+        flags = []
+        if self.present:
+            flags.append("P")
+        if self.writable:
+            flags.append("RW")
+        if self.user:
+            flags.append("US")
+        if self.huge_page:
+            flags.append("PS(2M)")
+        if self.execute_disable:
+            flags.append("NX")
+        return (
+            f"PageTableEntrySim(0x{self.data:016x}: "
+            f"Base=0x{self.physical_frame_address:012x}, Flags={'|'.join(flags) or 'None'})"
+        )
+
+
+class IdentityPagingSimulator:
+    """Simulates MikanOS Section 8.6 Identity Paging Setup (64GiB via 2MiB Huge Pages).
+
+    Architecture:
+    - 1 PML4 table (512 entries of uint64)
+    - 1 PDP table (512 entries of uint64)
+    - 64 Page Directory tables (each 512 entries of uint64)
+    - Total identity mapped capacity: 64 * 1GiB = 64GiB (0x0000_0000_0000 to 0x000F_FFFF_FFFF)
+    - Flags:
+      - PML4[0] -> PDP : 0x003 (Present | Read/Write)
+      - PDP[i]  -> PD[i] : 0x003 (Present | Read/Write)
+      - PD[i][j]-> 2MiB frame: 0x083 (Present | Read/Write | Page Size 2MiB)
+    """
+
+    PAGE_SIZE_4K = 4096
+    PAGE_SIZE_2M = 512 * PAGE_SIZE_4K  # 2,097,152 (2MiB)
+    PAGE_SIZE_1G = 512 * PAGE_SIZE_2M  # 1,073,741,824 (1GiB)
+    PAGE_DIRECTORY_COUNT = 64
+    TOTAL_MAPPED_SIZE = PAGE_DIRECTORY_COUNT * PAGE_SIZE_1G  # 68,719,476,736 (64GiB)
+
+    def __init__(self, pml4_base: int = 0x1000_0000, pdp_base: int = 0x1000_1000, pd_start_base: int = 0x1000_2000):
+        # Base addresses simulated in 4KiB aligned memory
+        self.pml4_base = pml4_base & ~0xFFF
+        self.pdp_base = pdp_base & ~0xFFF
+        self.pd_bases = [(pd_start_base + i * self.PAGE_SIZE_4K) & ~0xFFF for i in range(self.PAGE_DIRECTORY_COUNT)]
+
+        self.pml4_table = [0] * 512
+        self.pdp_table = [0] * 512
+        self.page_directory = [[0] * 512 for _ in range(self.PAGE_DIRECTORY_COUNT)]
+        self.cr3 = 0
+
+        self.setup_identity_page_table()
+
+    def setup_identity_page_table(self):
+        """Replicates kernel/paging.cpp SetupIdentityPageTable()."""
+        # PML4[0] points to PDP table with Present (0x1) and Writable (0x2) -> 0x003
+        self.pml4_table[0] = self.pdp_base | 0x003
+
+        # Populate 64 PDP entries and their corresponding Page Directories
+        for i_pdpt in range(self.PAGE_DIRECTORY_COUNT):
+            self.pdp_table[i_pdpt] = self.pd_bases[i_pdpt] | 0x003
+            for i_pd in range(512):
+                phys_addr = i_pdpt * self.PAGE_SIZE_1G + i_pd * self.PAGE_SIZE_2M
+                # 0x083 = Present (0x1) | Writable (0x2) | Page Size Huge 2MiB (0x80)
+                self.page_directory[i_pdpt][i_pd] = phys_addr | 0x083
+
+        # Set CR3 register pointing to PML4 table base
+        self.cr3 = self.pml4_base
+
+    def translate(self, linear_addr: int) -> dict:
+        """Simulates CPU MMU hardware address translation for 2MiB Identity Paging."""
+        addr = LinearAddress4LevelSim(linear_addr)
+
+        if not addr.is_canonical:
+            return {
+                "success": False,
+                "error": "NonCanonicalAddress",
+                "message": f"Address 0x{linear_addr:016x} is non-canonical",
+                "fault_address": linear_addr,
+            }
+
+        # Step 1: PML4 lookup
+        pml4e_raw = self.pml4_table[addr.pml4]
+        pml4e = PageTableEntrySim(pml4e_raw)
+        if not pml4e.present:
+            return {
+                "success": False,
+                "error": "PageFaultPML4NotPresent",
+                "message": f"PML4 index {addr.pml4} is not present",
+                "fault_address": linear_addr,
+            }
+
+        # Step 2: PDPT lookup
+        if addr.pdp >= self.PAGE_DIRECTORY_COUNT:
+            return {
+                "success": False,
+                "error": "PageFaultBeyondMappedLimit",
+                "message": f"PDP index {addr.pdp} exceeds mapped limit (max {self.PAGE_DIRECTORY_COUNT - 1})",
+                "fault_address": linear_addr,
+            }
+
+        pdpe_raw = self.pdp_table[addr.pdp]
+        pdpe = PageTableEntrySim(pdpe_raw)
+        if not pdpe.present:
+            return {
+                "success": False,
+                "error": "PageFaultPDPNotPresent",
+                "message": f"PDP index {addr.pdp} is not present",
+                "fault_address": linear_addr,
+            }
+
+        # Step 3: Page Directory lookup
+        pde_raw = self.page_directory[addr.pdp][addr.dir]
+        pde = PageTableEntrySim(pde_raw)
+        if not pde.present:
+            return {
+                "success": False,
+                "error": "PageFaultPDNotPresent",
+                "message": f"PD[{addr.pdp}][{addr.dir}] is not present",
+                "fault_address": linear_addr,
+            }
+
+        if not pde.huge_page:
+            return {
+                "success": False,
+                "error": "NotHugePage",
+                "message": f"PDE[{addr.pdp}][{addr.dir}] is not configured as 2MiB Huge Page (PS bit not set)",
+                "fault_address": linear_addr,
+            }
+
+        # Step 4: Calculate physical address
+        phys_base = pde.huge_page_base_address
+        phys_addr = phys_base + addr.offset_2mb
+
+        return {
+            "success": True,
+            "linear_address": linear_addr,
+            "physical_address": phys_addr,
+            "is_identity": (linear_addr == phys_addr),
+            "pml4_index": addr.pml4,
+            "pdp_index": addr.pdp,
+            "pd_index": addr.dir,
+            "offset_2mb": addr.offset_2mb,
+            "pde_raw": pde_raw,
+            "huge_page_base": phys_base,
+        }
+
+    def verify_table_alignments(self) -> bool:
+        """Verify that all table base addresses are aligned to 4096-byte boundaries."""
+        if self.pml4_base & 0xFFF != 0:
+            return False
+        if self.pdp_base & 0xFFF != 0:
+            return False
+        for base in self.pd_bases:
+            if base & 0xFFF != 0:
+                return False
+        return True
+
+    def calculate_memory_savings(self) -> dict:
+        """Calculate memory overhead comparison: 4KiB pages vs 2MiB Huge pages for 64GiB."""
+        four_kb_overhead_bytes = 128 * 1024 * 1024 + 64 * 4096 + 4096 + 4096
+        two_mb_overhead_bytes = 64 * 4096 + 4096 + 4096
+        savings_ratio = four_kb_overhead_bytes / two_mb_overhead_bytes
+
+        return {
+            "mapped_capacity_gib": 64,
+            "4k_page_table_overhead_bytes": four_kb_overhead_bytes,
+            "4k_page_table_overhead_mib": four_kb_overhead_bytes / (1024 * 1024),
+            "2m_huge_page_overhead_bytes": two_mb_overhead_bytes,
+            "2m_huge_page_overhead_kib": two_mb_overhead_bytes / 1024,
+            "memory_reduction_ratio": savings_ratio,
+        }
+
+
+def plot_fig8_16_x86_64_4level_paging_architecture(output_path: str = "8/result/fig8_16_x86_64_4level_paging_architecture.png") -> str:
+    """Generate Figure 8.16: x86-64 4-Level Paging Architecture and Canonical Linear Address Decomposition."""
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 11), dpi=300, gridspec_kw={"height_ratios": [1.0, 1.4]})
+    fig.suptitle(
+        "Figure 8.16: x86-64 4-Level Paging Architecture & 48-bit Canonical Virtual Address Decomposition",
+        fontsize=13, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # Upper Panel: 48-bit Canonical Linear Address Bitfields
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("Canonical 64-bit Virtual Address Bitfield Layout (48-bit Linear Address)", fontsize=11, fontweight="bold", color="#283593", pad=10)
+
+    fields = [
+        ("Sign Extension\n(16 bits)\n[63:48]", "Bits 63:48 must copy bit 47\n(0x0000 or 0xFFFF)", 4, 18, "#ECEFF1", "#455A64"),
+        ("PML4 Index\n(9 bits)\n[47:39]", "512 entries\nSelects PDP table", 23, 14, "#EDE7F6", "#512DA8"),
+        ("PDP Index\n(9 bits)\n[38:30]", "512 entries\nSelects Page Directory", 38, 14, "#E1F5FE", "#0288D1"),
+        ("PD Index\n(9 bits)\n[29:21]", "512 entries\nSelects 2MiB Page Frame", 53, 14, "#E8F5E9", "#2E7D32"),
+        ("PT Index\n(9 bits)\n[20:12]", "512 entries\n(Bypassed in 2MiB Huge Page)", 68, 14, "#FFF3E0", "#E65100"),
+        ("Physical Offset\n(12 bits / 21 bits)\n[11:0] / [20:0]", "4KiB page: [11:0] (12b)\n2MiB huge page: [20:0] (21b)", 83, 14, "#FCE4EC", "#C2185B"),
+    ]
+
+    for label, desc, x_pos, width, fcol, ecol in fields:
+        rect = plt.Rectangle((x_pos, 45), width, 40, facecolor=fcol, edgecolor=ecol, lw=2)
+        ax1.add_patch(rect)
+        ax1.text(x_pos + width / 2, 72, label, fontsize=8.5, fontweight="bold", color=ecol, ha="center", va="center")
+        ax1.text(x_pos + width / 2, 53, desc, fontsize=7.2, color="#37474F", ha="center", va="center")
+
+    ax1.text(50, 25, "2MiB Huge Page Optimization: By setting the PS bit (bit 7) in the Page Directory Entry,\n"
+                    "the Level 1 Page Table (PT) is completely omitted! Bits [20:0] (21 bits) become the in-page offset (2^21 = 2MiB).",
+             fontsize=9, fontweight="bold", color="#1B5E20", ha="center",
+             bbox=dict(boxstyle="round,pad=0.6", facecolor="#E8F8F5", edgecolor="#26A69A", lw=1.5))
+
+    # Lower Panel: Hierarchy Translation Chain
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("Hardware MMU 4-Level Paging Traversal Chain", fontsize=11, fontweight="bold", color="#283593", pad=10)
+
+    tables = [
+        ("CR3 Register\n(PDBR)", "PML4 Base Address\n(Physical 4KiB aligned)", 2, 60, 12, 30, "#FFF9C4", "#F57F17"),
+        ("PML4 Table\n(Level 4: 512 entries)", "Entry: Physical Addr of PDP\nFlags: P=1, RW=1 (0x003)", 19, 50, 16, 42, "#EDE7F6", "#512DA8"),
+        ("PDP Table\n(Level 3: 512 entries)", "Entry: Physical Addr of PD\nFlags: P=1, RW=1 (0x003)", 39, 45, 16, 47, "#E1F5FE", "#0288D1"),
+        ("Page Directory\n(Level 2: 512 entries)", "Entry: 2MiB Physical Frame\nFlags: P=1, RW=1, PS=1 (0x083)", 59, 40, 17, 52, "#E8F5E9", "#2E7D32"),
+        ("Physical Memory\n(2MiB Frame)", "Direct 2MiB Continuous Frame\nBase Addr + Offset [20:0]", 80, 35, 18, 57, "#FBE9E7", "#D84315"),
+    ]
+
+    for title, desc, x_pos, y_pos, width, height, fcol, ecol in tables:
+        rect = plt.Rectangle((x_pos, y_pos), width, height, facecolor=fcol, edgecolor=ecol, lw=2)
+        ax2.add_patch(rect)
+        ax2.text(x_pos + width / 2, y_pos + height - 8, title, fontsize=8.5, fontweight="bold", color=ecol, ha="center")
+        ax2.text(x_pos + width / 2, y_pos + 12, desc, fontsize=7.2, color="#37474F", ha="center")
+
+    arrow_props = dict(arrowstyle="->", color="#1565C0", lw=2.2, mutation_scale=15)
+    ax2.annotate("", xy=(19, 75), xytext=(14, 75), arrowprops=arrow_props)
+    ax2.annotate("", xy=(39, 70), xytext=(35, 70), arrowprops=arrow_props)
+    ax2.annotate("", xy=(59, 65), xytext=(55, 65), arrowprops=arrow_props)
+    ax2.annotate("", xy=(80, 60), xytext=(76, 60), arrowprops=arrow_props)
+
+    ax2.text(16.5, 78, "CR3", fontsize=8, fontweight="bold", color="#E65100", ha="center")
+    ax2.text(37, 73, "PML4[0]\n(9b)", fontsize=8, fontweight="bold", color="#512DA8", ha="center")
+    ax2.text(57, 68, "PDP[i]\n(9b)", fontsize=8, fontweight="bold", color="#0288D1", ha="center")
+    ax2.text(78, 63, "PD[j]\n(9b)", fontsize=8, fontweight="bold", color="#2E7D32", ha="center")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_17_identity_mapping_2mib_huge_pages(output_path: str = "8/result/fig8_17_identity_mapping_2mib_huge_pages.png") -> str:
+    """Generate Figure 8.17: MikanOS 64GiB Identity Mapping Structure with 2MiB Huge Pages."""
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8.5), dpi=300, gridspec_kw={"width_ratios": [1.1, 1.0]})
+    fig.suptitle(
+        "Figure 8.17: MikanOS 64GiB Identity Mapping Architecture (PML4[0] -> 64 PDs x 512 x 2MiB)",
+        fontsize=13, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # Left Panel: Memory Structure & Pointers
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("MikanOS Identity Page Table Tree (64GiB Coverage)", fontsize=11, fontweight="bold", color="#283593", pad=10)
+
+    # Draw PML4 Box
+    r_pml4 = plt.Rectangle((5, 75), 25, 20, facecolor="#EDE7F6", edgecolor="#512DA8", lw=2)
+    ax1.add_patch(r_pml4)
+    ax1.text(17.5, 91, "pml4_table\n(512 entries, 4KiB)", fontsize=8.5, fontweight="bold", color="#311B92", ha="center")
+    r_pml4_0 = plt.Rectangle((7, 78), 21, 8, facecolor="#D1C4E9", edgecolor="#512DA8", lw=1.2)
+    ax1.add_patch(r_pml4_0)
+    ax1.text(17.5, 82, "pml4_table[0]\n&pdp_table[0] | 0x003", fontsize=7.8, fontweight="bold", color="#1A237E", ha="center")
+
+    # Draw PDP Box
+    r_pdp = plt.Rectangle((37, 50), 26, 45, facecolor="#E1F5FE", edgecolor="#0288D1", lw=2)
+    ax1.add_patch(r_pdp)
+    ax1.text(50, 91, "pdp_table\n(512 entries, 4KiB)", fontsize=8.5, fontweight="bold", color="#01579B", ha="center")
+    ax1.text(50, 85, "pdp[0] -> &page_directory[0] | 0x003", fontsize=7.2, color="#0277BD", ha="center")
+    ax1.text(50, 78, "pdp[1] -> &page_directory[1] | 0x003", fontsize=7.2, color="#0277BD", ha="center")
+    ax1.text(50, 71, "...", fontsize=8, color="#0277BD", ha="center")
+    ax1.text(50, 64, "pdp[63] -> &page_directory[63] | 0x003", fontsize=7.2, color="#0277BD", ha="center")
+    r_pdp_unmapped = plt.Rectangle((39, 53), 22, 7, facecolor="#ECEFF1", edgecolor="#90A4AE", lw=1)
+    ax1.add_patch(r_pdp_unmapped)
+    ax1.text(50, 56.5, "pdp[64..511] = 0 (Unmapped)", fontsize=7, color="#546E7A", ha="center")
+
+    # Draw PD Stack Box
+    r_pds = plt.Rectangle((70, 20), 27, 75, facecolor="#E8F5E9", edgecolor="#2E7D32", lw=2)
+    ax1.add_patch(r_pds)
+    ax1.text(83.5, 91, "page_directory\n(64 tables x 512 entries)", fontsize=8.5, fontweight="bold", color="#1B5E20", ha="center")
+
+    pd_samples = [
+        ("PD[0][0] = 0x00000000 | 0x083", "0MiB ~ 2MiB"),
+        ("PD[0][1] = 0x00200000 | 0x083", "2MiB ~ 4MiB"),
+        ("PD[0][511] = 0x3FE00000 | 0x083", "1022MiB ~ 1024MiB (1GiB)"),
+        ("PD[1][0] = 0x40000000 | 0x083", "1GiB ~ 1GiB+2MiB"),
+        ("PD[63][511] = 0xFFE00000 | 0x083", "63GiB+1022MiB ~ 64GiB"),
+    ]
+    for idx, (code_str, range_str) in enumerate(pd_samples):
+        y_pos = 78 - idx * 11
+        r_entry = plt.Rectangle((72, y_pos), 23, 8.5, facecolor="#C8E6C9", edgecolor="#2E7D32", lw=1)
+        ax1.add_patch(r_entry)
+        ax1.text(83.5, y_pos + 4.8, code_str, fontsize=6.8, fontweight="bold", color="#1B5E20", ha="center")
+        ax1.text(83.5, y_pos + 1.8, range_str, fontsize=6.3, color="#2E7D32", ha="center")
+
+    # Connect with arrows
+    ax1.annotate("", xy=(37, 82), xytext=(28, 82), arrowprops=dict(arrowstyle="->", color="#512DA8", lw=2))
+    ax1.annotate("", xy=(70, 75), xytext=(63, 75), arrowprops=dict(arrowstyle="->", color="#0288D1", lw=2))
+
+    # Right Panel: Why 2MiB Huge Pages? (Comparison Table & Pros)
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("Architectural Comparison: 4KiB Pages vs 2MiB Huge Pages", fontsize=11, fontweight="bold", color="#283593", pad=10)
+
+    # Comparison Table Box
+    r_table = plt.Rectangle((5, 48), 90, 48, facecolor="#FFFFFF", edgecolor="#37474F", lw=1.5)
+    ax2.add_patch(r_table)
+
+    headers = [("Metric / Attribute", 25), ("Standard 4KiB Pages", 32), ("MikanOS 2MiB Huge Pages", 33)]
+    x_cur = 5
+    for h_title, w in headers:
+        r_head = plt.Rectangle((x_cur, 86), w, 10, facecolor="#ECEFF1", edgecolor="#90A4AE", lw=1)
+        ax2.add_patch(r_head)
+        ax2.text(x_cur + w / 2, 91, h_title, fontsize=8, fontweight="bold", color="#263238", ha="center")
+        x_cur += w
+
+    rows = [
+        ("Page Directory Count", "64 tables", "64 tables"),
+        ("Page Tables (PT) Needed", "32,768 tables", "0 tables (Omitted!)"),
+        ("Table Memory Overhead", "~128.26 MiB", "~264 KiB"),
+        ("Memory Reduction Ratio", "Baseline (1.0x)", "485x Less Memory!"),
+        ("TLB Miss Penalty", "4 Memory Accesses", "3 Memory Accesses"),
+    ]
+
+    for r_idx, (m_col, col_4k, col_2m) in enumerate(rows):
+        y_r = 78 - r_idx * 8
+        ax2.text(17.5, y_r + 2, m_col, fontsize=7.5, fontweight="bold", color="#37474F", ha="center")
+        ax2.text(46, y_r + 2, col_4k, fontsize=7.5, color="#C62828" if "128" in col_4k else "#37474F", ha="center")
+        ax2.text(78.5, y_r + 2, col_2m, fontsize=7.5, fontweight="bold" if "Omitted" in col_2m or "485x" in col_2m else "normal",
+                 color="#2E7D32" if "Omitted" in col_2m or "485x" in col_2m else "#1565C0", ha="center")
+        ax2.axhline(y_r - 1, xmin=0.05, xmax=0.95, color="#CFD8DC", lw=0.8)
+
+    # Highlights Box at Bottom of Right Panel
+    r_high = plt.Rectangle((5, 8), 90, 36, facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.5)
+    ax2.add_patch(r_high)
+    ax2.text(10, 37, "Architectural Insights for MikanOS:", fontsize=9.5, fontweight="bold", color="#F57F17")
+    bullet_points = [
+        "1. Complete Identity Mapping: 0x00000000 ~ 0x0FFF_FFFF (64GiB) is mapped 1:1.\n   Virtual Address V == Physical Address P everywhere during early kernel boot.",
+        "2. No dynamic allocator needed yet: Memory for page tables is statically allocated\n   as global arrays in kernel .bss (pml4_table, pdp_table, page_directory).",
+        "3. TLB Efficiency: 2MiB Huge Pages cover 512x more memory per TLB entry,\n   drastically speeding up frame buffer and kernel memory accesses.",
+    ]
+    for b_idx, bp in enumerate(bullet_points):
+        ax2.text(10, 27 - b_idx * 9, bp, fontsize=7.8, color="#424242")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_18_cr3_and_address_translation_flow(output_path: str = "8/result/fig8_18_cr3_and_address_translation_flow.png") -> str:
+    """Generate Figure 8.18: Hardware MMU Address Translation Sequence with CR3 and 2MiB Page."""
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8.5), dpi=300, gridspec_kw={"width_ratios": [1.1, 1.0]})
+    fig.suptitle(
+        "Figure 8.18: Hardware MMU Address Translation & CR3 Register Loading Flow",
+        fontsize=13, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # Left Panel: Address Translation Example
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("Step-by-Step Hardware Translation of Linear Address", fontsize=11, fontweight="bold", color="#283593", pad=10)
+
+    steps = [
+        ("Step 1: Read CR3 Register", "CR3 contains physical base address of PML4 table (bits [51:12]).\nBits [11:0] are flags (PWT, PCD). Loading CR3 flushes TLB.", "#FFF8E1", "#F57F17"),
+        ("Step 2: Index into PML4 Table", "Virtual bits [47:39] = 0 -> PML4[0] selected.\nReads PDP base address + flags (0x003: P=1, RW=1).", "#EDE7F6", "#512DA8"),
+        ("Step 3: Index into PDP Table", "Virtual bits [38:30] = i_pdpt -> Selects PD[i_pdpt].\nReads PD base address + flags (0x003: P=1, RW=1).", "#E1F5FE", "#0288D1"),
+        ("Step 4: Index into Page Directory", "Virtual bits [29:21] = i_pd -> Selects PD[i_pdpt][i_pd].\nEntry contains 2MiB frame base + 0x083 (P=1, RW=1, PS=1).", "#E8F5E9", "#2E7D32"),
+        ("Step 5: Physical Frame Resolution", "MMU detects PS=1 (Huge Page) -> Directly adds bits [20:0]\n(2MiB offset) to frame base. Result: Physical Address P == V!", "#FCE4EC", "#C2185B"),
+    ]
+
+    for idx, (title, desc, fcol, ecol) in enumerate(steps):
+        y_pos = 80 - idx * 19
+        rect = plt.Rectangle((5, y_pos), 90, 16, facecolor=fcol, edgecolor=ecol, lw=1.8)
+        ax1.add_patch(rect)
+        ax1.text(8, y_pos + 11.5, title, fontsize=9, fontweight="bold", color=ecol)
+        ax1.text(8, y_pos + 4, desc, fontsize=7.8, color="#37474F")
+        if idx < 4:
+            ax1.annotate("", xy=(50, y_pos - 2.5), xytext=(50, y_pos),
+                         arrowprops=dict(arrowstyle="->", color=ecol, lw=1.8))
+
+    # Right Panel: Bitmask Breakdown (0x003 and 0x083) and SetCR3 Assembly
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("Flags Bitmask Derivation & SetCR3 Assembly Routine", fontsize=11, fontweight="bold", color="#283593", pad=10)
+
+    # Flag 0x003 Box
+    r_003 = plt.Rectangle((5, 58), 90, 38, facecolor="#E3F2FD", edgecolor="#1565C0", lw=1.5)
+    ax2.add_patch(r_003)
+    ax2.text(8, 90, "Entry Flags: 0x003 (Used in PML4 & PDP Entries)", fontsize=9.5, fontweight="bold", color="#0D47A1")
+    ax2.text(8, 83, "• Bit 0 (Present = 1)   : Next-level page table exists in physical memory.\n"
+                    "• Bit 1 (Read/Write = 1): Reading and writing are permitted.\n"
+                    "• Bit 7 (Page Size = 0) : Refers to a lower-level page table (not a huge page).\n"
+                    "Formula: (BaseAddress & ~0xFFF) | 0x003",
+             fontsize=8, color="#1A237E")
+
+    # Flag 0x083 Box
+    r_083 = plt.Rectangle((5, 14), 90, 38, facecolor="#E8F8F5", edgecolor="#00897B", lw=1.5)
+    ax2.add_patch(r_083)
+    ax2.text(8, 46, "Entry Flags: 0x083 (Used in Page Directory Entries)", fontsize=9.5, fontweight="bold", color="#004D40")
+    ax2.text(8, 39, "• Bit 0 (Present = 1)   : 2MiB physical page frame is valid.\n"
+                    "• Bit 1 (Read/Write = 1): Reading and writing are permitted.\n"
+                    "• Bit 7 (Page Size = 1) : 2MiB Huge Page! Bypass Page Table (PT).\n"
+                    "Formula: (i_pdpt * 1GiB + i_pd * 2MiB) | 0x083",
+             fontsize=8, color="#004D40")
+
+    # SetCR3 Assembly Box
+    ax2.text(50, 6, "Assembly: global SetCR3; SetCR3: mov cr3, rdi; ret",
+             fontsize=8.5, fontweight="bold", color="#C62828", ha="center",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFEBEE", edgecolor="#D32F2F", lw=1))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

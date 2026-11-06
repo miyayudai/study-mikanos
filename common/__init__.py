@@ -481,6 +481,12 @@ from common.os_sim import (
     plot_fig8_13_gdt_descriptor_bit_layout,
     plot_fig8_14_gdt_table_and_gdtr_architecture,
     plot_fig8_15_cs_switch_via_iretq_mechanism,
+    LinearAddress4LevelSim,
+    PageTableEntrySim,
+    IdentityPagingSimulator,
+    plot_fig8_16_x86_64_4level_paging_architecture,
+    plot_fig8_17_identity_mapping_2mib_huge_pages,
+    plot_fig8_18_cr3_and_address_translation_flow,
 )
 
 __all__ = [
@@ -964,4 +970,10 @@ __all__ = [
     "plot_fig8_13_gdt_descriptor_bit_layout",
     "plot_fig8_14_gdt_table_and_gdtr_architecture",
     "plot_fig8_15_cs_switch_via_iretq_mechanism",
+    "LinearAddress4LevelSim",
+    "PageTableEntrySim",
+    "IdentityPagingSimulator",
+    "plot_fig8_16_x86_64_4level_paging_architecture",
+    "plot_fig8_17_identity_mapping_2mib_huge_pages",
+    "plot_fig8_18_cr3_and_address_translation_flow",
 ]
