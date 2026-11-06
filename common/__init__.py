@@ -452,6 +452,15 @@ from common.os_sim import (
     plot_sti_hlt_race_condition_and_interrupt_shadow,
     plot_top_half_bottom_half_queue_sequence,
     plot_event_driven_os_state_machine,
+    PageFaultType,
+    PageFaultException,
+    PageFrameAddressMath,
+    MemoryAllocationStrategyComparator,
+    VirtualPageEntry,
+    PhysicalVsVirtualMemorySim,
+    plot_fig8_01_physical_vs_virtual_memory_architecture,
+    plot_fig8_02_memory_management_data_structures_comparison,
+    plot_fig8_03_chapter8_memory_subsystem_roadmap,
 )
 
 __all__ = [
@@ -906,4 +915,13 @@ __all__ = [
     "plot_sti_hlt_race_condition_and_interrupt_shadow",
     "plot_top_half_bottom_half_queue_sequence",
     "plot_event_driven_os_state_machine",
+    "PageFaultType",
+    "PageFaultException",
+    "PageFrameAddressMath",
+    "MemoryAllocationStrategyComparator",
+    "VirtualPageEntry",
+    "PhysicalVsVirtualMemorySim",
+    "plot_fig8_01_physical_vs_virtual_memory_architecture",
+    "plot_fig8_02_memory_management_data_structures_comparison",
+    "plot_fig8_03_chapter8_memory_subsystem_roadmap",
 ]

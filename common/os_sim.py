@@ -28810,3 +28810,519 @@ def plot_chapter7_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+# ==============================================================================
+# Chapter 8: Memory Management (Physical & Virtual Memory Architecture)
+# ==============================================================================
+
+class PageFaultType(Enum):
+    NOT_PRESENT = "Page Not Present (Bit 0 = 0)"
+    WRITE_PROTECTION = "Write Violation / Read-Only Page (Bit 1 = 1)"
+    USER_ACCESS_VIOLATION = "User-mode accessing Supervisor Page (Bit 2 = 1)"
+    RESERVED_BIT_VIOLATION = "Reserved Bit Violation (Bit 3 = 1)"
+    INSTRUCTION_FETCH_VIOLATION = "Instruction Fetch / NX Violation (Bit 4 = 1)"
+
+
+class PageFaultException(Exception):
+    """Simulated x86-64 CPU #PF (Page Fault Exception, Vector 14)."""
+    def __init__(self, fault_type: PageFaultType, fault_vaddr: int, rip: int = 0x1000):
+        self.fault_type = fault_type
+        self.fault_vaddr = fault_vaddr
+        self.rip = rip
+        super().__init__(f"#PF at RIP=0x{rip:X}, CR2=0x{fault_vaddr:X}: {fault_type.value}")
+
+
+class PageFrameAddressMath:
+    """
+    x86-64 4-Level Paging and Physical Page Frame Address Mathematics.
+    Standard page size: 4096 bytes (4 KiB = 2^12).
+    """
+    PAGE_SIZE: int = 4096
+    PAGE_OFFSET_MASK: int = 0xFFF
+    PAGE_FRAME_MASK: int = ~0xFFF
+
+    @classmethod
+    def phys_to_pfn(cls, phys_addr: int) -> int:
+        """Convert 64-bit physical address to Page Frame Number (PFN)."""
+        return phys_addr >> 12
+
+    @classmethod
+    def pfn_to_phys(cls, pfn: int) -> int:
+        """Convert Page Frame Number (PFN) to 64-bit base physical address."""
+        return pfn << 12
+
+    @classmethod
+    def page_offset(cls, addr: int) -> int:
+        """Extract 12-bit in-page byte offset (0x000..0xFFF)."""
+        return addr & cls.PAGE_OFFSET_MASK
+
+    @classmethod
+    def is_page_aligned(cls, addr: int) -> bool:
+        """Check if address is aligned to 4 KiB boundary."""
+        return (addr & cls.PAGE_OFFSET_MASK) == 0
+
+    @classmethod
+    def align_down(cls, addr: int) -> int:
+        """Align address down to nearest 4 KiB boundary."""
+        return addr & cls.PAGE_FRAME_MASK
+
+    @classmethod
+    def align_up(cls, addr: int) -> int:
+        """Align address up to nearest 4 KiB boundary."""
+        return (addr + cls.PAGE_OFFSET_MASK) & cls.PAGE_FRAME_MASK
+
+    @classmethod
+    def is_canonical(cls, vaddr: int) -> bool:
+        """
+        Check if 64-bit virtual address is a canonical 48-bit address.
+        In x86-64 4-level paging, bits 48..63 must be an exact sign-extension of bit 47.
+        Lower canonical range: 0x0000_0000_0000_0000 .. 0x0000_7FFF_FFFF_FFFF
+        Upper canonical range: 0xFFFF_8000_0000_0000 .. 0xFFFF_FFFF_FFFF_FFFF
+        """
+        bit47 = (vaddr >> 47) & 1
+        high_bits = (vaddr >> 48) & 0xFFFF
+        expected_high = 0xFFFF if bit47 else 0x0000
+        return high_bits == expected_high
+
+    @classmethod
+    def decompose_virtual_address(cls, vaddr: int) -> dict:
+        """
+        Decompose 64-bit virtual address into 4-level paging indexes (9+9+9+9+12 bits).
+        PML4 (bits 47..39), PDP (bits 38..30), PD (bits 29..21), PT (bits 20..12), Offset (bits 11..0).
+        """
+        canonical = cls.is_canonical(vaddr)
+        pml4_idx = (vaddr >> 39) & 0x1FF
+        pdp_idx = (vaddr >> 30) & 0x1FF
+        pd_idx = (vaddr >> 21) & 0x1FF
+        pt_idx = (vaddr >> 12) & 0x1FF
+        offset = vaddr & cls.PAGE_OFFSET_MASK
+        return {
+            "vaddr": vaddr,
+            "hex": f"0x{vaddr:016X}",
+            "is_canonical": canonical,
+            "pml4_index": pml4_idx,
+            "pdp_index": pdp_idx,
+            "pd_index": pd_idx,
+            "pt_index": pt_idx,
+            "offset": offset,
+        }
+
+
+class MemoryAllocationStrategyComparator:
+    """
+    Compares Physical Memory Management algorithms:
+    1. Bitmap Allocation (MikanOS BitmapMemoryManager)
+    2. Free List (Linked List of free regions)
+    3. Buddy System (Binary buddy power-of-two blocks)
+    """
+    @staticmethod
+    def calculate_bitmap_overhead(ram_bytes: int, page_size: int = 4096) -> dict:
+        total_pages = (ram_bytes + page_size - 1) // page_size
+        bitmap_bytes = (total_pages + 7) // 8
+        overhead_ratio = bitmap_bytes / ram_bytes if ram_bytes > 0 else 0.0
+        return {
+            "ram_bytes": ram_bytes,
+            "ram_gib": ram_bytes / (1024 ** 3),
+            "total_pages": total_pages,
+            "bitmap_bytes": bitmap_bytes,
+            "bitmap_kib": bitmap_bytes / 1024,
+            "bitmap_mib": bitmap_bytes / (1024 ** 2),
+            "overhead_ratio": overhead_ratio,
+            "overhead_percent": overhead_ratio * 100.0,
+        }
+
+    @staticmethod
+    def compare_strategies() -> dict:
+        return {
+            "Bitmap": {
+                "space_overhead": "Fixed ~0.003% (1 bit per 4 KiB)",
+                "alloc_time": "O(N) worst-case (First-Fit search across 64-bit words)",
+                "free_time": "O(1) (Direct bit reset by PFN / 64)",
+                "internal_frag": "None (Allocates exact 4 KiB frames)",
+                "external_frag": "Low for single pages, moderate for multi-page contiguous requests",
+                "suitability": "Optimal for bare-metal OS kernel boot & fixed page frame pools"
+            },
+            "FreeList": {
+                "space_overhead": "Variable (16-32 bytes per free block node)",
+                "alloc_time": "O(M) (Traverse M free blocks for best/first fit)",
+                "free_time": "O(1) without coalescing, O(M) with address-sorted coalesce",
+                "internal_frag": "None",
+                "external_frag": "High over time without active compaction",
+                "suitability": "Common in user-space malloc/heap management"
+            },
+            "BuddySystem": {
+                "space_overhead": "1-2% (Tree / order metadata & bitmaps)",
+                "alloc_time": "O(log N) (Fast split of power-of-two orders)",
+                "free_time": "O(log N) (Recursive buddy address XOR coalesce)",
+                "internal_frag": "High (Up to 50% waste for arbitrary non-power-of-two sizes)",
+                "external_frag": "Very low (Clean hierarchical coalescing)",
+                "suitability": "Optimal for Linux page allocator managing multi-order chunks"
+            }
+        }
+
+
+@dataclass
+class VirtualPageEntry:
+    pfn: int
+    present: bool = True
+    writable: bool = True
+    user_accessible: bool = False
+    executable: bool = True
+
+
+class PhysicalVsVirtualMemorySim:
+    """
+    Simulates x86-64 Physical Frame Pool, Virtual Address Space, MMU address translation,
+    and CPU privilege / access protection checks.
+    """
+    def __init__(self, total_physical_pages: int = 1024):
+        self.total_physical_pages = total_physical_pages
+        self.allocated_physical_frames: set[int] = set()
+        # vpage_number -> VirtualPageEntry
+        self.kernel_page_table: dict[int, VirtualPageEntry] = {}
+        self.user_page_table: dict[int, VirtualPageEntry] = {}
+
+    def allocate_physical_frame(self) -> int:
+        for pfn in range(self.total_physical_pages):
+            if pfn not in self.allocated_physical_frames:
+                self.allocated_physical_frames.add(pfn)
+                return pfn
+        raise MemoryError("Out of physical memory: all frames allocated")
+
+    def free_physical_frame(self, pfn: int):
+        if pfn in self.allocated_physical_frames:
+            self.allocated_physical_frames.remove(pfn)
+
+    def map_page(self, vaddr: int, pfn: int, is_user_space: bool = False,
+                 writable: bool = True, user_accessible: bool = False,
+                 executable: bool = True):
+        vpage = PageFrameAddressMath.phys_to_pfn(vaddr)
+        entry = VirtualPageEntry(
+            pfn=pfn,
+            present=True,
+            writable=writable,
+            user_accessible=user_accessible,
+            executable=executable
+        )
+        if is_user_space:
+            self.user_page_table[vpage] = entry
+        else:
+            self.kernel_page_table[vpage] = entry
+
+    def translate(self, vaddr: int, is_user_mode: bool = False,
+                  is_write: bool = False, is_exec: bool = False,
+                  is_user_space: bool = False, rip: int = 0x1000) -> int:
+        table = self.user_page_table if is_user_space else self.kernel_page_table
+        vpage = PageFrameAddressMath.phys_to_pfn(vaddr)
+        offset = PageFrameAddressMath.page_offset(vaddr)
+
+        if vpage not in table or not table[vpage].present:
+            raise PageFaultException(PageFaultType.NOT_PRESENT, vaddr, rip)
+
+        entry = table[vpage]
+
+        if is_user_mode and not entry.user_accessible:
+            raise PageFaultException(PageFaultType.USER_ACCESS_VIOLATION, vaddr, rip)
+
+        if is_write and not entry.writable:
+            raise PageFaultException(PageFaultType.WRITE_PROTECTION, vaddr, rip)
+
+        if is_exec and not entry.executable:
+            raise PageFaultException(PageFaultType.INSTRUCTION_FETCH_VIOLATION, vaddr, rip)
+
+        phys_addr = PageFrameAddressMath.pfn_to_phys(entry.pfn) + offset
+        return phys_addr
+
+
+def plot_fig8_01_physical_vs_virtual_memory_architecture(output_path: str = "8/result/fig8_01_physical_vs_virtual_memory_architecture.png") -> str:
+    """
+    Visualizes Physical Memory vs Virtual Address Spaces, MMU 4-Level Paging Translation,
+    and Ring 0 / Ring 3 Privilege Protection.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 11), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.1, 1.0], width_ratios=[1.1, 1.0], hspace=0.3, wspace=0.25)
+
+    # --------------------------------------------------------------------------
+    # Panel 1 (Top Left): Virtual Memory Address Spaces (Kernel vs User)
+    # --------------------------------------------------------------------------
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(-0.5, 9.5)
+    ax1.axis("off")
+    ax1.set_title("x86-64 Canonical 48-bit Virtual Address Spaces & Privilege Boundary",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # Upper Half: Kernel Space (Ring 0)
+    rect_k = plt.Rectangle((5, 5.2), 90, 3.8, facecolor="#E8EAF6", edgecolor="#3F51B5", linewidth=2.0)
+    ax1.add_patch(rect_k)
+    ax1.text(8, 8.4, "Kernel Space (Higher Half: Ring 0 Only)", fontsize=11, fontweight="bold", color="#1A237E")
+    ax1.text(92, 8.4, "0xFFFF_FFFF_FFFF_FFFF", fontsize=9, fontfamily="monospace", color="#283593", ha="right")
+    ax1.text(8, 7.5, "- Direct Physical Map (Identity / PhysMap)\n- Kernel Code (.text) & Data (.data/.bss)\n- Kernel Stacks & Page Table Structures",
+             fontsize=9, color="#283593")
+    ax1.text(92, 5.5, "0xFFFF_8000_0000_0000", fontsize=9, fontfamily="monospace", color="#283593", ha="right")
+
+    # Non-canonical hole
+    rect_hole = plt.Rectangle((5, 4.2), 90, 0.7, facecolor="#ECEFF1", edgecolor="#90A4AE", linestyle="--", linewidth=1.2)
+    ax1.add_patch(rect_hole)
+    ax1.text(50, 4.55, "Non-Canonical Address Hole (Unmapped / General Protection Fault #GP)",
+             fontsize=8.5, fontstyle="italic", color="#546E7A", ha="center", va="center")
+
+    # Lower Half: User Space (Ring 3)
+    rect_u = plt.Rectangle((5, 0.2), 90, 3.7, facecolor="#E0F2F1", edgecolor="#00897B", linewidth=2.0)
+    ax1.add_patch(rect_u)
+    ax1.text(8, 3.3, "User Application Space (Lower Half: Ring 3 / Ring 0)", fontsize=11, fontweight="bold", color="#004D40")
+    ax1.text(92, 3.3, "0x0000_7FFF_FFFF_FFFF", fontsize=9, fontfamily="monospace", color="#004D40", ha="right")
+    ax1.text(8, 2.3, "- User Stack (grows down)\n- User Heap (malloc / sbrk)\n- User Code & Static Data (ELF)",
+             fontsize=9, color="#004D40")
+    ax1.text(92, 0.5, "0x0000_0000_0000_0000", fontsize=9, fontfamily="monospace", color="#004D40", ha="right")
+
+    # --------------------------------------------------------------------------
+    # Panel 2 (Top Right): MMU 4-Level Paging Translation Flow
+    # --------------------------------------------------------------------------
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(-0.5, 9.5)
+    ax2.axis("off")
+    ax2.set_title("MMU Address Translation: Virtual Address -> Physical Address",
+                  fontsize=12, fontweight="bold", color="#1B5E20", pad=12)
+
+    boxes = [
+        ("CR3 Reg", 8.2, "#FFECB3", "#FF8F00", "Points to PML4 Base Physical Address"),
+        ("PML4 [9b]", 6.4, "#FFE082", "#FF6F00", "Bits 47..39 (512 Entries x 8B = 4KiB)"),
+        ("PDP Table [9b]", 4.6, "#FFF59D", "#FBC02D", "Bits 38..30 (Page Directory Pointer)"),
+        ("PD Table [9b]", 2.8, "#C8E6C9", "#388E3C", "Bits 29..21 (Page Directory)"),
+        ("PT Table [9b]", 1.0, "#A5D6A7", "#2E7D32", "Bits 20..12 (Page Table: 4KiB Physical Frame)"),
+    ]
+    for name, y_pos, bg, border, desc in boxes:
+        r = plt.Rectangle((5, y_pos - 0.5), 90, 1.0, facecolor=bg, edgecolor=border, linewidth=1.8)
+        ax2.add_patch(r)
+        ax2.text(10, y_pos, name, fontsize=10, fontweight="bold", color="#212121", va="center")
+        ax2.text(90, y_pos, desc, fontsize=8.5, color="#424242", ha="right", va="center")
+
+    for y in [7.7, 5.9, 4.1, 2.3]:
+        ax2.annotate("", xy=(50, y - 0.45), xytext=(50, y),
+                     arrowprops=dict(arrowstyle="->", color="#37474F", lw=1.5))
+
+    # --------------------------------------------------------------------------
+    # Panel 3 (Bottom Left): Physical RAM Layout & Page Frames (4 KiB)
+    # --------------------------------------------------------------------------
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_xlim(0, 100)
+    ax3.set_ylim(-0.5, 9.5)
+    ax3.axis("off")
+    ax3.set_title("Physical RAM Layout & 4 KiB Page Frame Allocation Pool",
+                  fontsize=12, fontweight="bold", color="#4A148C", pad=12)
+
+    phys_sections = [
+        (8.0, 1.0, "#CFD8DC", "#455A64", "0x0000_0000 .. 0x000F_FFFF (1 MiB)", "Real-mode BIOS / IVT / BDA / Video RAM"),
+        (6.7, 1.0, "#FFE0B2", "#FB8C00", "0x0010_0000 .. 0x001F_FFFF", "MikanOS Kernel Code & BSS Stack"),
+        (5.4, 1.0, "#FFCDD2", "#E53935", "0x0020_0000 .. 0x003F_FFFF", "UEFI BootServices Code/Data (To be reclaimed)"),
+        (4.1, 1.0, "#C8E6C9", "#43A047", "0x0040_0000 .. 0x7FFF_FFFF", "Conventional Memory: Free 4 KiB Page Frames Pool"),
+        (2.8, 1.0, "#E1BEE7", "#8E24AA", "0x8000_0000 .. 0xFEFF_FFFF", "ACPI Reclaimable / NVS / Reserved RAM"),
+        (1.5, 1.0, "#B2DFDB", "#00897B", "0xFF00_0000 .. 0xFFFF_FFFF (MMIO)", "PCI MMIO / GOP VRAM FrameBuffer"),
+    ]
+    for y_pos, height, bg, border, addr_range, desc in phys_sections:
+        r = plt.Rectangle((5, y_pos - 0.45), 90, height, facecolor=bg, edgecolor=border, linewidth=1.5)
+        ax3.add_patch(r)
+        ax3.text(8, y_pos + 0.05, addr_range, fontsize=9, fontweight="bold", color="#263238")
+        ax3.text(8, y_pos - 0.25, desc, fontsize=8.5, color="#37474F")
+
+    # --------------------------------------------------------------------------
+    # Panel 4 (Bottom Right): Hardware Protection & Fault Triggers
+    # --------------------------------------------------------------------------
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_xlim(0, 100)
+    ax4.set_ylim(-0.5, 9.5)
+    ax4.axis("off")
+    ax4.set_title("CPU Hardware Protection Checks (Page Fault #PF Matrix)",
+                  fontsize=12, fontweight="bold", color="#B71C1C", pad=12)
+
+    checks = [
+        ("Present Bit (P=0)", "Triggers #PF (Page Not Present)", "Demand Paging / Swapping trigger", "#FFCDD2"),
+        ("Write Bit (R/W=0)", "Triggers #PF on Write attempt", "Read-Only code protection / Copy-on-Write", "#FFE0B2"),
+        ("User Bit (U/S=0)", "Triggers #PF on Ring 3 access", "Prevents user apps corrupting OS kernel", "#FFF9C4"),
+        ("NX Bit (XD=1)", "Triggers #PF on Code execution", "DEP (Data Execution Prevention / Shellcode stop)", "#E1BEE7"),
+    ]
+    for i, (flag, trigger, purpose, bg) in enumerate(checks):
+        y = 7.5 - i * 2.2
+        r = plt.Rectangle((5, y - 0.7), 90, 1.7, facecolor=bg, edgecolor="#78909C", linewidth=1.5)
+        ax4.add_patch(r)
+        ax4.text(8, y + 0.35, flag, fontsize=10, fontweight="bold", color="#B71C1C")
+        ax4.text(8, y, f"Action: {trigger}", fontsize=8.5, fontweight="bold", color="#263238")
+        ax4.text(8, y - 0.35, f"OS Purpose: {purpose}", fontsize=8.5, color="#37474F")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_02_memory_management_data_structures_comparison(output_path: str = "8/result/fig8_02_memory_management_data_structures_comparison.png") -> str:
+    """
+    Compares Bitmap Allocation vs Free List vs Buddy System in memory overhead,
+    time complexity, and fragmentation characteristics.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 10), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.0], hspace=0.35, wspace=0.25)
+
+    # --------------------------------------------------------------------------
+    # Panel 1: Memory Overhead across RAM sizes (1 GiB .. 64 GiB)
+    # --------------------------------------------------------------------------
+    ax1 = fig.add_subplot(gs[0, 0])
+    ram_gib = np.array([1, 2, 4, 8, 16, 32, 64])
+    # Bitmap: 1 bit per 4KiB -> 32 KiB per 1 GiB
+    bitmap_kib = ram_gib * (1024 * 1024 // 4096) // 8 / 1024
+    # Free list: assuming 10,000 fragmented regions x 24 bytes node
+    freelist_kib = np.full_like(ram_gib, 10000 * 24 / 1024, dtype=float)
+    # Buddy system: ~1.5% of total RAM
+    buddy_mib = ram_gib * 1024 * 0.015
+
+    ax1.plot(ram_gib, bitmap_kib, marker="o", lw=2.2, color="#1976D2", label="Bitmap (1 bit / 4KiB = 0.003% RAM)")
+    ax1.plot(ram_gib, freelist_kib, marker="s", lw=2.0, color="#388E3C", linestyle="--", label="Free List (10k chunks x 24B)")
+    ax1.set_xlabel("Physical RAM Capacity (GiB)", fontsize=10, fontweight="bold", color="#37474F")
+    ax1.set_ylabel("Management Metadata Size (KiB)", fontsize=10, fontweight="bold", color="#37474F")
+    ax1.set_title("Physical Allocator Metadata Overhead (Fixed ~0.003% for Bitmap)",
+                  fontsize=11, fontweight="bold", color="#0D47A1")
+    ax1.grid(True, linestyle="--", alpha=0.5)
+    ax1.legend(fontsize=9, loc="upper left")
+
+    # Annotations
+    ax1.annotate("4 GiB RAM -> Only 128 KiB Bitmap!",
+                 xy=(4, bitmap_kib[2]), xytext=(8, 500),
+                 arrowprops=dict(arrowstyle="->", color="#D32F2F", lw=1.5),
+                 fontsize=9.5, fontweight="bold", color="#D32F2F")
+
+    # --------------------------------------------------------------------------
+    # Panel 2: Time Complexity Trade-offs
+    # --------------------------------------------------------------------------
+    ax2 = fig.add_subplot(gs[0, 1])
+    categories = ["Alloc (1 Page)", "Alloc (N Pages)", "Free (1 Page)", "Free (N Pages)", "Merge/Coalesce"]
+    bitmap_scores = [3.5, 2.5, 5.0, 4.0, 5.0]  # Higher is faster/better
+    freelist_scores = [2.0, 1.5, 4.0, 3.0, 2.0]
+    buddy_scores = [4.5, 4.0, 4.0, 4.0, 4.5]
+
+    x = np.arange(len(categories))
+    width = 0.25
+
+    ax2.bar(x - width, bitmap_scores, width, label="Bitmap (MikanOS)", color="#2196F3", edgecolor="#1565C0")
+    ax2.bar(x, freelist_scores, width, label="Free List", color="#4CAF50", edgecolor="#2E7D32")
+    ax2.bar(x + width, buddy_scores, width, label="Buddy System (Linux)", color="#FF9800", edgecolor="#E65100")
+
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(categories, fontsize=9, fontweight="bold", color="#37474F")
+    ax2.set_ylabel("Speed / Efficiency Score (5 = Fastest)", fontsize=10, fontweight="bold", color="#37474F")
+    ax2.set_title("Operational Latency Comparison across Allocator Operations",
+                  fontsize=11, fontweight="bold", color="#1B5E20")
+    ax2.set_ylim(0, 6)
+    ax2.grid(axis="y", linestyle="--", alpha=0.5)
+    ax2.legend(fontsize=9, loc="upper right")
+
+    # --------------------------------------------------------------------------
+    # Panel 3: Fragmentation Profiles (Internal vs External)
+    # --------------------------------------------------------------------------
+    ax3 = fig.add_subplot(gs[1, 0])
+    methods = ["Bitmap\n(Page-level)", "Free List\n(Byte-level)", "Buddy System\n(Order-level)"]
+    internal_frag = [0.0, 5.0, 35.0]  # % of wasted allocated bytes
+    external_frag = [15.0, 45.0, 8.0]  # % risk of unallocatable gaps
+
+    x3 = np.arange(len(methods))
+    w3 = 0.35
+    ax3.bar(x3 - w3/2, internal_frag, w3, label="Internal Fragmentation (Wasted inside alloc)", color="#E53935", edgecolor="#B71C1C")
+    ax3.bar(x3 + w3/2, external_frag, w3, label="External Fragmentation (Unusable gaps)", color="#FB8C00", edgecolor="#E65100")
+
+    ax3.set_xticks(x3)
+    ax3.set_xticklabels(methods, fontsize=9.5, fontweight="bold", color="#37474F")
+    ax3.set_ylabel("Fragmentation Risk / Waste (%)", fontsize=10, fontweight="bold", color="#37474F")
+    ax3.set_title("Fragmentation Behavior: Internal Waste vs External Checkerboard",
+                  fontsize=11, fontweight="bold", color="#C62828")
+    ax3.set_ylim(0, 60)
+    ax3.grid(axis="y", linestyle="--", alpha=0.5)
+    ax3.legend(fontsize=9)
+
+    # --------------------------------------------------------------------------
+    # Panel 4: Architectural Conclusion for MikanOS
+    # --------------------------------------------------------------------------
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.axis("off")
+    ax4.set_title("Why MikanOS Selects Bitmap Physical Page Allocator",
+                  fontsize=11, fontweight="bold", color="#4A148C", pad=12)
+
+    conclusions = [
+        ("1. Zero Dynamic Allocation Dependency", "Can be statically placed in BSS before any heap/malloc is alive.", "#EDE7F6"),
+        ("2. Predictable Low Memory Footprint", "Requires only ~128 KiB to manage 4 GiB of RAM (1 bit per 4 KiB frame).", "#E8EAF6"),
+        ("3. O(1) Instant Deallocation", "Freeing a frame is a single bit reset (`alloc_map[pfn/64] &= ~(1UL<<(pfn%64))`).", "#E3F2FD"),
+        ("4. Seamless UEFI MemoryMap Mapping", "Easily marks arbitrary UEFI ConventionalMemory segments as available.", "#E0F2F1"),
+        ("5. Hardware Paging Synergy", "x86-64 MMU natively works with 4 KiB page frames, eliminating internal waste.", "#F1F8E9"),
+    ]
+    for i, (title, text, bg) in enumerate(conclusions):
+        y = 8.5 - i * 1.9
+        r = plt.Rectangle((2, y - 0.7), 96, 1.6, facecolor=bg, edgecolor="#9E9E9E", linewidth=1.2)
+        ax4.add_patch(r)
+        ax4.text(5, y + 0.25, title, fontsize=9.5, fontweight="bold", color="#311B92")
+        ax4.text(5, y - 0.35, text, fontsize=8.5, color="#212121")
+
+    ax4.set_xlim(0, 100)
+    ax4.set_ylim(0, 10)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_03_chapter8_memory_subsystem_roadmap(output_path: str = "8/result/fig8_03_chapter8_memory_subsystem_roadmap.png") -> str:
+    """
+    Visualizes Chapter 8 Memory Subsystem Construction Roadmap across Sections 8.1 to 8.7.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 9.5), facecolor="#F8F9FA")
+    ax = fig.add_subplot(111)
+    ax.set_xlim(0, 100)
+    ax.set_ylim(-0.5, 10.5)
+    ax.axis("off")
+    ax.set_title("MikanOS Chapter 8 Memory Subsystem Construction Pipeline (8.1 -> 8.7)",
+                 fontsize=13, fontweight="bold", color="#0D47A1", pad=15)
+
+    stages = [
+        ("8.1 Role of OS Memory Management (Current)",
+         "Theoretical foundation: Why UEFI memory services are obsolete post ExitBootServices.\nPMM (Physical) vs VMM (Virtual), 4KiB page frame mathematics, allocator algorithms.",
+         "#E3F2FD", "#1565C0", 9.0),
+        ("8.2 Inspecting UEFI MemoryMap in Kernel (day08a)",
+         "Pass memory map from EDK II bootloader to kernel. Iterate descriptors to identify\navailable RAM (EfiConventionalMemory) and avoid MMIO / firmware reserved ranges.",
+         "#E8F5E9", "#2E7D32", 7.5),
+        ("8.3 Relocating Kernel Data Structures (day08b)",
+         "Evacuate critical OS structures (IDT, xHCI Ring Buffers) from transient UEFI memory pools\ninto secure kernel-managed BSS memory to prevent accidental reclamation.",
+         "#FFF3E0", "#E65100", 6.0),
+        ("8.4 Switching to Independent Kernel Stack",
+         "Allocate dedicated 1 MiB stack in kernel .bss segment. Execute assembly stack switch\n(MOV RSP, new_stack_end) to break reliance on UEFI firmware stack.",
+         "#F3E5F5", "#7B1FA2", 4.5),
+        ("8.5 Configuring GDT & Long-Mode Segmentation",
+         "Build 64-bit Global Descriptor Table (Null Descriptor, Kernel Code CS=0x08, Kernel Data SS=0x10).\nLoad with LGDT and execute long jump / FAR RET to reload CS register.",
+         "#EDE7F6", "#512DA8", 3.0),
+        ("8.6 Setting Up 64 GiB Identity Paging",
+         "Construct 4-level page tables (PML4 -> PDP -> PD) with 2 MiB Large Pages covering 64 GiB.\nLoad CR3 register and activate self-controlled identity address translation.",
+         "#E0F7FA", "#00838F", 1.5),
+        ("8.7 Implementing BitmapMemoryManager (day08c)",
+         "Create 4 KiB frame bitmap manager. Mark available regions from UEFI MemoryMap.\nImplement Allocate(size) and Free(frame, size) with First-Fit algorithm.",
+         "#FCE4EC", "#C2185B", 0.0),
+    ]
+
+    for title, desc, bg, border, y in stages:
+        r = plt.Rectangle((5, y - 0.55), 90, 1.15, facecolor=bg, edgecolor=border, linewidth=2.0)
+        ax.add_patch(r)
+        ax.text(8, y + 0.25, title, fontsize=10.5, fontweight="bold", color=border)
+        ax.text(8, y - 0.25, desc, fontsize=8.5, color="#263238")
+
+    # Connect arrows between stages
+    for i in range(len(stages) - 1):
+        y_curr = stages[i][4] - 0.55
+        y_next = stages[i + 1][4] + 0.60
+        ax.annotate("", xy=(50, y_next), xytext=(50, y_curr),
+                    arrowprops=dict(arrowstyle="->", color="#37474F", lw=1.8))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

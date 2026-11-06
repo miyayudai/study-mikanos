@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-494%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-27.2%25%20(62%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-512%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-28.1%25%20(64%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -95,7 +95,7 @@ cmake --build build
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | [`5_Exercises.ipynb`](5/5_Exercises.ipynb) | `[x]` 完了 (7/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | `[x]` 完了 (5/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
-| **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
+| **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[-]` 進行中 (1/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ、`TimerManager`、RSDPとACPI PMタイマ | `11_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
@@ -226,6 +226,12 @@ cmake --build build
 | [`7.9_Implementing_Ring_Buffer_ArrayQueue.ipynb`](7/7.9_Implementing_Ring_Buffer_ArrayQueue.ipynb) | 7.9 キューの実装（`osbook_day07b`・`ArrayQueue<T>`クラステンプレート・依存性注入ゼロ動的確保・`read_pos_`/`write_pos_`/`count_`不変条件・`if`循環分岐数理とCPU除算回避・満杯/空境界判定・1スロット犠牲vs 100%利用効率・ヘッダオンリーODR設計・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.9_Implementing_Ring_Buffer_ArrayQueue.ipynb) |
 | [`7.10_Event_Loop_with_Interrupt_Queue.ipynb`](7/7.10_Event_Loop_with_Interrupt_Queue.ipynb) | 7.10 キューを使った割り込み高速化（`osbook_day07b`・Top Half/Bottom Half完全分離・`struct Message`・極小化`IntHandlerXHCI`・`KernelMain`イベントループ・`CLI`クリティカルセクション保護・Lost Wakeupスリープ喪失問題とTOCTOU数理・x86-64 `STI; HLT` 割り込みシャドウハードウェア保証・イベント駆動OS状態機械・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.10_Event_Loop_with_Interrupt_Queue.ipynb) |
 | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | 第7章 演習問題（割り込みとFIFO 総合演習・スタックフレーム数理・ベクタ空間・IDT記述子分解・PCI MSIレジスタ導出・FIFO vs FILO挙動シミュレーション・ArrayQueue循環数理・CLI/STIとSTI;HLT割り込みシャドウ・C++20単体検証・10問自己採点クイズ・10軸レーダーチャート） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7_Exercises.ipynb) |
+
+### 第8章 メモリ管理 (`8/`)
+
+| ノートブック | 内容 | Colab で開く |
+|---|---|:---:|
+| [`8.1_Role_of_OS_Memory_Management.ipynb`](8/8.1_Role_of_OS_Memory_Management.ipynb) | 8.1 メモリ管理（OS自前メモリ管理の動機・`ExitBootServices`後の制約・PMM vs VMM・4KiBページフレーム数理・ビットマップvsフリーリストvsバディシステム比較・48bit正規仮想アドレス分解・MMUハードウェア保護・#PF例外・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/8/8.1_Role_of_OS_Memory_Management.ipynb) |
 
 
 
