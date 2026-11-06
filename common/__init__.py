@@ -440,6 +440,12 @@ from common.os_sim import (
     plot_fifo_vs_filo_concept,
     plot_event_order_inversion_timeline,
     plot_data_structure_comparison,
+    RingBufferSnapshot,
+    ArrayQueueSim,
+    OneSlotWasteQueueSim,
+    plot_arrayqueue_ring_buffer_structure,
+    plot_push_pop_state_transition_sequence,
+    plot_buffer_boundary_and_full_empty_logic,
 )
 
 __all__ = [
@@ -882,4 +888,10 @@ __all__ = [
     "plot_fifo_vs_filo_concept",
     "plot_event_order_inversion_timeline",
     "plot_data_structure_comparison",
+    "RingBufferSnapshot",
+    "ArrayQueueSim",
+    "OneSlotWasteQueueSim",
+    "plot_arrayqueue_ring_buffer_structure",
+    "plot_push_pop_state_transition_sequence",
+    "plot_buffer_boundary_and_full_empty_logic",
 ]

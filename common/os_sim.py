@@ -27484,3 +27484,469 @@ def plot_data_structure_comparison(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ============================================================================
+# Section 7.9: ArrayQueue Ring Buffer Architecture and Verification
+# ============================================================================
+
+@dataclass
+class RingBufferSnapshot:
+    """State snapshot of a ring buffer after an operation."""
+
+    step: int
+    action: str
+    read_pos: int
+    write_pos: int
+    count: int
+    capacity: int
+    buffer: List[Optional[Any]]
+    success: bool
+    description: str
+
+
+class ArrayQueueSim:
+    """Python simulation of MikanOS ArrayQueue<T> (kernel/queue.hpp).
+
+    Uses a count_ variable to allow 100% buffer utilization without dynamic allocation.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        if capacity <= 0:
+            raise ValueError("Capacity must be positive.")
+        self._capacity = capacity
+        self._buffer: List[Optional[Any]] = [None] * capacity
+        self._read_pos = 0
+        self._write_pos = 0
+        self._count = 0
+        self.history: List[RingBufferSnapshot] = []
+        self._record_snapshot("Init", True, f"Initialized queue with capacity {capacity}")
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def read_pos(self) -> int:
+        return self._read_pos
+
+    @property
+    def write_pos(self) -> int:
+        return self._write_pos
+
+    def is_empty(self) -> bool:
+        return self._count == 0
+
+    def is_full(self) -> bool:
+        return self._count == self._capacity
+
+    def front(self) -> Optional[Any]:
+        if self._count == 0:
+            return None
+        return self._buffer[self._read_pos]
+
+    def push(self, value: Any) -> bool:
+        """Pushes a value into the queue (Tail). Returns False if full."""
+        if self._count == self._capacity:
+            self._record_snapshot(f"Push({value})", False, "Error::kFull: buffer is full")
+            return False
+
+        self._buffer[self._write_pos] = value
+        self._count += 1
+        self._write_pos += 1
+        if self._write_pos == self._capacity:
+            self._write_pos = 0
+
+        self._record_snapshot(f"Push({value})", True, f"Successfully pushed {value}")
+        return True
+
+    def pop(self) -> Optional[Any]:
+        """Pops an element from the queue (Head). Returns None if empty."""
+        if self._count == 0:
+            self._record_snapshot("Pop()", False, "Error::kEmpty: buffer is empty")
+            return None
+
+        val = self._buffer[self._read_pos]
+        self._buffer[self._read_pos] = None
+        self._count -= 1
+        self._read_pos += 1
+        if self._read_pos == self._capacity:
+            self._read_pos = 0
+
+        self._record_snapshot("Pop()", True, f"Successfully popped {val}")
+        return val
+
+    def _record_snapshot(self, action: str, success: bool, description: str) -> None:
+        snap = RingBufferSnapshot(
+            step=len(self.history),
+            action=action,
+            read_pos=self._read_pos,
+            write_pos=self._write_pos,
+            count=self._count,
+            capacity=self._capacity,
+            buffer=list(self._buffer),
+            success=success,
+            description=description,
+        )
+        self.history.append(snap)
+
+
+class OneSlotWasteQueueSim:
+    """Classical ring buffer simulation without count_ variable (sacrifices 1 slot)."""
+
+    def __init__(self, capacity: int) -> None:
+        if capacity <= 1:
+            raise ValueError("Capacity must be at least 2 for One-Slot Waste design.")
+        self._capacity = capacity
+        self._buffer: List[Optional[Any]] = [None] * capacity
+        self._head = 0
+        self._tail = 0
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def usable_capacity(self) -> int:
+        return self._capacity - 1
+
+    @property
+    def head(self) -> int:
+        return self._head
+
+    @property
+    def tail(self) -> int:
+        return self._tail
+
+    def is_empty(self) -> bool:
+        return self._head == self._tail
+
+    def is_full(self) -> bool:
+        next_tail = 0 if self._tail + 1 == self._capacity else self._tail + 1
+        return next_tail == self._head
+
+    def count(self) -> int:
+        if self._tail >= self._head:
+            return self._tail - self._head
+        return self._capacity - self._head + self._tail
+
+    def push(self, value: Any) -> bool:
+        next_tail = 0 if self._tail + 1 == self._capacity else self._tail + 1
+        if next_tail == self._head:
+            return False
+        self._buffer[self._tail] = value
+        self._tail = next_tail
+        return True
+
+    def pop(self) -> Optional[Any]:
+        if self._head == self._tail:
+            return None
+        val = self._buffer[self._head]
+        self._buffer[self._head] = None
+        self._head = 0 if self._head + 1 == self._capacity else self._head + 1
+        return val
+
+
+def plot_arrayqueue_ring_buffer_structure(
+    output_path: str = "7/result/fig7_19_arrayqueue_ring_buffer_structure_and_pointers.png"
+) -> str:
+    """Figure 7.19: ArrayQueue<T> Ring Buffer Architecture and Pointer Invariants."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 8.5))
+    gs = GridSpec(2, 2, width_ratios=[1.1, 1.0], height_ratios=[1.1, 0.9], hspace=0.32, wspace=0.25)
+
+    # 1. Top-Left: Physical Memory Array
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_xlim(-0.5, 8.5)
+    ax1.set_ylim(-1.5, 4.0)
+    ax1.axis("off")
+    ax1.set_title("1. Physical Linear Memory Layout (T* data_ with capacity_ = 8)",
+                  fontsize=12, fontweight="bold", pad=10, color="#0D47A1")
+
+    # Draw 8 slots
+    slots = ["Slot 0", "Slot 1", "Slot 2 (D0)", "Slot 3 (D1)", "Slot 4 (D2)", "Slot 5 (D3)", "Slot 6", "Slot 7"]
+    slot_colors = ["#ECEFF1", "#ECEFF1", "#C8E6C9", "#C8E6C9", "#C8E6C9", "#C8E6C9", "#ECEFF1", "#ECEFF1"]
+    active = [False, False, True, True, True, True, False, False]
+
+    for i in range(8):
+        rect = patches.FancyBboxPatch((i, 1.0), 0.9, 1.5, boxstyle="round,pad=0.04",
+                                      facecolor=slot_colors[i], edgecolor="#37474F", linewidth=1.5)
+        ax1.add_patch(rect)
+        ax1.text(i + 0.45, 2.1, f"[{i}]", ha="center", va="center", fontsize=9, fontfamily="monospace", color="#546E7A")
+        val_text = f"msg_{i-2}" if active[i] else "empty"
+        val_color = "#1B5E20" if active[i] else "#90A4AE"
+        val_weight = "bold" if active[i] else "normal"
+        ax1.text(i + 0.45, 1.5, val_text, ha="center", va="center", fontsize=9, fontweight=val_weight, color=val_color)
+
+    # Pointers
+    # read_pos_ = 2
+    ax1.annotate("read_pos_ = 2\n(Next Pop/Front)", xy=(2.45, 0.95), xytext=(2.45, -0.7),
+                 ha="center", fontsize=9.5, fontweight="bold", color="#C62828",
+                 arrowprops=dict(arrowstyle="->", lw=2.0, color="#C62828"))
+    # write_pos_ = 6
+    ax1.annotate("write_pos_ = 6\n(Next Push)", xy=(6.45, 0.95), xytext=(6.45, -0.7),
+                 ha="center", fontsize=9.5, fontweight="bold", color="#2E7D32",
+                 arrowprops=dict(arrowstyle="->", lw=2.0, color="#2E7D32"))
+
+    # Active range bracket
+    ax1.annotate("", xy=(2.0, 2.7), xytext=(6.9, 2.7),
+                 arrowprops=dict(arrowstyle="<->", lw=1.5, color="#1565C0"))
+    ax1.text(4.45, 3.1, "Active Elements (count_ = 4)", ha="center", fontsize=10, fontweight="bold", color="#1565C0")
+
+    # 2. Top-Right: Logical Circular (Ring) Topology
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(-1.6, 1.6)
+    ax2.set_ylim(-1.6, 1.6)
+    ax2.set_aspect("equal")
+    ax2.axis("off")
+    ax2.set_title("2. Logical Circular Topology (Clockwise Advancement)",
+                  fontsize=12, fontweight="bold", pad=10, color="#0D47A1")
+
+    # Draw circular slots
+    N = 8
+    angles = np.linspace(np.pi / 2, np.pi / 2 - 2 * np.pi, N, endpoint=False)
+    r_mid = 1.05
+    for i, angle in enumerate(angles):
+        x = r_mid * np.cos(angle)
+        y = r_mid * np.sin(angle)
+        c = "#C8E6C9" if active[i] else "#ECEFF1"
+        ec = "#1B5E20" if active[i] else "#78909C"
+        circ = patches.Circle((x, y), 0.22, facecolor=c, edgecolor=ec, linewidth=1.5)
+        ax2.add_patch(circ)
+        ax2.text(x, y, f"[{i}]", ha="center", va="center", fontsize=8.5, fontfamily="monospace", fontweight="bold")
+
+    # Circular flow arrow in center
+    arc = patches.Arc((0, 0), 1.0, 1.0, angle=0, theta1=30, theta2=330, color="#0D47A1", lw=2.0, ls="--")
+    ax2.add_patch(arc)
+    ax2.annotate("", xy=(0.5 * np.cos(np.radians(30)), 0.5 * np.sin(np.radians(30))),
+                 xytext=(0.5 * np.cos(np.radians(45)), 0.5 * np.sin(np.radians(45))),
+                 arrowprops=dict(arrowstyle="->", lw=2.0, color="#0D47A1"))
+    ax2.text(0, 0, "Wrap-Around\nCircular Ring", ha="center", va="center", fontsize=9, fontweight="bold", color="#0D47A1")
+
+    # Label read_pos and write_pos in circle
+    # index 2:
+    ang_r = angles[2]
+    xr, yr = 1.38 * np.cos(ang_r), 1.38 * np.sin(ang_r)
+    ax2.text(xr, yr, "read_pos_ (2)", ha="center", va="center", fontsize=9, fontweight="bold", color="#C62828",
+             bbox=dict(boxstyle="round,pad=0.2", facecolor="#FFEBEE", edgecolor="#C62828"))
+    # index 6:
+    ang_w = angles[6]
+    xw, yw = 1.38 * np.cos(ang_w), 1.38 * np.sin(ang_w)
+    ax2.text(xw, yw, "write_pos_ (6)", ha="center", va="center", fontsize=9, fontweight="bold", color="#2E7D32",
+             bbox=dict(boxstyle="round,pad=0.2", facecolor="#E8F5E9", edgecolor="#2E7D32"))
+
+    # 3. Bottom: Memory Invariants & Inversion of Control Pattern
+    ax3 = fig.add_subplot(gs[1, :])
+    ax3.axis("off")
+
+    bbox_props = dict(boxstyle="round,pad=0.5", facecolor="#F8F9FA", edgecolor="#CFD8DC", linewidth=1.2)
+    desc_text = (
+        "MikanOS ArrayQueue<T> Architectural Specifications & Class Invariants (kernel/queue.hpp)\n"
+        "------------------------------------------------------------------------------------------------------------------------------------\n"
+        "• Inversion of Control (Zero Dynamic Allocation):\n"
+        "    The queue does NOT allocate heap memory. It receives a pre-allocated static buffer via template <size_t N> ArrayQueue(std::array<T, N>& buf)\n"
+        "    or raw pointer ArrayQueue(T* buf, size_t size). This allows safe execution in interrupt handlers (IntHandlerXHCI) where malloc is forbidden.\n\n"
+        "• State Variables & Mathematical Invariants:\n"
+        "    1. 0 <= count_ <= capacity_        : Current valid elements. Full when count_ == capacity_; Empty when count_ == 0.\n"
+        "    2. 0 <= read_pos_ < capacity_       : Array index for next Pop() or Front() read operation.\n"
+        "    3. 0 <= write_pos_ < capacity_      : Array index for next Push() write operation.\n"
+        "    4. Wrap-Around Math                : if (++pos == capacity_) pos = 0;   (Branching is faster than CPU idiv modulo % instruction)\n\n"
+        "• Method Return Codes (Error.hpp):\n"
+        "    - Push(val) -> Returns Error::kFull if count_ == capacity_ (No overwrite; prevents data corruption). Returns Error::kSuccess on write.\n"
+        "    - Pop()     -> Returns Error::kEmpty if count_ == 0 (Prevents underflow reading garbage memory). Returns Error::kSuccess on advance."
+    )
+    ax3.text(0.01, 0.95, desc_text, transform=ax3.transAxes, ha="left", va="top",
+             fontsize=9.2, fontfamily="monospace", color="#212121", bbox=bbox_props)
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_push_pop_state_transition_sequence(
+    output_path: str = "7/result/fig7_20_push_pop_state_transition_sequence.png"
+) -> str:
+    """Figure 7.20: Step-by-Step Push/Pop State Transitions & Pointer Wrap-Around."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    sim = ArrayQueueSim(capacity=4)
+    sim.push(10)
+    sim.push(20)
+    sim.push(30)
+    sim.pop()
+    sim.pop()
+    sim.push(40)
+    sim.push(50)
+    sim.push(60)  # triggers full
+    sim.push(70)  # rejected full
+
+    # We select 6 representative steps
+    steps_to_show = [
+        (0, "Step 0: Initial State (Empty)"),
+        (3, "Step 1: Push(10), Push(20), Push(30)"),
+        (5, "Step 2: Pop() twice (Head advances to index 2)"),
+        (7, "Step 3: Push(40), Push(50) [Wrap-Around at index 0!]"),
+        (8, "Step 4: Push(60) [Buffer becomes 100% Full]"),
+        (9, "Step 5: Push(70) [Rejected: Error::kFull returned]"),
+    ]
+
+    fig, axes = plt.subplots(6, 1, figsize=(14, 11), sharex=True)
+    fig.subplots_adjust(hspace=0.45)
+    fig.suptitle("Push / Pop State Transitions & Ring Buffer Wrap-Around Sequence (Capacity = 4)",
+                 fontsize=13, fontweight="bold", y=0.98, color="#0D47A1")
+
+    for ax, (snap_idx, title) in zip(axes, steps_to_show):
+        snap = sim.history[snap_idx]
+        ax.set_xlim(-0.5, 4.5)
+        ax.set_ylim(-0.8, 1.8)
+        ax.axis("off")
+
+        # Step title and state badge
+        status_color = "#1B5E20" if snap.success else "#C62828"
+        ax.text(-0.4, 1.3, title, fontsize=10, fontweight="bold", color="#263238")
+        badge_text = f"count={snap.count}/4 | read={snap.read_pos} | write={snap.write_pos} | {snap.description}"
+        ax.text(2.0, 1.3, badge_text, fontsize=8.8, fontfamily="monospace", color=status_color,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="#F5F5F5", edgecolor=status_color, lw=0.8))
+
+        # Render 4 buffer slots
+        for i in range(4):
+            val = snap.buffer[i]
+            is_active = False
+            if snap.count > 0:
+                if snap.read_pos < snap.write_pos:
+                    is_active = (snap.read_pos <= i < snap.write_pos)
+                elif snap.read_pos > snap.write_pos:
+                    is_active = (i >= snap.read_pos or i < snap.write_pos)
+                else:  # count == capacity
+                    is_active = True
+
+            bg = "#C8E6C9" if is_active else "#ECEFF1"
+            border = "#2E7D32" if is_active else "#90A4AE"
+            rect = patches.FancyBboxPatch((i, 0.0), 0.85, 0.9, boxstyle="round,pad=0.03",
+                                          facecolor=bg, edgecolor=border, linewidth=1.2)
+            ax.add_patch(rect)
+            ax.text(i + 0.425, 0.72, f"[{i}]", ha="center", va="center", fontsize=8, fontfamily="monospace", color="#546E7A")
+
+            val_str = str(val) if val is not None else "-"
+            ax.text(i + 0.425, 0.35, val_str, ha="center", va="center", fontsize=9.5,
+                    fontweight="bold" if is_active else "normal",
+                    color="#1B5E20" if is_active else "#9E9E9E")
+
+            # Pointers
+            if i == snap.read_pos and i == snap.write_pos:
+                ax.annotate("R/W", xy=(i + 0.425, 0.0), xytext=(i + 0.425, -0.6),
+                            ha="center", fontsize=8, fontweight="bold", color="#6A1B9A",
+                            arrowprops=dict(arrowstyle="->", lw=1.5, color="#6A1B9A"))
+            elif i == snap.read_pos:
+                ax.annotate("read_pos", xy=(i + 0.425, 0.0), xytext=(i + 0.425, -0.6),
+                            ha="center", fontsize=8, fontweight="bold", color="#C62828",
+                            arrowprops=dict(arrowstyle="->", lw=1.5, color="#C62828"))
+            elif i == snap.write_pos:
+                ax.annotate("write_pos", xy=(i + 0.425, 0.0), xytext=(i + 0.425, -0.6),
+                            ha="center", fontsize=8, fontweight="bold", color="#2E7D32",
+                            arrowprops=dict(arrowstyle="->", lw=1.5, color="#2E7D32"))
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_buffer_boundary_and_full_empty_logic(
+    output_path: str = "7/result/fig7_21_buffer_full_empty_and_wrap_around_logic.png"
+) -> str:
+    """Figure 7.21: Buffer Full/Empty Logic: count_ variable vs One-Slot Waste & CPU Math."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(15, 9.0))
+    gs = GridSpec(2, 2, width_ratios=[1.0, 1.0], height_ratios=[1.2, 0.8], hspace=0.35, wspace=0.25)
+
+    # 1. Left: Classical One-Slot Waste Design
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.axis("off")
+    ax1.set_title("Approach A: Classical One-Slot Waste (No count_ variable)",
+                  fontsize=11.5, fontweight="bold", color="#D32F2F")
+
+    panel_a = (
+        "• Design Rationale:\n"
+        "    Relies strictly on head_ and tail_ pointers. Distinguishes Full from Empty\n"
+        "    by keeping 1 slot permanently unused.\n\n"
+        "• State Definitions:\n"
+        "    - Empty Condition : head_ == tail_\n"
+        "    - Full Condition  : (tail_ + 1) % capacity_ == head_\n"
+        "    - Usable Capacity : capacity_ - 1   (1 slot is sacrificed!)\n\n"
+        "• Buffer Utilization Breakdown (Buffer of Size 4):\n"
+        "    [ Slot 0 : D1 ]  [ Slot 1 : D2 ]  [ Slot 2 : D3 ]  [ Slot 3 : WASTED ]\n"
+        "    -> Maximum Elements Stored = 3 / 4\n"
+        "    -> Storage Efficiency = 75.0% (Worst for small buffers!)\n\n"
+        "• Evaluation:\n"
+        "    [+] Eliminates an extra state variable count_.\n"
+        "    [-] Wastes memory; Count() requires branch or modulo calculation;\n"
+        "    [-] Confusing API: declaring array of size N only holds N-1 items."
+    )
+    ax1.text(0.02, 0.95, panel_a, transform=ax1.transAxes, ha="left", va="top",
+             fontsize=9.2, fontfamily="monospace", color="#212121",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#FFEBEE", edgecolor="#EF5350", lw=1.2))
+
+    # 2. Right: MikanOS count_ Variable Design
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.axis("off")
+    ax2.set_title("Approach B: MikanOS Explicit count_ Variable (Optimal)",
+                  fontsize=11.5, fontweight="bold", color="#1B5E20")
+
+    panel_b = (
+        "• Design Rationale:\n"
+        "    Maintains an explicit count_ member variable alongside read_pos_ and write_pos_.\n\n"
+        "• State Definitions:\n"
+        "    - Empty Condition : count_ == 0\n"
+        "    - Full Condition  : count_ == capacity_\n"
+        "    - When read_pos_ == write_pos_:\n"
+        "        * If count_ == 0         => Buffer is EMPTY\n"
+        "        * If count_ == capacity_ => Buffer is FULL (100% utilized!)\n\n"
+        "• Buffer Utilization Breakdown (Buffer of Size 4):\n"
+        "    [ Slot 0 : D1 ]  [ Slot 1 : D2 ]  [ Slot 2 : D3 ]  [ Slot 3 : D4 ]\n"
+        "    -> Maximum Elements Stored = 4 / 4\n"
+        "    -> Storage Efficiency = 100.0% (Zero wasted slots!)\n\n"
+        "• Evaluation:\n"
+        "    [+] 100% capacity utilization; direct O(1) Count() retrieval;\n"
+        "    [+] Intuitive contract: array size N holds exactly N items;\n"
+        "    [*] Note: In multithreaded/concurrent interrupt context, count_ updates\n"
+        "        require CLI/STI synchronization (addressed in Section 7.10)."
+    )
+    ax2.text(0.02, 0.95, panel_b, transform=ax2.transAxes, ha="left", va="top",
+             fontsize=9.2, fontfamily="monospace", color="#212121",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#E8F5E9", edgecolor="#66BB6A", lw=1.2))
+
+    # 3. Bottom: CPU Assembly Level Wrap-Around Instruction Comparison
+    ax3 = fig.add_subplot(gs[1, :])
+    ax3.axis("off")
+    ax3.set_title("CPU Instruction Comparison: Modulo Division vs Increment & Branch",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1")
+
+    panel_c = (
+        "Arithmetic Comparison of Ring Buffer Index Increment Strategies:\n"
+        "------------------------------------------------------------------------------------------------------------------------------------\n"
+        "[Method 1: Division Modulo]   pos = (pos + 1) % capacity;\n"
+        "  - x86-64 Assembly:          INC edx; MOV eax, edx; XOR edx, edx; DIV ecx  (or IDIV)\n"
+        "  - Hardware Execution Cost:  ~20 to 45 CPU Clock Cycles! Hardware divider is serialized and high-latency.\n\n"
+        "[Method 2: MikanOS Branch]   ++pos; if (pos == capacity) { pos = 0; }\n"
+        "  - x86-64 Assembly:          INC eax; CMP eax, ecx; CMOVGE eax, zero_reg   (or predictable JNE)\n"
+        "  - Hardware Execution Cost:  ~1 CPU Clock Cycle! Branch predictor achieves 99%+ accuracy during sequential writes.\n\n"
+        "[Method 3: Power-of-2 Mask]  pos = (pos + 1) & (capacity - 1);    (Requires capacity = 2^k)\n"
+        "  - x86-64 Assembly:          INC eax; AND eax, mask_reg\n"
+        "  - Hardware Execution Cost:  1 CPU Clock Cycle! Completely branchless and zero latency."
+    )
+    ax3.text(0.01, 0.95, panel_c, transform=ax3.transAxes, ha="left", va="top",
+             fontsize=9.2, fontfamily="monospace", color="#212121",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#F0F4C3", edgecolor="#DCE775", lw=1.2))
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

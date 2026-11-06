@@ -194,6 +194,9 @@ add_test(NAME test_ch07_fast_interrupt_sim COMMAND ch07_fast_interrupt_sim)
 add_executable(ch07_fifo_filo_sim src/ch07/fifo_filo_sim.cpp)
 add_test(NAME test_ch07_fifo_filo_sim COMMAND ch07_fifo_filo_sim)
 
+add_executable(ch07_array_queue_sim src/ch07/array_queue_sim.cpp)
+add_test(NAME test_ch07_array_queue_sim COMMAND ch07_array_queue_sim)
+
 
 
 
