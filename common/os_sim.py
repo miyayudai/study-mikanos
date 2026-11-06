@@ -26435,3 +26435,542 @@ def plot_hardware_software_boundary_and_stack_lifecycle(output_path: str) -> str
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 7.7: Fast Interrupt Handling (Top Half / Bottom Half Architecture)
+# ==============================================================================
+
+@dataclass
+class FastInterruptEvent:
+    event_id: int
+    arrival_us: float
+    duration_us: float
+    name: str = "Mouse Movement"
+    event_type: str = "xhci"
+
+
+@dataclass
+class FastInterruptTimelineEntry:
+    start_us: float
+    end_us: float
+    state: str  # "IDLE", "MONO_HANDLER", "TOP_HALF", "BOTTOM_HALF"
+    event_id: int
+    desc: str
+
+
+@dataclass
+class FastInterruptSimResult:
+    mode: str
+    total_time_us: float
+    processed_count: int
+    dropped_count: int
+    latencies_us: List[float]
+    max_latency_us: float
+    avg_latency_us: float
+    timeline: List[FastInterruptTimelineEntry]
+    drop_events: List[FastInterruptEvent]
+
+
+def simulate_monolithic_interrupts(
+    events: List[FastInterruptEvent],
+    hw_queue_capacity: int = 4,
+    prologue_epilogue_us: float = 1.0,
+) -> FastInterruptSimResult:
+    """
+    Simulates monolithic interrupt handling (osbook_day07a style).
+    Entire processing (including drawing) runs inside the interrupt handler with IF=0.
+    """
+    timeline: List[FastInterruptTimelineEntry] = []
+    latencies: List[float] = []
+    dropped: List[FastInterruptEvent] = []
+    processed_count = 0
+
+    current_time_us = 0.0
+    hw_queue: List[FastInterruptEvent] = []
+    event_idx = 0
+    n_events = len(events)
+
+    sorted_events = sorted(events, key=lambda e: e.arrival_us)
+
+    while event_idx < n_events or hw_queue:
+        # Advance to next event arrival if CPU is idle
+        if not hw_queue:
+            next_ev = sorted_events[event_idx]
+            if current_time_us < next_ev.arrival_us:
+                timeline.append(FastInterruptTimelineEntry(
+                    start_us=current_time_us,
+                    end_us=next_ev.arrival_us,
+                    state="IDLE",
+                    event_id=-1,
+                    desc="CPU Idle (HLT / Waiting for interrupt)"
+                ))
+                current_time_us = next_ev.arrival_us
+
+        # Collect events that arrived up to current_time_us
+        while event_idx < n_events and sorted_events[event_idx].arrival_us <= current_time_us:
+            ev = sorted_events[event_idx]
+            if len(hw_queue) < hw_queue_capacity:
+                hw_queue.append(ev)
+            else:
+                dropped.append(ev)
+            event_idx += 1
+
+        if not hw_queue:
+            continue
+
+        # Pop from hardware queue and run monolithic handler
+        active_ev = hw_queue.pop(0)
+        handler_start = current_time_us
+        latency = handler_start - active_ev.arrival_us
+        latencies.append(latency)
+
+        total_handler_dur = active_ev.duration_us + prologue_epilogue_us
+        handler_end = handler_start + total_handler_dur
+
+        timeline.append(FastInterruptTimelineEntry(
+            start_us=handler_start,
+            end_us=handler_end,
+            state="MONO_HANDLER",
+            event_id=active_ev.event_id,
+            desc=f"Monolithic Handler (IF=0, Draw+Process #{active_ev.event_id})"
+        ))
+
+        # Check for any incoming events during this monolithic handler execution (IF=0)
+        while event_idx < n_events and sorted_events[event_idx].arrival_us <= handler_end:
+            ev = sorted_events[event_idx]
+            if len(hw_queue) < hw_queue_capacity:
+                hw_queue.append(ev)
+            else:
+                dropped.append(ev)
+            event_idx += 1
+
+        current_time_us = handler_end
+        processed_count += 1
+
+    max_lat = max(latencies) if latencies else 0.0
+    avg_lat = sum(latencies) / len(latencies) if latencies else 0.0
+
+    return FastInterruptSimResult(
+        mode="Monolithic (day07a)",
+        total_time_us=current_time_us,
+        processed_count=processed_count,
+        dropped_count=len(dropped),
+        latencies_us=latencies,
+        max_latency_us=max_lat,
+        avg_latency_us=avg_lat,
+        timeline=timeline,
+        drop_events=dropped,
+    )
+
+
+def simulate_split_interrupts(
+    events: List[FastInterruptEvent],
+    sw_queue_capacity: int = 32,
+    top_half_duration_us: float = 0.5,
+) -> FastInterruptSimResult:
+    """
+    Simulates split interrupt handling (osbook_day07b style: Top Half / Bottom Half).
+    Top Half (Hardirq) only pushes Message to ArrayQueue with IF=0 (~0.5 us).
+    Bottom Half (Event Loop) runs with IF=1, allowing preemptive interrupts.
+    """
+    timeline: List[FastInterruptTimelineEntry] = []
+    latencies: List[float] = []
+    dropped: List[FastInterruptEvent] = []
+    processed_count = 0
+
+    sorted_events = sorted(events, key=lambda e: e.arrival_us)
+    sw_queue: List[Tuple[FastInterruptEvent, float]] = []  # (event, enqueue_time)
+
+    current_time_us = 0.0
+    event_idx = 0
+    n_events = len(events)
+
+    active_bottom_half: Optional[Tuple[FastInterruptEvent, float, float]] = None  # (ev, remaining_us, initial_latency)
+
+    # Discrete event simulation timeline points
+    # Events can arrive at any time.
+    while event_idx < n_events or sw_queue or active_bottom_half is not None:
+        # Determine next potential arrival
+        next_arrival = sorted_events[event_idx].arrival_us if event_idx < n_events else float("inf")
+
+        if active_bottom_half is None and not sw_queue:
+            # CPU is idle waiting for next event
+            if current_time_us < next_arrival:
+                timeline.append(FastInterruptTimelineEntry(
+                    start_us=current_time_us,
+                    end_us=next_arrival,
+                    state="IDLE",
+                    event_id=-1,
+                    desc="CPU Idle (HLT in Event Loop)"
+                ))
+                current_time_us = next_arrival
+
+        # Handle all arrivals at or before current_time_us
+        while event_idx < n_events and sorted_events[event_idx].arrival_us <= current_time_us:
+            ev = sorted_events[event_idx]
+            # Immediate Top Half execution
+            th_start = current_time_us
+            th_latency = th_start - ev.arrival_us
+            latencies.append(th_latency)
+
+            th_end = th_start + top_half_duration_us
+            timeline.append(FastInterruptTimelineEntry(
+                start_us=th_start,
+                end_us=th_end,
+                state="TOP_HALF",
+                event_id=ev.event_id,
+                desc=f"Top Half (Push msg #{ev.event_id}, IF=0, EOI)"
+            ))
+
+            if len(sw_queue) < sw_queue_capacity:
+                sw_queue.append((ev, th_end))
+            else:
+                dropped.append(ev)
+
+            current_time_us = th_end
+            event_idx += 1
+            next_arrival = sorted_events[event_idx].arrival_us if event_idx < n_events else float("inf")
+
+        # Now handle Bottom Half
+        if active_bottom_half is None and sw_queue:
+            ev, enq_time = sw_queue.pop(0)
+            active_bottom_half = (ev, ev.duration_us, 0.0)
+
+        if active_bottom_half is not None:
+            ev, remaining_dur, _ = active_bottom_half
+            # If another event arrives before bottom half finishes, run until that arrival
+            time_to_next = next_arrival - current_time_us
+            if time_to_next <= 0:
+                # Arrival is right now, loop around to execute Top Half
+                continue
+
+            if time_to_next < remaining_dur:
+                # Preemption by next hardware interrupt!
+                bh_slice_end = current_time_us + time_to_next
+                timeline.append(FastInterruptTimelineEntry(
+                    start_us=current_time_us,
+                    end_us=bh_slice_end,
+                    state="BOTTOM_HALF",
+                    event_id=ev.event_id,
+                    desc=f"Bottom Half (Processing #{ev.event_id}, partial)"
+                ))
+                active_bottom_half = (ev, remaining_dur - time_to_next, 0.0)
+                current_time_us = bh_slice_end
+            else:
+                # Bottom half completes
+                bh_end = current_time_us + remaining_dur
+                timeline.append(FastInterruptTimelineEntry(
+                    start_us=current_time_us,
+                    end_us=bh_end,
+                    state="BOTTOM_HALF",
+                    event_id=ev.event_id,
+                    desc=f"Bottom Half (Finish #{ev.event_id}, Redraw Complete)"
+                ))
+                current_time_us = bh_end
+                active_bottom_half = None
+                processed_count += 1
+
+    max_lat = max(latencies) if latencies else 0.0
+    avg_lat = sum(latencies) / len(latencies) if latencies else 0.0
+
+    return FastInterruptSimResult(
+        mode="Split Top/Bottom Half (day07b)",
+        total_time_us=current_time_us,
+        processed_count=processed_count,
+        dropped_count=len(dropped),
+        latencies_us=latencies,
+        max_latency_us=max_lat,
+        avg_latency_us=avg_lat,
+        timeline=timeline,
+        drop_events=dropped,
+    )
+
+
+def plot_monolithic_vs_split_interrupt_timeline(
+    output_path: str = "7/result/fig7_13_monolithic_vs_split_interrupt_timeline.png"
+) -> str:
+    """
+    Figure 7.13: Comparison timeline between monolithic handler (day07a) and
+    split Top/Bottom Half architecture (day07b).
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Create a realistic test burst of mouse movement events
+    # Mouse sampling rate ~ 1000 Hz (every 1.0 ms) or bursty during rapid motion
+    events = [
+        FastInterruptEvent(1, arrival_us=10.0, duration_us=120.0, name="Move (1)"),
+        FastInterruptEvent(2, arrival_us=40.0, duration_us=130.0, name="Move (2)"),
+        FastInterruptEvent(3, arrival_us=80.0, duration_us=110.0, name="Move (3)"),
+        FastInterruptEvent(4, arrival_us=110.0, duration_us=140.0, name="Move (4)"),
+        FastInterruptEvent(5, arrival_us=140.0, duration_us=120.0, name="Move (5)"),
+        FastInterruptEvent(6, arrival_us=170.0, duration_us=110.0, name="Move (6)"),
+        FastInterruptEvent(7, arrival_us=500.0, duration_us=120.0, name="Move (7)"),
+    ]
+
+    res_mono = simulate_monolithic_interrupts(events, hw_queue_capacity=2, prologue_epilogue_us=2.0)
+    res_split = simulate_split_interrupts(events, sw_queue_capacity=16, top_half_duration_us=1.0)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True, dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Colors
+    c_idle = "#ECEFF1"
+    c_mono = "#D32F2F"
+    c_tophalf = "#E65100"
+    c_bottomhalf = "#2E7D32"
+    c_arrival = "#1565C0"
+
+    # Plot 1: Monolithic
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("A. Monolithic Interrupt Handler (osbook_day07a) - Heavy Drawing in Handler with IF=0",
+                  fontsize=11.5, fontweight="bold", color="#B71C1C", pad=10)
+    ax1.set_ylim(-0.5, 2.5)
+    ax1.set_yticks([0.5, 1.5])
+    ax1.set_yticklabels(["CPU Execution", "Interrupt Events"], fontsize=9, fontweight="bold")
+
+    # Arrivals
+    for ev in events:
+        ax1.scatter([ev.arrival_us], [1.5], color=c_arrival, s=70, zorder=5)
+        ax1.text(ev.arrival_us, 1.8, f"Ev#{ev.event_id}", fontsize=7.5, ha="center", color=c_arrival, fontweight="bold")
+
+    # Drops
+    for ev in res_mono.drop_events:
+        ax1.scatter([ev.arrival_us], [1.5], color="#D50000", marker="x", s=140, linewidths=2.5, zorder=6)
+        ax1.text(ev.arrival_us, 1.15, "DROPPED!\n(Queue Full)", fontsize=7, ha="center", color="#D50000", fontweight="bold")
+
+    # Timeline blocks
+    for ent in res_mono.timeline:
+        w = ent.end_us - ent.start_us
+        if ent.state == "MONO_HANDLER":
+            rect = patches.Rectangle((ent.start_us, 0.1), w, 0.8, facecolor=c_mono, edgecolor="#B71C1C", alpha=0.9)
+            ax1.add_patch(rect)
+            if w > 40:
+                ax1.text(ent.start_us + w / 2, 0.5, f"Handler #{ent.event_id}\n(IF=0, Blocked)",
+                         ha="center", va="center", color="white", fontsize=7.5, fontweight="bold")
+        elif ent.state == "IDLE":
+            rect = patches.Rectangle((ent.start_us, 0.1), w, 0.8, facecolor=c_idle, edgecolor="#CFD8DC", linestyle=":")
+            ax1.add_patch(rect)
+
+    ax1.axhline(0.5, color="#B0BEC5", linestyle="--", linewidth=0.8, zorder=1)
+    ax1.text(res_mono.total_time_us * 0.72, 2.15,
+             f"Processed: {res_mono.processed_count} | Dropped: {res_mono.dropped_count} | Max Latency: {res_mono.max_latency_us:.1f} µs",
+             fontsize=8.5, fontweight="bold", color="#B71C1C",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFEBEE", edgecolor="#EF5350"))
+
+    # Plot 2: Split Top/Bottom Half
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("B. Split Top Half / Bottom Half (osbook_day07b) - Fast Top Half + Event Loop Deferred Processing",
+                  fontsize=11.5, fontweight="bold", color="#1B5E20", pad=10)
+    ax2.set_ylim(-0.5, 2.5)
+    ax2.set_yticks([0.5, 1.5])
+    ax2.set_yticklabels(["CPU Execution", "Interrupt Events"], fontsize=9, fontweight="bold")
+
+    for ev in events:
+        ax2.scatter([ev.arrival_us], [1.5], color=c_arrival, s=70, zorder=5)
+        ax2.text(ev.arrival_us, 1.8, f"Ev#{ev.event_id}", fontsize=7.5, ha="center", color=c_arrival, fontweight="bold")
+
+    for ent in res_split.timeline:
+        w = ent.end_us - ent.start_us
+        if ent.state == "TOP_HALF":
+            rect = patches.Rectangle((ent.start_us, 0.1), max(w, 2.5), 0.8, facecolor=c_tophalf, edgecolor="#BF360C")
+            ax2.add_patch(rect)
+            ax2.annotate(f"TH#{ent.event_id}", xy=(ent.start_us + w / 2, 0.9), xytext=(ent.start_us, 1.2),
+                         fontsize=6.8, fontweight="bold", color="#E65100",
+                         arrowprops=dict(arrowstyle="->", color="#E65100", lw=0.8))
+        elif ent.state == "BOTTOM_HALF":
+            rect = patches.Rectangle((ent.start_us, 0.1), w, 0.8, facecolor=c_bottomhalf, edgecolor="#1B5E20", alpha=0.85)
+            ax2.add_patch(rect)
+            if w > 35:
+                ax2.text(ent.start_us + w / 2, 0.5, f"BH #{ent.event_id}\n(IF=1, Preemptible)",
+                         ha="center", va="center", color="white", fontsize=7.5, fontweight="bold")
+        elif ent.state == "IDLE":
+            rect = patches.Rectangle((ent.start_us, 0.1), w, 0.8, facecolor=c_idle, edgecolor="#CFD8DC", linestyle=":")
+            ax2.add_patch(rect)
+
+    ax2.set_xlabel("Time (microseconds, µs)", fontsize=10, fontweight="bold")
+    ax2.text(res_split.total_time_us * 0.72, 2.15,
+             f"Processed: {res_split.processed_count} | Dropped: {res_split.dropped_count} | Max Top-Half Latency: {res_split.max_latency_us:.1f} µs",
+             fontsize=8.5, fontweight="bold", color="#1B5E20",
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="#E8F5E9", edgecolor="#66BB6A"))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_top_half_bottom_half_architecture(
+    output_path: str = "7/result/fig7_14_top_half_bottom_half_architecture_and_queue.png"
+) -> str:
+    """
+    Figure 7.14: Architecture diagram of Top Half / Bottom Half design with ArrayQueue.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 8), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+    ax.set_facecolor("#FFFFFF")
+    ax.set_xlim(0, 14)
+    ax.set_ylim(0, 9)
+    ax.axis("off")
+
+    ax.text(7.0, 8.6, "OS Architecture: Top Half / Bottom Half & ArrayQueue Decoupling",
+            ha="center", fontsize=13, fontweight="bold", color="#0D47A1")
+
+    # 1. Hardware Domain (Left)
+    hw_box = patches.FancyBboxPatch((0.5, 1.2), 3.4, 6.8, boxstyle="round,pad=0.15,rounding_size=0.15",
+                                    facecolor="#E3F2FD", edgecolor="#1565C0", linewidth=1.5)
+    ax.add_patch(hw_box)
+    ax.text(2.2, 7.6, "HARDWARE DOMAIN\n(Asynchronous Triggers)", ha="center", fontsize=9.5, fontweight="bold", color="#0D47A1")
+
+    hw_items = [
+        ("USB Mouse Hardware", "Optical sensor move (dx, dy)\nInterrupt packet queued", "#90CAF9"),
+        ("xHCI Controller", "Transfer Event TRB generated\nCycle Bit toggled", "#64B5F6"),
+        ("PCIe MSI & LAPIC", "MSI Write to 0xFEE00000\nVector 0x40 triggered", "#42A5F5"),
+        ("CPU Hardware Actions", "RSP alignment\nPush SS, RSP, RFLAGS, CS, RIP\nAuto-clear IF flag (IF = 0)", "#2196F3"),
+    ]
+    for i, (title, desc, fill_c) in enumerate(hw_items):
+        y = 6.4 - i * 1.5
+        box = patches.Rectangle((0.7, y), 3.0, 1.2, facecolor="white", edgecolor="#1565C0", linewidth=1.0)
+        ax.add_patch(box)
+        ax.text(0.85, y + 0.9, title, fontsize=8, fontweight="bold", color="#0D47A1")
+        ax.text(0.85, y + 0.45, desc, fontsize=6.8, color="#37474F")
+
+    # Arrow to Top Half
+    ax.annotate("", xy=(4.3, 5.8), xytext=(3.9, 5.8),
+                arrowprops=dict(arrowstyle="->", lw=2.2, color="#E65100"))
+    ax.text(4.1, 6.1, "IRQ 0x40\n(IF = 0)", ha="center", fontsize=7.2, fontweight="bold", color="#E65100")
+
+    # 2. Top Half Domain (Middle-Left)
+    th_box = patches.FancyBboxPatch((4.4, 3.8), 2.8, 4.2, boxstyle="round,pad=0.15,rounding_size=0.15",
+                                    facecolor="#FFF3E0", edgecolor="#E65100", linewidth=1.5)
+    ax.add_patch(th_box)
+    ax.text(5.8, 7.6, "TOP HALF (Hardirq)\n`IntHandlerXHCI`", ha="center", fontsize=9.5, fontweight="bold", color="#BF360C")
+
+    th_code = [
+        "// In Interrupt Handler (IF=0)",
+        "main_queue->Push(",
+        "  Message{kInterruptXHCI}",
+        ");",
+        "NotifyEndOfInterrupt();",
+        "// Return via iretq (IF=1)",
+    ]
+    for i, line in enumerate(th_code):
+        ax.text(4.6, 6.9 - i * 0.45, line, fontsize=7.2, fontfamily="monospace",
+                color="#BF360C" if "Push" in line or "Notify" in line else "#4E342E")
+
+    ax.text(5.8, 4.1, "Execution Time: < 1 µs\nNon-blocking / Minimum work", ha="center",
+            fontsize=7.2, fontweight="bold", color="#D84315")
+
+    # Arrow from Top Half to Queue
+    ax.annotate("", xy=(7.6, 5.2), xytext=(7.2, 5.2),
+                arrowprops=dict(arrowstyle="->", lw=2.5, color="#D84315"))
+    ax.text(7.4, 5.5, "Push()", ha="center", fontsize=7.8, fontweight="bold", color="#D84315")
+
+    # 3. Queue Buffer Domain (Middle)
+    q_box = patches.FancyBboxPatch((7.7, 1.8), 2.5, 6.2, boxstyle="round,pad=0.15,rounding_size=0.15",
+                                   facecolor="#F3E5F5", edgecolor="#7B1FA2", linewidth=1.5)
+    ax.add_patch(q_box)
+    ax.text(8.95, 7.6, "DECOUPLING BUFFER\n`ArrayQueue<Message>`", ha="center", fontsize=9.5, fontweight="bold", color="#4A148C")
+
+    # Ring buffer representation
+    slots = ["Msg #1 (XHCI)", "Msg #2 (XHCI)", "Msg #3 (XHCI)", "...", "(Free Slot)", "(Free Slot)"]
+    for i, s in enumerate(slots):
+        y = 6.6 - i * 0.72
+        is_free = "Free" in s
+        bg = "#EDE7F6" if is_free else "#CE93D8"
+        sbox = patches.Rectangle((7.9, y), 2.1, 0.58, facecolor=bg, edgecolor="#7B1FA2", linewidth=0.9)
+        ax.add_patch(sbox)
+        ax.text(8.95, y + 0.28, s, ha="center", va="center", fontsize=7.2, fontfamily="monospace",
+                color="#4A148C", fontweight="normal" if is_free else "bold")
+
+    ax.text(8.95, 2.1, "Ring Buffer Capacity: 32\nRace Condition Guard:\ncli / sti around Pop()",
+            ha="center", fontsize=7.0, color="#4A148C")
+
+    # Arrow from Queue to Bottom Half
+    ax.annotate("", xy=(10.6, 5.2), xytext=(10.2, 5.2),
+                arrowprops=dict(arrowstyle="->", lw=2.5, color="#2E7D32"))
+    ax.text(10.4, 5.5, "Pop()", ha="center", fontsize=7.8, fontweight="bold", color="#2E7D32")
+
+    # 4. Bottom Half Domain (Right)
+    bh_box = patches.FancyBboxPatch((10.7, 1.2), 2.8, 6.8, boxstyle="round,pad=0.15,rounding_size=0.15",
+                                    facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.5)
+    ax.add_patch(bh_box)
+    ax.text(12.1, 7.6, "BOTTOM HALF (Softirq)\n`KernelMain` Event Loop", ha="center", fontsize=9.5, fontweight="bold", color="#1B5E20")
+
+    bh_steps = [
+        ("1. cli; Check Empty", "if (queue.Count() == 0)\n  sti; hlt; continue;"),
+        ("2. Pop Message", "Message msg = Front();\nqueue.Pop(); sti;"),
+        ("3. Dispatch Event", "switch (msg.type) {\ncase kInterruptXHCI:"),
+        ("4. Heavy Processing", "while (Ring->HasFront())\n  ProcessEvent(*xhc);"),
+        ("5. GUI & Redraw", "MouseObserver()\nLayer Redraw (Pixels)"),
+    ]
+    for i, (stitle, sbody) in enumerate(bh_steps):
+        y = 6.4 - i * 1.25
+        box = patches.Rectangle((10.9, y), 2.4, 1.05, facecolor="white", edgecolor="#2E7D32", linewidth=0.9)
+        ax.add_patch(box)
+        ax.text(11.0, y + 0.78, stitle, fontsize=7.5, fontweight="bold", color="#1B5E20")
+        ax.text(11.0, y + 0.35, sbody, fontsize=6.8, fontfamily="monospace", color="#263238")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_queueing_latency_model(
+    output_path: str = "7/result/fig7_15_queueing_latency_and_drop_analysis.png"
+) -> str:
+    """
+    Figure 7.15: Analytical queueing model comparison: Event Arrival Rate vs Latency & Drop Rate.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    rates = np.linspace(5.0, 50.0, 20)  # events per 1000 us (burst frequency)
+    mono_latencies = []
+    mono_drops = []
+    split_latencies = []
+    split_drops = []
+
+    for r in rates:
+        inter_arrival = 1000.0 / r
+        test_events = [
+            FastInterruptEvent(i, arrival_us=i * inter_arrival, duration_us=80.0)
+            for i in range(25)
+        ]
+        res_m = simulate_monolithic_interrupts(test_events, hw_queue_capacity=3, prologue_epilogue_us=1.5)
+        res_s = simulate_split_interrupts(test_events, sw_queue_capacity=32, top_half_duration_us=0.6)
+
+        mono_latencies.append(res_m.avg_latency_us)
+        mono_drops.append((res_m.dropped_count / len(test_events)) * 100.0)
+        split_latencies.append(res_s.avg_latency_us)
+        split_drops.append((res_s.dropped_count / len(test_events)) * 100.0)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5), dpi=300)
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Plot 1: Average Latency
+    ax1.set_facecolor("#FFFFFF")
+    ax1.plot(rates, mono_latencies, marker="o", color="#D32F2F", linewidth=2.0, label="Monolithic Handler (day07a)")
+    ax1.plot(rates, split_latencies, marker="s", color="#2E7D32", linewidth=2.0, label="Split Top/Bottom Half (day07b)")
+    ax1.set_title("Average Interrupt Latency vs Arrival Rate", fontsize=11, fontweight="bold", color="#263238")
+    ax1.set_xlabel("Event Arrival Rate (events / ms)", fontsize=9.5, fontweight="bold")
+    ax1.set_ylabel("Average Latency (µs)", fontsize=9.5, fontweight="bold")
+    ax1.grid(True, linestyle="--", alpha=0.6)
+    ax1.legend(fontsize=9)
+
+    # Plot 2: Drop Rate
+    ax2.set_facecolor("#FFFFFF")
+    ax2.plot(rates, mono_drops, marker="^", color="#C2185B", linewidth=2.0, label="Monolithic Drop Rate (%)")
+    ax2.plot(rates, split_drops, marker="d", color="#1976D2", linewidth=2.0, label="Split Drop Rate (%)")
+    ax2.set_title("Packet / Event Drop Rate vs Arrival Rate", fontsize=11, fontweight="bold", color="#263238")
+    ax2.set_xlabel("Event Arrival Rate (events / ms)", fontsize=9.5, fontweight="bold")
+    ax2.set_ylabel("Drop Rate (%)", fontsize=9.5, fontweight="bold")
+    ax2.grid(True, linestyle="--", alpha=0.6)
+    ax2.legend(fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

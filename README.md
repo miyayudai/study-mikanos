@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-468%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-25.4%25%20(58%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-476%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-25.9%25%20(59%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -221,6 +221,7 @@ cmake --build build
 | [`7.4_Configuring_IDT_Descriptors.ipynb`](7/7.4_Configuring_IDT_Descriptors.ipynb) | 7.4 割り込み記述子の設定（`osbook_day07a`・IDT割り込み記述子表・16Bゲート記述子構造・64bitアドレス3分割数理・`0x8E00`属性導出・`InterruptDescriptor`・`MakeIDTAttr`/`SetIDTEntry`・10B IDTRレジスタと`LoadIDT`/`LIDT`命令・CPUハードウェアディスパッチシーケンス・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.4_Configuring_IDT_Descriptors.ipynb) |
 | [`7.5_Configuring_PCI_MSI_Interrupts.ipynb`](7/7.5_Configuring_PCI_MSI_Interrupts.ipynb) | 7.5 MSI割り込み（`osbook_day07a`・レガシーINTxの限界・MSI/MSI-Xアーキテクチャ・PCI Capabilities Pointer 0x34・単方向連結リスト走査・MSICapability構造・Local APIC 0xFEE00000 メッセージアドレス・データ 0xC040 ビット導出・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.5_Configuring_PCI_MSI_Interrupts.ipynb) |
 | [`7.6_Interrupt_Flow_Summary.ipynb`](7/7.6_Interrupt_Flow_Summary.ipynb) | 7.6 割り込みのまとめ（`osbook_day07a`・マウス移動からxHCI Event Ring・PCIe MSI・Local APIC・CPU IF確認・40Bスタック退避・IDT探索・C++ハンドラ・ProcessEvent・EOI・IRETQ復帰までのE2E 12ステージ完全トレース・ハードウェア/ソフトウェア責任分界点・スタックフレーム4態推移・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.6_Interrupt_Flow_Summary.ipynb) |
+| [`7.7_Fast_Interrupt_Handling_Top_Bottom_Half.ipynb`](7/7.7_Fast_Interrupt_Handling_Top_Bottom_Half.ipynb) | 7.7 割り込みハンドラの高速化（`osbook_day07b`・モノリシックハンドラの課題・IF=0下での描画危険性・割り込み遅延数理・Top Half / Bottom Halfアーキテクチャ・プリエンプション・`struct Message`・`ArrayQueue<Message>`・スリム化ハンドラ・KernelMainイベントループ・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.7_Fast_Interrupt_Handling_Top_Bottom_Half.ipynb) |
 
 
 

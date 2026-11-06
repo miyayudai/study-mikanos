@@ -423,6 +423,14 @@ from common.os_sim import (
     InterruptFlowPipelineSimulator,
     plot_end_to_end_interrupt_pipeline_sequence,
     plot_hardware_software_boundary_and_stack_lifecycle,
+    FastInterruptEvent,
+    FastInterruptTimelineEntry,
+    FastInterruptSimResult,
+    simulate_monolithic_interrupts,
+    simulate_split_interrupts,
+    plot_monolithic_vs_split_interrupt_timeline,
+    plot_top_half_bottom_half_architecture,
+    plot_queueing_latency_model,
 )
 
 __all__ = [
@@ -848,4 +856,12 @@ __all__ = [
     "InterruptFlowPipelineSimulator",
     "plot_end_to_end_interrupt_pipeline_sequence",
     "plot_hardware_software_boundary_and_stack_lifecycle",
+    "FastInterruptEvent",
+    "FastInterruptTimelineEntry",
+    "FastInterruptSimResult",
+    "simulate_monolithic_interrupts",
+    "simulate_split_interrupts",
+    "plot_monolithic_vs_split_interrupt_timeline",
+    "plot_top_half_bottom_half_architecture",
+    "plot_queueing_latency_model",
 ]
