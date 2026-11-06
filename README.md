@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-518%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-28.5%25%20(65%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-538%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-29.8%25%20(68%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -95,7 +95,7 @@ cmake --build build
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | [`5_Exercises.ipynb`](5/5_Exercises.ipynb) | `[x]` 完了 (7/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | `[x]` 完了 (5/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
-| **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[-]` 進行中 (4/8) |
+| **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[-]` 進行中 (5/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ、`TimerManager`、RSDPとACPI PMタイマ | `11_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
@@ -235,6 +235,7 @@ cmake --build build
 | [`8.2_Inspecting_UEFI_Memory_Map_in_Kernel.ipynb`](8/8.2_Inspecting_UEFI_Memory_Map_in_Kernel.ipynb) | 8.2 UEFIメモリマップ（`osbook_day08a`・System V AMD64 ABI引数引き渡し`%rdi`/`%rsi`・`MemoryMap`と`MemoryDescriptor`レイアウト・`descriptor_size=48B`と構造体サイズ40B乖離・`desc++`境界破壊Off-by-8バグ実証・`iter += descriptor_size`ポインタ数理・`ExitBootServices`後3大利用可能メモリ`Conventional`/`BootServicesCode`/`Data`回収・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/8/8.2_Inspecting_UEFI_Memory_Map_in_Kernel.ipynb) |
 | [`8.3_Relocating_Kernel_Data_Structures.ipynb`](8/8.3_Relocating_Kernel_Data_Structures.ipynb) | 8.3 データ構造の移動（`osbook_day08b`・過渡的UEFIメモリの危険性・ブートローダスタックの生存期間・`ExitBootServices`後メモリ再利用による参照破壊シナリオ実証・`KernelMainNewStack`におけるコピーコンストラクタ値コピー・スタック完全分離・ディープコピーvsシャローコピー境界・走査フェーズと確保フェーズの分離数理・`IsAvailable()`カプセル化・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/8/8.3_Relocating_Kernel_Data_Structures.ipynb) |
 | [`8.4_Switching_Kernel_Stack.ipynb`](8/8.4_Switching_Kernel_Stack.ipynb) | 8.4 スタック領域の移動（`osbook_day08b`・UEFIスタックの危険性・`ExitBootServices`後メモリ再利用破壊回避・`.bss`領域への1MiB独自スタック確保・x86-64 Full Descending Stack数理・`RSP = base + 1MiB`導出・System V AMD64 ABI 16バイトスタックアライメント規約・`movaps` SSE例外防止・`asmfunc.asm` `KernelMain`による`RSP`切り替え・`RDI`/`RSI`透過的フォワード・`.fin` HLT暴走ガード・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/8/8.4_Switching_Kernel_Stack.ipynb) |
+| [`8.5_Setting_Up_GDT_Segmentation.ipynb`](8/8.5_Setting_Up_GDT_Segmentation.ipynb) | 8.5 セグメンテーションの設定（`osbook_day08b`/`08c`・GDT歴史的変遷・Long ModeフラットモデルとGDT残存理由・Lビット64bit動作指示・DPL特権分離Ring 0 vs Ring 3・64bit `SegmentDescriptor`ビットレイアウト数理・C++符号付きビットフィールド罠回避・16bitセグメントセレクタ導出・カーネルCS `0x08`・ユーザCS `0x13`・10B GDTRと`LoadGDT`/`LGDT`命令・`mov cs, ax`禁止理由と`iretq`スタック偽装アトミックCS切り替え・`SetDSAll(0)`ヌルセレクタ初期化・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/8/8.5_Setting_Up_GDT_Segmentation.ipynb) |
 
 
 

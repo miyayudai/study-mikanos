@@ -475,6 +475,12 @@ from common.os_sim import (
     plot_fig8_10_kernel_stack_relocation_architecture,
     plot_fig8_11_system_v_abi_stack_alignment_rules,
     plot_fig8_12_stack_growth_and_pointer_arithmetics,
+    SegmentDescriptorSim,
+    SegmentSelectorSim,
+    GdtSimulator,
+    plot_fig8_13_gdt_descriptor_bit_layout,
+    plot_fig8_14_gdt_table_and_gdtr_architecture,
+    plot_fig8_15_cs_switch_via_iretq_mechanism,
 )
 
 __all__ = [
@@ -952,4 +958,10 @@ __all__ = [
     "plot_fig8_10_kernel_stack_relocation_architecture",
     "plot_fig8_11_system_v_abi_stack_alignment_rules",
     "plot_fig8_12_stack_growth_and_pointer_arithmetics",
+    "SegmentDescriptorSim",
+    "SegmentSelectorSim",
+    "GdtSimulator",
+    "plot_fig8_13_gdt_descriptor_bit_layout",
+    "plot_fig8_14_gdt_table_and_gdtr_architecture",
+    "plot_fig8_15_cs_switch_via_iretq_mechanism",
 ]

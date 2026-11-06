@@ -30675,3 +30675,400 @@ def plot_fig8_12_stack_growth_and_pointer_arithmetics(output_path: str = None) -
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+# =====================================================================
+# Chapter 8.5: Global Descriptor Table (GDT) & x86-64 Segmentation
+# =====================================================================
+
+@dataclass
+class SegmentDescriptorSim:
+    """Simulated 64-bit Segment Descriptor matching Intel SDM & MikanOS."""
+    limit_low: int = 0
+    base_low: int = 0
+    base_middle: int = 0
+    type_val: int = 0
+    system_segment: int = 0  # 1: Code/Data, 0: System
+    dpl: int = 0             # 0: Kernel (Ring 0), 3: User (Ring 3)
+    present: int = 0         # 1: Valid
+    limit_high: int = 0
+    available: int = 0       # AVL (Software flag)
+    long_mode: int = 0       # L-bit: 1 for 64-bit code segment
+    default_op_size: int = 0 # D/B: Must be 0 when L=1
+    granularity: int = 0     # G: 1 for 4KiB page units
+    base_high: int = 0
+
+    def to_uint64(self) -> int:
+        """Encode fields into a 64-bit unsigned integer."""
+        val = 0
+        val |= (self.limit_low & 0xFFFF)
+        val |= (self.base_low & 0xFFFF) << 16
+        val |= (self.base_middle & 0xFF) << 32
+        val |= (self.type_val & 0xF) << 40
+        val |= (self.system_segment & 0x1) << 44
+        val |= (self.dpl & 0x3) << 45
+        val |= (self.present & 0x1) << 47
+        val |= (self.limit_high & 0xF) << 48
+        val |= (self.available & 0x1) << 52
+        val |= (self.long_mode & 0x1) << 53
+        val |= (self.default_op_size & 0x1) << 54
+        val |= (self.granularity & 0x1) << 55
+        val |= (self.base_high & 0xFF) << 56
+        return val
+
+    @classmethod
+    def from_uint64(cls, val: int) -> 'SegmentDescriptorSim':
+        """Decode a 64-bit integer into a SegmentDescriptorSim."""
+        return cls(
+            limit_low=val & 0xFFFF,
+            base_low=(val >> 16) & 0xFFFF,
+            base_middle=(val >> 32) & 0xFF,
+            type_val=(val >> 40) & 0xF,
+            system_segment=(val >> 44) & 0x1,
+            dpl=(val >> 45) & 0x3,
+            present=(val >> 47) & 0x1,
+            limit_high=(val >> 48) & 0xF,
+            available=(val >> 52) & 0x1,
+            long_mode=(val >> 53) & 0x1,
+            default_op_size=(val >> 54) & 0x1,
+            granularity=(val >> 55) & 0x1,
+            base_high=(val >> 56) & 0xFF,
+        )
+
+    @classmethod
+    def create_null_descriptor(cls) -> 'SegmentDescriptorSim':
+        """Create an x86 architecture Null Descriptor (all zeros)."""
+        return cls()
+
+    @classmethod
+    def create_code_segment(cls, dpl: int, base: int = 0, limit: int = 0xFFFFF, type_val: int = 10) -> 'SegmentDescriptorSim':
+        """Create a 64-bit Long Mode code segment descriptor."""
+        return cls(
+            limit_low=limit & 0xFFFF,
+            base_low=base & 0xFFFF,
+            base_middle=(base >> 16) & 0xFF,
+            type_val=type_val,
+            system_segment=1,
+            dpl=dpl,
+            present=1,
+            limit_high=(limit >> 16) & 0xF,
+            available=0,
+            long_mode=1,
+            default_op_size=0,
+            granularity=1,
+            base_high=(base >> 24) & 0xFF,
+        )
+
+    @property
+    def base_address(self) -> int:
+        return (self.base_high << 24) | (self.base_middle << 16) | self.base_low
+
+    @property
+    def raw_limit(self) -> int:
+        return (self.limit_high << 16) | self.limit_low
+
+    @property
+    def effective_limit(self) -> int:
+        """Effective limit in bytes. If G=1, limit is in 4KiB blocks."""
+        if self.granularity == 1:
+            return (self.raw_limit + 1) * 4096 - 1
+        return self.raw_limit
+
+
+@dataclass
+class SegmentSelectorSim:
+    """16-bit Segment Selector representation."""
+    index: int = 0  # 13 bits (0..8191)
+    ti: int = 0     # 1 bit (0: GDT, 1: LDT)
+    rpl: int = 0    # 2 bits (0..3)
+
+    def to_uint16(self) -> int:
+        return ((self.index & 0x1FFF) << 3) | ((self.ti & 1) << 2) | (self.rpl & 3)
+
+    @classmethod
+    def from_uint16(cls, val: int) -> 'SegmentSelectorSim':
+        return cls(
+            index=(val >> 3) & 0x1FFF,
+            ti=(val >> 2) & 1,
+            rpl=val & 3,
+        )
+
+
+class GdtSimulator:
+    """Simulates GDT table loading and privilege checks."""
+    def __init__(self):
+        self.descriptors: list[SegmentDescriptorSim] = [
+            SegmentDescriptorSim.create_null_descriptor(),
+            SegmentDescriptorSim.create_code_segment(dpl=0),
+            SegmentDescriptorSim.create_code_segment(dpl=3),
+        ]
+        self.gdtr_limit = len(self.descriptors) * 8 - 1
+        self.gdtr_base = 0x100000
+
+    def get_descriptor(self, index: int) -> Optional[SegmentDescriptorSim]:
+        if 0 <= index < len(self.descriptors):
+            return self.descriptors[index]
+        return None
+
+    def validate_code_selector(self, selector_val: int) -> tuple[bool, str]:
+        sel = SegmentSelectorSim.from_uint16(selector_val)
+        if sel.ti != 0:
+            return False, "LDT table indicator is not supported in this configuration"
+        if sel.index >= len(self.descriptors):
+            return False, f"Selector index {sel.index} exceeds GDT limit {len(self.descriptors) - 1}"
+        desc = self.descriptors[sel.index]
+        if desc.present == 0:
+            return False, "Target segment descriptor is not present (#NP fault)"
+        if desc.system_segment != 1:
+            return False, "Target segment is not code/data (#GP fault)"
+        if desc.long_mode != 1:
+            return False, "Target descriptor is not a 64-bit Long Mode code segment"
+        return True, "Valid 64-bit Code Segment"
+
+
+def plot_fig8_13_gdt_descriptor_bit_layout(output_path: str = "8/result/fig8_13_gdt_descriptor_bit_layout.png") -> str:
+    """Generate Figure 8.13: 64-bit SegmentDescriptor Bit Layout."""
+    setup_plot_style()
+    fig, ax = plt.subplots(figsize=(14, 8), dpi=300)
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+
+    ax.text(50, 96, "Figure 8.13: x86-64 Segment Descriptor (64-bit) Binary Bitfield Layout",
+            fontsize=13, fontweight="bold", color="#1A237E", ha="center")
+    ax.text(50, 92, "Structure matching Intel SDM Vol. 3A & MikanOS kernel/segment.hpp (union SegmentDescriptor)",
+            fontsize=9.5, color="#546E7A", ha="center", style="italic")
+
+    # High 32 bits header
+    ax.text(5, 83, "High 32 Bits [63:32]:", fontsize=10.5, fontweight="bold", color="#263238")
+    high_fields = [
+        ("Base [31:24]\n(8 bits)", 5, 8, "#E3F2FD", "#1565C0"),
+        ("G\n(1)", 13, 3, "#C8E6C9", "#2E7D32"),
+        ("D/B\n(1)", 16, 3, "#FFCDD2", "#C62828"),
+        ("L\n(1)", 19, 3, "#FFF9C4", "#F57F17"),
+        ("AVL\n(1)", 22, 3, "#E1BEE7", "#6A1B9A"),
+        ("Limit [19:16]\n(4 bits)", 25, 7, "#FFE0B2", "#E65100"),
+        ("P\n(1)", 32, 3, "#DCEDC8", "#33691E"),
+        ("DPL\n(2 bits)", 35, 5, "#FFCCBC", "#BF360C"),
+        ("S\n(1)", 40, 3, "#D1C4E9", "#4527A0"),
+        ("Type\n(4 bits)", 43, 7, "#B2EBF2", "#006064"),
+        ("Base [23:16]\n(8 bits)", 50, 8, "#E3F2FD", "#1565C0"),
+    ]
+    # Scale width across 90 units
+    x_offset = 5.0
+    total_w = 90.0
+    bits_high = 32.0
+    for name, bit_pos, bit_len, fcol, ecol in [
+        ("Base High [63:56]\n(8 bits)", 56, 8, "#BBDEFB", "#0D47A1"),
+        ("G [55]\nGranularity (1)", 55, 1, "#C8E6C9", "#1B5E20"),
+        ("D/B [54]\nDefault Size (1)", 54, 1, "#FFCDD2", "#B71C1C"),
+        ("L [53]\nLong Mode (1)", 53, 1, "#FFF59D", "#F57F17"),
+        ("AVL [52]\nAvailable (1)", 52, 1, "#E1BEE7", "#4A148C"),
+        ("Limit High [51:48]\n(4 bits)", 48, 4, "#FFE0B2", "#E65100"),
+        ("P [47]\nPresent (1)", 47, 1, "#C8E6C9", "#1B5E20"),
+        ("DPL [46:45]\nPrivilege (2)", 45, 2, "#FFCCBC", "#BF360C"),
+        ("S [44]\nSystem (1)", 44, 1, "#D1C4E9", "#311B92"),
+        ("Type [43:40]\nExec/Read (4)", 40, 4, "#B2EBF2", "#006064"),
+        ("Base Mid [39:32]\n(8 bits)", 32, 8, "#BBDEFB", "#0D47A1"),
+    ]:
+        w = (bit_len / bits_high) * total_w
+        rect = plt.Rectangle((x_offset, 70), w, 10, facecolor=fcol, edgecolor=ecol, lw=1.5)
+        ax.add_patch(rect)
+        ax.text(x_offset + w/2, 75, name, fontsize=7.5, fontweight="bold", color=ecol, ha="center", va="center")
+        x_offset += w
+
+    # Low 32 bits header
+    ax.text(5, 62, "Low 32 Bits [31:0]:", fontsize=10.5, fontweight="bold", color="#263238")
+    x_offset = 5.0
+    for name, bit_pos, bit_len, fcol, ecol in [
+        ("Base Low [31:16]\n(16 bits: bits 16..31)", 16, 16, "#90CAF9", "#0D47A1"),
+        ("Segment Limit Low [15:0]\n(16 bits: bits 0..15)", 0, 16, "#FFCC80", "#E65100"),
+    ]:
+        w = (bit_len / bits_high) * total_w
+        rect = plt.Rectangle((x_offset, 50), w, 10, facecolor=fcol, edgecolor=ecol, lw=1.5)
+        ax.add_patch(rect)
+        ax.text(x_offset + w/2, 55, name, fontsize=8.5, fontweight="bold", color=ecol, ha="center", va="center")
+        x_offset += w
+
+    # Detailed Explanation Table / Cards
+    ax.text(5, 43, "Key Bitfields in x86-64 Long Mode & MikanOS Implementation:", fontsize=10.5, fontweight="bold", color="#1A237E")
+
+    details = [
+        ("L (Long Mode, bit 53)", "1 = 64-bit Code Segment. In 64-bit mode, this bit tells the CPU that code executes with 64-bit instruction semantics. When L=1, D/B MUST be 0.", "#FFF9C4", "#F57F17"),
+        ("D/B (Default Size, bit 54)", "Default operation size. In Long Mode, D/B must be 0 when L=1. If D/B=1 and L=1, the processor enters an undefined / reserved state.", "#FFEBEE", "#C62828"),
+        ("DPL (Privilege Level, bits 46..45)", "00b = Ring 0 (Kernel Supervisor). 11b = Ring 3 (User / Application). Governs hardware privilege check during far calls & iretq.", "#FBE9E7", "#D84315"),
+        ("G (Granularity, bit 55)", "1 = 4KiB page units. Limit 0xFFFFF becomes (0xFFFFF + 1) * 4096 - 1 = 4GiB. Long Mode ignores limit checks, but standard requires valid layout.", "#E8F5E9", "#2E7D32"),
+        ("S & Type (bits 44, 43..40)", "S=1: Code/Data descriptor. Type=10 (1010b): Execute/Read code segment without conforming. In C++, underlying type MUST be uint8_t.", "#E0F7FA", "#00838F"),
+        ("Base [31:0] (Scattered across 3 fields)", "Scattered across bits 16..31, 32..39, and 56..63 due to 80286/80386 legacy compatibility. In Long Mode, base is forced to 0 (flat model).", "#E3F2FD", "#1565C0"),
+    ]
+
+    for idx, (title, desc, fcol, ecol) in enumerate(details):
+        y_pos = 35 - idx * 6.0
+        r = plt.Rectangle((5, y_pos), 90, 5.2, facecolor=fcol, edgecolor=ecol, lw=1.2)
+        ax.add_patch(r)
+        ax.text(6.5, y_pos + 3.2, title, fontsize=8.5, fontweight="bold", color=ecol)
+        ax.text(6.5, y_pos + 1.2, desc, fontsize=8, color="#37474F")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_14_gdt_table_and_gdtr_architecture(output_path: str = "8/result/fig8_14_gdt_table_and_gdtr_architecture.png") -> str:
+    """Generate Figure 8.14: GDTR Register, GDT Table, and Segment Selector Resolution."""
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7.5), dpi=300)
+
+    # Left: GDTR Register & GDT Table Array
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("GDTR Register & GDT Table in Memory", fontsize=11, fontweight="bold", color="#1A237E", pad=12)
+
+    # GDTR Register (10 bytes = 80 bits)
+    r_gdtr = plt.Rectangle((10, 80), 80, 14, facecolor="#EDE7F6", edgecolor="#4527A0", lw=2)
+    ax1.add_patch(r_gdtr)
+    ax1.text(50, 90.5, "GDTR Register (Global Descriptor Table Register: 10 Bytes / 80 Bits)",
+             fontsize=9, fontweight="bold", color="#311B92", ha="center")
+
+    r_limit = plt.Rectangle((12, 82), 25, 6, facecolor="#FFCCBC", edgecolor="#BF360C", lw=1.2)
+    ax1.add_patch(r_limit)
+    ax1.text(24.5, 85, "Limit (16 bits)\nsizeof(gdt) - 1 = 23", fontsize=7.5, fontweight="bold", color="#BF360C", ha="center", va="center")
+
+    r_base = plt.Rectangle((40, 82), 48, 6, facecolor="#BBDEFB", edgecolor="#0D47A1", lw=1.2)
+    ax1.add_patch(r_base)
+    ax1.text(64, 85, "Base Address (64 bits: &gdt[0])\nLinear 64-bit Virtual Address", fontsize=7.5, fontweight="bold", color="#0D47A1", ha="center", va="center")
+
+    # Arrow from GDTR to GDT Base
+    ax1.annotate("", xy=(50, 68), xytext=(64, 82),
+                 arrowprops=dict(arrowstyle="->", color="#0D47A1", lw=2.5, connectionstyle="arc3,rad=-0.2"))
+    ax1.text(63, 73, "Points to GDT Base", fontsize=8.5, fontweight="bold", color="#0D47A1")
+
+    # GDT Descriptors Array
+    gdt_entries = [
+        ("GDT[0]: Null Descriptor (8 Bytes)", "0x0000_0000_0000_0000 (Required by x86 architecture)", "#ECEFF1", "#455A64"),
+        ("GDT[1]: Kernel Code Segment (8 Bytes)", "0x00AF_9A00_0000_FFFF (DPL=0, Ring 0, L=1, G=1, Exec/Read)", "#E8F5E9", "#2E7D32"),
+        ("GDT[2]: User Code Segment (8 Bytes)", "0x00AF_FA00_0000_FFFF (DPL=3, Ring 3, L=1, G=1, Exec/Read)", "#FFF3E0", "#E65100"),
+    ]
+
+    for idx, (title, sub, fcol, ecol) in enumerate(gdt_entries):
+        y_pos = 55 - idx * 15
+        rect = plt.Rectangle((10, y_pos), 80, 11, facecolor=fcol, edgecolor=ecol, lw=2)
+        ax1.add_patch(rect)
+        ax1.text(14, y_pos + 7, title, fontsize=9, fontweight="bold", color=ecol)
+        ax1.text(14, y_pos + 3, sub, fontsize=8, color="#37474F", fontfamily="monospace")
+        ax1.text(85, y_pos + 5.5, f"Offset +{idx*8}", fontsize=8, fontweight="bold", color="#78909C", ha="right")
+
+    # Right: Segment Selector (16 bits) Resolution
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("16-Bit Segment Selector & Index Resolution", fontsize=11, fontweight="bold", color="#1A237E", pad=12)
+
+    # 16-bit Selector diagram
+    ax2.text(10, 88, "Segment Selector (CS / DS / SS register value: 16 bits):", fontsize=9.5, fontweight="bold", color="#263238")
+
+    # Fields
+    # Bits 15..3 Index (13 bits)
+    r_idx = plt.Rectangle((10, 72), 55, 12, facecolor="#C5CAE9", edgecolor="#283593", lw=1.5)
+    ax2.add_patch(r_idx)
+    ax2.text(37.5, 78, "Descriptor Index [15:3] (13 bits)\nSelects 0..8191 in Table", fontsize=8.5, fontweight="bold", color="#1A237E", ha="center", va="center")
+
+    # Bit 2 TI (1 bit)
+    r_ti = plt.Rectangle((67, 72), 12, 12, facecolor="#FFF9C4", edgecolor="#F57F17", lw=1.5)
+    ax2.add_patch(r_ti)
+    ax2.text(73, 78, "TI [2]\n0=GDT\n1=LDT", fontsize=7.5, fontweight="bold", color="#E65100", ha="center", va="center")
+
+    # Bits 1..0 RPL (2 bits)
+    r_rpl = plt.Rectangle((81, 72), 14, 12, facecolor="#FFCDD2", edgecolor="#C62828", lw=1.5)
+    ax2.add_patch(r_rpl)
+    ax2.text(88, 78, "RPL [1:0]\nReq. Priv\n(0 or 3)", fontsize=7.5, fontweight="bold", color="#B71C1C", ha="center", va="center")
+
+    # Concrete Examples
+    ax2.text(10, 58, "Standard Selectors in MikanOS Chapter 8:", fontsize=9.5, fontweight="bold", color="#1A237E")
+
+    examples = [
+        ("Kernel Code Segment (CS)", "Index = 1, TI = 0, RPL = 0", "(1 << 3) | 0 = 0x0008 (8)", "#E8F5E9", "#2E7D32"),
+        ("User Code Segment (CS)", "Index = 2, TI = 0, RPL = 3", "(2 << 3) | 3 = 0x0013 (19)", "#FFF3E0", "#E65100"),
+        ("Null Selector (DS/ES/SS/FS/GS)", "Index = 0, TI = 0, RPL = 0", "0x0000 (SetDSAll(0))", "#ECEFF1", "#455A64"),
+    ]
+
+    for idx, (title, form, val, fcol, ecol) in enumerate(examples):
+        y_pos = 42 - idx * 13
+        rect = plt.Rectangle((10, y_pos), 85, 10.5, facecolor=fcol, edgecolor=ecol, lw=1.5)
+        ax2.add_patch(rect)
+        ax2.text(14, y_pos + 6.5, title, fontsize=8.5, fontweight="bold", color=ecol)
+        ax2.text(14, y_pos + 2.5, form, fontsize=8, color="#546E7A")
+        ax2.text(90, y_pos + 5, val, fontsize=8.5, fontweight="bold", color=ecol, fontfamily="monospace", ha="right")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_15_cs_switch_via_iretq_mechanism(output_path: str = "8/result/fig8_15_cs_switch_via_iretq_mechanism.png") -> str:
+    """Generate Figure 8.15: Safe CS Register Switch via iretq Stack Frame."""
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7.5), dpi=300)
+
+    # Left Panel: Why MOV CS is forbidden & Stack Frame Structure
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("The 'iretq' Stack Frame Construction", fontsize=11, fontweight="bold", color="#1A237E", pad=12)
+
+    # Warning Box: Why MOV CS is forbidden
+    r_warn = plt.Rectangle((5, 83), 90, 13, facecolor="#FFEBEE", edgecolor="#C62828", lw=1.5)
+    ax1.add_patch(r_warn)
+    ax1.text(7, 92, "⚠️ Why 'MOV CS, AX' is strictly FORBIDDEN by x86 CPU Architecture:", fontsize=8.5, fontweight="bold", color="#B71C1C")
+    ax1.text(7, 86, "CS defines CPL (Privilege Ring) and 64-bit Long Mode flag (L-bit). Changing CS without\n"
+                    "synchronously updating RIP would corrupt instruction prefetch and violate security boundaries.", fontsize=7.5, color="#37474F")
+
+    # Stack Frame Diagram
+    ax1.text(5, 76, "Fabricated Interrupt Return Stack Frame in asmfunc.asm (SetCS):", fontsize=9, fontweight="bold", color="#263238")
+
+    stack_slots = [
+        ("push rax (SS)", "Stack Segment selector (current SS)", "#BBDEFB", "#0D47A1", "RSP + 32"),
+        ("push rbp (RSP)", "Stack Pointer to restore after iretq", "#C8E6C9", "#2E7D32", "RSP + 24"),
+        ("pushfq (RFLAGS)", "Processor Flags (Interrupt enable, arithmetic flags)", "#FFF9C4", "#F57F17", "RSP + 16"),
+        ("push rdi (Target CS)", "New Code Segment Selector: 1 << 3 = 0x08", "#FFCCBC", "#D84315", "RSP + 8"),
+        ("push .next (Target RIP)", "Return Instruction Pointer address (.next label)", "#E1BEE7", "#6A1B9A", "RSP (Top)"),
+    ]
+
+    for idx, (label, desc, fcol, ecol, offset) in enumerate(stack_slots):
+        y_pos = 62 - idx * 11
+        rect = plt.Rectangle((15, y_pos), 70, 9, facecolor=fcol, edgecolor=ecol, lw=1.5)
+        ax1.add_patch(rect)
+        ax1.text(18, y_pos + 5.5, label, fontsize=8.5, fontweight="bold", color=ecol)
+        ax1.text(18, y_pos + 2, desc, fontsize=7.5, color="#546E7A")
+        ax1.text(82, y_pos + 4.5, offset, fontsize=8, fontweight="bold", color="#78909C", ha="right")
+
+    # Right Panel: CPU Execution Sequence & Atomic Switch
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("CPU Execution: Atomic Far Return Sequence", fontsize=11, fontweight="bold", color="#1A237E", pad=12)
+
+    seq_steps = [
+        ("Step 1: Assembly Setup", "SetCS takes target CS in RDI.\nSS is read via 'mov ax, ss' and pushed.\nCurrent RSP is pushed to preserve call frame.", "#E3F2FD", "#1565C0"),
+        ("Step 2: Flags & Pointers", "'pushfq' saves CPU RFLAGS.\nTarget CS (RDI) and .next address are pushed.", "#FFF8E1", "#F57F17"),
+        ("Step 3: 'iretq' Instruction", "CPU pops [RIP, CS, RFLAGS, RSP, SS] in a SINGLE ATOMIC HARDWARE CYCLE.\n• CS updated to Kernel CS (0x08)\n• RIP updated to .next", "#FFEBEE", "#C62828"),
+        ("Step 4: Execution at .next", "CPU continues execution seamlessly with new Kernel Code Segment at Ring 0.\nFunction epilogue 'pop rbp; ret' returns to caller cleanly.", "#E8F5E9", "#2E7D32"),
+    ]
+
+    for idx, (step_title, text, fcol, ecol) in enumerate(seq_steps):
+        y_pos = 78 - idx * 23
+        rect = plt.Rectangle((5, y_pos), 90, 19, facecolor=fcol, edgecolor=ecol, lw=1.8)
+        ax2.add_patch(rect)
+        ax2.text(9, y_pos + 13.5, step_title, fontsize=9.5, fontweight="bold", color=ecol)
+        ax2.text(9, y_pos + 4.5, text, fontsize=8, color="#37474F")
+
+        if idx < 3:
+            ax2.annotate("", xy=(50, y_pos - 3), xytext=(50, y_pos),
+                         arrowprops=dict(arrowstyle="->", color=ecol, lw=2))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
