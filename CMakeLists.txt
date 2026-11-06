@@ -185,6 +185,9 @@ add_test(NAME test_ch07_idt_descriptor_sim COMMAND ch07_idt_descriptor_sim)
 add_executable(ch07_msi_interrupt_sim src/ch07/msi_interrupt_sim.cpp)
 add_test(NAME test_ch07_msi_interrupt_sim COMMAND ch07_msi_interrupt_sim)
 
+add_executable(ch07_interrupt_flow_sim src/ch07/interrupt_flow_sim.cpp)
+add_test(NAME test_ch07_interrupt_flow_sim COMMAND ch07_interrupt_flow_sim)
+
 
 
 

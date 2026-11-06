@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-460%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-25.0%25%20(57%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-468%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-25.4%25%20(58%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -94,7 +94,7 @@ cmake --build build
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | [`5_Exercises.ipynb`](5/5_Exercises.ipynb) | `[x]` 完了 (7/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | `[x]` 完了 (5/5) |
-| **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 進行中 (5/11) |
+| **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 進行中 (6/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -220,6 +220,7 @@ cmake --build build
 | [`7.3_Interrupt_Vectors_in_x86_64.ipynb`](7/7.3_Interrupt_Vectors_in_x86_64.ipynb) | 7.3 割り込みベクタ（`osbook_day07a`・ベクタ0〜255空間分類・ベクタ0〜31 CPU例外・Fault/Trap/Abort動作比較・スタック上のハードウェアErrorCode有無・MikanOS `InterruptVector::kXHCI` 0x40選定設計・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.3_Interrupt_Vectors_in_x86_64.ipynb) |
 | [`7.4_Configuring_IDT_Descriptors.ipynb`](7/7.4_Configuring_IDT_Descriptors.ipynb) | 7.4 割り込み記述子の設定（`osbook_day07a`・IDT割り込み記述子表・16Bゲート記述子構造・64bitアドレス3分割数理・`0x8E00`属性導出・`InterruptDescriptor`・`MakeIDTAttr`/`SetIDTEntry`・10B IDTRレジスタと`LoadIDT`/`LIDT`命令・CPUハードウェアディスパッチシーケンス・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.4_Configuring_IDT_Descriptors.ipynb) |
 | [`7.5_Configuring_PCI_MSI_Interrupts.ipynb`](7/7.5_Configuring_PCI_MSI_Interrupts.ipynb) | 7.5 MSI割り込み（`osbook_day07a`・レガシーINTxの限界・MSI/MSI-Xアーキテクチャ・PCI Capabilities Pointer 0x34・単方向連結リスト走査・MSICapability構造・Local APIC 0xFEE00000 メッセージアドレス・データ 0xC040 ビット導出・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.5_Configuring_PCI_MSI_Interrupts.ipynb) |
+| [`7.6_Interrupt_Flow_Summary.ipynb`](7/7.6_Interrupt_Flow_Summary.ipynb) | 7.6 割り込みのまとめ（`osbook_day07a`・マウス移動からxHCI Event Ring・PCIe MSI・Local APIC・CPU IF確認・40Bスタック退避・IDT探索・C++ハンドラ・ProcessEvent・EOI・IRETQ復帰までのE2E 12ステージ完全トレース・ハードウェア/ソフトウェア責任分界点・スタックフレーム4態推移・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.6_Interrupt_Flow_Summary.ipynb) |
 
 
 

@@ -418,6 +418,11 @@ from common.os_sim import (
     format_msi_data,
     plot_msi_vs_legacy_interrupts,
     plot_pci_capability_linked_list_and_msi_register,
+    InterruptPipelineStage,
+    InterruptTraceRecord,
+    InterruptFlowPipelineSimulator,
+    plot_end_to_end_interrupt_pipeline_sequence,
+    plot_hardware_software_boundary_and_stack_lifecycle,
 )
 
 __all__ = [
@@ -838,4 +843,9 @@ __all__ = [
     "format_msi_data",
     "plot_msi_vs_legacy_interrupts",
     "plot_pci_capability_linked_list_and_msi_register",
+    "InterruptPipelineStage",
+    "InterruptTraceRecord",
+    "InterruptFlowPipelineSimulator",
+    "plot_end_to_end_interrupt_pipeline_sequence",
+    "plot_hardware_software_boundary_and_stack_lifecycle",
 ]

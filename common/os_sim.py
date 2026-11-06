@@ -25925,3 +25925,513 @@ def plot_pci_capability_linked_list_and_msi_register(output_path: str) -> str:
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 7.6: Interrupt Flow Summary & Pipeline Simulation
+# ==============================================================================
+
+class InterruptPipelineStage(Enum):
+    kMouseMovement = "1. Mouse Hardware Event"
+    kXhciEventRing = "2. xHCI Transfer Event TRB"
+    kPciMsiWrite = "3. PCIe MSI Memory Write"
+    kLapicReceive = "4. Local APIC Receive & IRR Set"
+    kCpuInterruptAccept = "5. CPU Accept & ISR Set & IF=0"
+    kHardwareStackPush = "6. CPU Hardware Stack Push (SS, RSP, RFLAGS, CS, RIP)"
+    kIdtLookup = "7. IDTR & IDT[64] Gate Lookup"
+    kHandlerPrologue = "8. Handler Prologue (GPRs Push)"
+    kHandlerProcessEvent = "9. ProcessEvent & Mouse Move"
+    kLapicNotifyEoi = "10. LAPIC EOI Write (0xFEE000B0) & ISR Clear"
+    kHandlerEpilogue = "11. Handler Epilogue (GPRs Pop)"
+    kCpuIretq = "12. IRETQ & CPU Stack Restore & Return to KernelMain"
+
+
+@dataclass
+class InterruptTraceRecord:
+    stage: InterruptPipelineStage
+    domain: str  # "Hardware" or "Kernel Software"
+    component: str
+    description: str
+    rip: int
+    rsp: int
+    rflags: int
+    details: Dict[str, Any]
+
+
+class InterruptFlowPipelineSimulator:
+    """End-to-End Interrupt Flow Pipeline Simulator for Section 7.6.
+    Simulates the exact 12-stage interrupt lifecycle in MikanOS:
+    Mouse -> xHCI -> MSI -> Local APIC -> CPU -> IDT -> IntHandlerXHCI -> EOI -> IRETQ -> KernelMain.
+    """
+
+    def __init__(
+        self,
+        bsp_apic_id: int = 0,
+        xhci_vector: int = 0x40,
+        initial_mouse: Tuple[int, int] = (300, 200),
+        screen_size: Tuple[int, int] = (800, 600),
+        initial_rip: int = 0x102030,
+        initial_rsp: int = 0x7FFFFFFF0,
+    ):
+        self.bsp_apic_id = bsp_apic_id
+        self.xhci_vector = xhci_vector
+        self.mouse_x, self.mouse_y = initial_mouse
+        self.screen_width, self.screen_height = screen_size
+
+        self.initial_rip = initial_rip
+        self.initial_rsp = initial_rsp
+        self.rip = initial_rip
+        self.rsp = initial_rsp
+        self.rflags = 0x202  # IF=1 (bit 9), Reserved bit 1=1
+
+        # Local APIC Registers
+        self.lapic_irr = 0
+        self.lapic_isr = 0
+        self.lapic_eoi_written = False
+
+        # xHCI event queue (Transfer Event TRBs)
+        self.event_ring: List[Dict[str, Any]] = []
+
+        # IDT Gate configuration
+        self.handler_address = 0x101500  # Address of IntHandlerXHCI
+        self.code_segment_cs = 0x08      # Kernel CS
+        self.idt_registered = True
+
+        # CPU Stack & Registers
+        self.stack_memory: Dict[int, int] = {}
+        self.saved_gprs: Dict[str, int] = {}
+
+        # Trace Log
+        self.trace: List[InterruptTraceRecord] = []
+
+    def trigger_mouse_movement(self, displacement_x: int, displacement_y: int) -> List[InterruptTraceRecord]:
+        """Executes the full 12-stage end-to-end interrupt pipeline."""
+        self.trace.clear()
+        self.lapic_eoi_written = False
+
+        # Stage 1: Mouse Hardware Event
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kMouseMovement,
+                domain="Hardware",
+                component="Mouse Sensor & USB Controller",
+                description=f"Mouse hardware detected movement: dx={displacement_x}, dy={displacement_y}. Formatted USB HID input report.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"dx": displacement_x, "dy": displacement_y, "usb_report": [0x00, displacement_x & 0xFF, displacement_y & 0xFF]},
+            )
+        )
+
+        # Stage 2: xHCI Transfer Event TRB
+        trb = {
+            "trb_type": 32,  # Transfer Event TRB
+            "trb_pointer": 0x3F800000,
+            "completion_code": 1,  # Success
+            "slot_id": 1,
+            "endpoint_id": 3,
+            "cycle_bit": 1,
+            "dx": displacement_x,
+            "dy": displacement_y,
+        }
+        self.event_ring.append(trb)
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kXhciEventRing,
+                domain="Hardware",
+                component="xHCI Controller",
+                description="xHCI received USB packet, wrote Transfer Event TRB into Primary Event Ring, and toggled Cycle Bit.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"event_ring_count": len(self.event_ring), "trb": trb},
+            )
+        )
+
+        # Stage 3: PCIe MSI Memory Write Transaction
+        msi_addr = 0xFEE00000 | (self.bsp_apic_id << 12)
+        msi_data = (0b000 << 8) | self.xhci_vector | 0xC000
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kPciMsiWrite,
+                domain="Hardware",
+                component="PCIe Bus / System Fabric",
+                description=f"xHCI generated PCIe MSI Memory Write transaction to 0x{msi_addr:08X} with data 0x{msi_data:04X}.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"msi_address": hex(msi_addr), "msi_data": hex(msi_data), "vector": self.xhci_vector, "dest_apic_id": self.bsp_apic_id},
+            )
+        )
+
+        # Stage 4: Local APIC Receive & IRR Set
+        self.lapic_irr |= (1 << self.xhci_vector)
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kLapicReceive,
+                domain="Hardware",
+                component="Local APIC",
+                description=f"Local APIC (ID={self.bsp_apic_id}) captured MSI write. Verified APIC ID match. Set IRR bit {self.xhci_vector}. Asserted INTR line to CPU core.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"lapic_id": self.bsp_apic_id, "irr_bit": self.xhci_vector, "intr_asserted": True},
+            )
+        )
+
+        # Stage 5: CPU Accept & ISR Set & IF=0
+        if not (self.rflags & 0x200):
+            raise RuntimeError("CPU Interrupt Flag (IF) is 0; interrupt cannot be accepted!")
+        self.lapic_irr &= ~(1 << self.xhci_vector)
+        self.lapic_isr |= (1 << self.xhci_vector)
+        old_rflags = self.rflags
+        self.rflags &= ~0x200  # Clear IF
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kCpuInterruptAccept,
+                domain="Hardware",
+                component="CPU Core (x86-64 Execution Pipeline)",
+                description=f"CPU reached instruction boundary (at HLT). Verified IF=1. Moved vector {self.xhci_vector} from IRR to ISR. Automatically cleared IF (CLI mode) to prevent re-entrancy.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"old_if": 1, "new_if": 0, "isr_bit": self.xhci_vector},
+            )
+        )
+
+        # Stage 6: CPU Hardware Stack Push (SS, RSP, RFLAGS, CS, RIP)
+        old_rsp = self.rsp
+        aligned_rsp = old_rsp & ~0xF
+        pushed_values = [
+            ("SS", 0x00, aligned_rsp - 8),
+            ("RSP", old_rsp, aligned_rsp - 16),
+            ("RFLAGS", old_rflags, aligned_rsp - 24),
+            ("CS", self.code_segment_cs, aligned_rsp - 32),
+            ("RIP", self.rip, aligned_rsp - 40),
+        ]
+        for name, val, addr in pushed_values:
+            self.stack_memory[addr] = val
+        self.rsp = aligned_rsp - 40
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kHardwareStackPush,
+                domain="Hardware",
+                component="CPU Core (Hardware Interrupt Logic)",
+                description=f"CPU automatically aligned stack and pushed InterruptFrame: SS, RSP(0x{old_rsp:X}), RFLAGS(0x{old_rflags:X}), CS(0x{self.code_segment_cs:02X}), RIP(0x{self.rip:X}). New RSP=0x{self.rsp:X}.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"pushed_frame": {k: hex(v) for k, v, _ in pushed_values}},
+            )
+        )
+
+        # Stage 7: IDTR & IDT[64] Gate Lookup
+        if not self.idt_registered:
+            raise RuntimeError("IDT entry 64 not registered!")
+        self.rip = self.handler_address
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kIdtLookup,
+                domain="Hardware",
+                component="CPU Core & IDT (Memory)",
+                description=f"CPU referenced IDTR, loaded 16-byte Interrupt Gate descriptor at idt[{self.xhci_vector}], validated DPL=0, Type=InterruptGate. Loaded RIP=0x{self.rip:X} and CS=0x{self.code_segment_cs:02X}.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"idt_entry": self.xhci_vector, "handler_rip": hex(self.rip), "gate_type": "InterruptGate"},
+            )
+        )
+
+        # Stage 8: Handler Prologue (__attribute__((interrupt)))
+        scratch_gprs = ["RAX", "RCX", "RDX", "RSI", "RDI", "R8", "R9", "R10", "R11"]
+        for i, reg in enumerate(scratch_gprs):
+            val = 0x1000 + i * 0x10
+            self.saved_gprs[reg] = val
+            self.rsp -= 8
+            self.stack_memory[self.rsp] = val
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kHandlerPrologue,
+                domain="Kernel Software",
+                component="IntHandlerXHCI (Prologue generated by Clang)",
+                description=f"Compiler-generated prologue saved scratch registers ({', '.join(scratch_gprs)}) onto stack. Adjusted RSP to 0x{self.rsp:X}.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"saved_registers": list(scratch_gprs), "current_rsp": hex(self.rsp)},
+            )
+        )
+
+        # Stage 9: ProcessEvent & Mouse Move
+        events_processed = 0
+        while len(self.event_ring) > 0:
+            ev = self.event_ring.pop(0)
+            events_processed += 1
+            self.mouse_x = max(0, min(self.screen_width - 1, self.mouse_x + ev["dx"]))
+            self.mouse_y = max(0, min(self.screen_height - 1, self.mouse_y + ev["dy"]))
+
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kHandlerProcessEvent,
+                domain="Kernel Software",
+                component="IntHandlerXHCI & MouseObserver",
+                description=f"Handler drained Primary Event Ring ({events_processed} event). Called ProcessEvent(*xhc) -> MouseObserver. Updated mouse position to ({self.mouse_x}, {self.mouse_y}).",
+                rip=self.rip + 0x40,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"events_processed": events_processed, "mouse_x": self.mouse_x, "mouse_y": self.mouse_y},
+            )
+        )
+
+        # Stage 10: LAPIC EOI Write (0xFEE000B0) & ISR Clear
+        self.lapic_eoi_written = True
+        self.lapic_isr &= ~(1 << self.xhci_vector)
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kLapicNotifyEoi,
+                domain="Kernel Software / Hardware Handshake",
+                component="NotifyEndOfInterrupt() -> Local APIC",
+                description=f"Handler executed NotifyEndOfInterrupt(), writing 0 to LAPIC EOI register (0xFEE000B0). Local APIC cleared ISR bit {self.xhci_vector}.",
+                rip=self.rip + 0x80,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"eoi_register": "0xFEE000B0", "isr_cleared_bit": self.xhci_vector, "lapic_isr": hex(self.lapic_isr)},
+            )
+        )
+
+        # Stage 11: Handler Epilogue (GPRs Pop)
+        for reg in reversed(scratch_gprs):
+            self.rsp += 8
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kHandlerEpilogue,
+                domain="Kernel Software",
+                component="IntHandlerXHCI (Epilogue generated by Clang)",
+                description=f"Compiler-generated epilogue restored scratch registers ({', '.join(reversed(scratch_gprs))}) from stack. RSP restored to 0x{self.rsp:X}.",
+                rip=self.rip + 0x90,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={"restored_registers": list(scratch_gprs), "current_rsp": hex(self.rsp)},
+            )
+        )
+
+        # Stage 12: IRETQ & CPU Stack Restore & Return to KernelMain
+        restored_rip = self.stack_memory[self.rsp]
+        restored_cs = self.stack_memory[self.rsp + 8]
+        restored_rflags = self.stack_memory[self.rsp + 16]
+        restored_rsp = self.stack_memory[self.rsp + 24]
+        restored_ss = self.stack_memory[self.rsp + 32]
+
+        self.rip = restored_rip
+        self.rsp = restored_rsp
+        self.rflags = restored_rflags
+
+        self.trace.append(
+            InterruptTraceRecord(
+                stage=InterruptPipelineStage.kCpuIretq,
+                domain="Hardware",
+                component="CPU Core (IRETQ Instruction)",
+                description=f"CPU executed IRETQ instruction. Restored RIP=0x{self.rip:X}, CS=0x{restored_cs:02X}, RFLAGS=0x{self.rflags:X} (IF=1 re-enabled!), RSP=0x{self.rsp:X}, SS=0x{restored_ss:02X}. Resumed KernelMain HLT loop.",
+                rip=self.rip,
+                rsp=self.rsp,
+                rflags=self.rflags,
+                details={
+                    "restored_rip": hex(self.rip),
+                    "restored_rsp": hex(self.rsp),
+                    "restored_if": 1 if (self.rflags & 0x200) else 0,
+                },
+            )
+        )
+
+        return self.trace
+
+    def verify_pipeline_invariants(self) -> Dict[str, bool]:
+        """Verifies fundamental architectural invariants of the interrupt pipeline."""
+        return {
+            "all_12_stages_recorded": len(self.trace) == 12,
+            "eoi_acknowledged": self.lapic_eoi_written and (self.lapic_isr == 0),
+            "if_flag_restored": (self.rflags & 0x200) != 0,
+            "rsp_restored_to_initial": self.rsp == self.initial_rsp,
+            "rip_restored_to_initial": self.rip == self.initial_rip,
+            "event_ring_drained": len(self.event_ring) == 0,
+        }
+
+
+def plot_end_to_end_interrupt_pipeline_sequence(output_path: str) -> str:
+    """Figure 7.11: End-to-End Interrupt Pipeline Sequence and State Transition Diagram."""
+    sim = InterruptFlowPipelineSimulator()
+    records = sim.trigger_mouse_movement(15, -10)
+
+    fig, ax = plt.subplots(figsize=(16, 11), dpi=300)
+    ax.set_xlim(0, 16)
+    ax.set_ylim(0, 14.5)
+    ax.axis("off")
+
+    # Title Banner
+    ax.text(8.0, 14.0, "Figure 7.11: End-to-End Interrupt Pipeline Architecture (MikanOS 7.6)",
+            ha="center", va="center", fontsize=15, fontweight="bold", color="#1A237E")
+    ax.text(8.0, 13.5, "Complete Hardware / Software Lifecycle: Mouse Movement -> xHCI -> MSI -> LAPIC -> CPU -> IDT -> Handler -> EOI -> IRETQ",
+            ha="center", va="center", fontsize=9.5, color="#37474F")
+
+    # Draw Stage Cards in 2 Columns (Stages 1-6 left, Stages 7-12 right)
+    col1_x = 0.6
+    col2_x = 8.4
+    card_w = 7.0
+    card_h = 1.65
+
+    stage_colors = {
+        "Hardware": ("#E3F2FD", "#1565C0", "#0D47A1"),
+        "Kernel Software": ("#E8F5E9", "#2E7D32", "#1B5E20"),
+        "Kernel Software / Hardware Handshake": ("#FFF8E1", "#F57F17", "#E65100"),
+    }
+
+    for i, rec in enumerate(records):
+        col = 0 if i < 6 else 1
+        x = col1_x if col == 0 else col2_x
+        row = (i % 6)
+        y = 11.5 - row * 2.05
+
+        bg_col, border_col, text_col = stage_colors.get(rec.domain, ("#ECEFF1", "#455A64", "#263238"))
+
+        rect = patches.FancyBboxPatch(
+            (x, y), card_w, card_h,
+            boxstyle="round,pad=0.15,rounding_size=0.15",
+            facecolor=bg_col, edgecolor=border_col, linewidth=1.5
+        )
+        ax.add_patch(rect)
+
+        ax.text(x + 0.25, y + card_h - 0.25, f"Stage {i+1}: {rec.stage.value}",
+                fontsize=9.2, fontweight="bold", color=text_col)
+        domain_tag = f"[{rec.domain} | {rec.component}]"
+        ax.text(x + card_w - 0.25, y + card_h - 0.25, domain_tag,
+                ha="right", fontsize=7.2, fontweight="bold", color="#546E7A")
+
+        words = rec.description.split(" ")
+        lines = []
+        cur_line = []
+        for w in words:
+            cur_line.append(w)
+            if len(" ".join(cur_line)) > 70:
+                lines.append(" ".join(cur_line))
+                cur_line = []
+        if cur_line:
+            lines.append(" ".join(cur_line))
+        desc_str = "\n".join(lines[:3])
+
+        ax.text(x + 0.25, y + card_h - 0.60, desc_str, fontsize=7.5, color="#263238", va="top")
+
+        state_str = f"RIP: 0x{rec.rip:X} | RSP: 0x{rec.rsp:X} | IF: {1 if (rec.rflags & 0x200) else 0}"
+        ax.text(x + 0.25, y + 0.20, state_str, fontsize=7.2, fontfamily="monospace", color="#37474F")
+
+        if i < 5:
+            ax.annotate("", xy=(x + card_w / 2, y - 0.35), xytext=(x + card_w / 2, y - 0.05),
+                        arrowprops=dict(arrowstyle="->", color="#1565C0", lw=1.5))
+        elif i == 5:
+            ax.annotate("", xy=(col2_x + card_w / 2, 13.2), xytext=(x + card_w / 2, y - 0.05),
+                        arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=-0.35", color="#1565C0", lw=1.8, linestyle="--"))
+        elif i < 11:
+            ax.annotate("", xy=(x + card_w / 2, y - 0.35), xytext=(x + card_w / 2, y - 0.05),
+                        arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=1.5))
+
+    leg_rect = patches.Rectangle((0.6, 0.2), 14.8, 0.7, facecolor="#FAFAFA", edgecolor="#B0BEC5", linewidth=1.0)
+    ax.add_patch(leg_rect)
+    ax.text(0.8, 0.55, "Domains:", fontsize=8.0, fontweight="bold", color="#37474F")
+
+    ax.add_patch(patches.Rectangle((2.0, 0.40), 0.3, 0.25, facecolor="#E3F2FD", edgecolor="#1565C0"))
+    ax.text(2.4, 0.52, "Hardware (Silicon / Microcode / LAPIC)", fontsize=7.5, color="#0D47A1")
+
+    ax.add_patch(patches.Rectangle((6.8, 0.40), 0.3, 0.25, facecolor="#E8F5E9", edgecolor="#2E7D32"))
+    ax.text(7.2, 0.52, "Kernel Software (C++ / ISR / Driver)", fontsize=7.5, color="#1B5E20")
+
+    ax.add_patch(patches.Rectangle((11.4, 0.40), 0.3, 0.25, facecolor="#FFF8E1", edgecolor="#F57F17"))
+    ax.text(11.8, 0.52, "Handshake (EOI / Memory-Mapped Register)", fontsize=7.5, color="#E65100")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_hardware_software_boundary_and_stack_lifecycle(output_path: str) -> str:
+    """Figure 7.12: Hardware/Software Boundary and Stack Frame Lifecycle."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 10), dpi=300, gridspec_kw={"width_ratios": [1.1, 1.0]})
+
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+    ax1.text(5.0, 9.6, "Hardware vs Software Division of Responsibility",
+             ha="center", fontsize=12.5, fontweight="bold", color="#0D47A1")
+
+    hw_box = patches.FancyBboxPatch((0.5, 5.0), 9.0, 4.2, boxstyle="round,pad=0.1,rounding_size=0.15",
+                                    facecolor="#E3F2FD", edgecolor="#1976D2", linewidth=1.5)
+    ax1.add_patch(hw_box)
+    ax1.text(0.8, 8.8, "[HARDWARE RESPONSIBILITY] (Silicon & Microcode)", fontsize=9.5, fontweight="bold", color="#0D47A1")
+    hw_tasks = [
+        "1. Optical Sensor & USB packet capture (xHCI Host Controller)",
+        "2. Transfer Event TRB generation into Primary Event Ring",
+        "3. PCIe MSI Memory Write transaction (0xFEE00000 | (APIC_ID << 12))",
+        "4. Local APIC message reception, address decoding & IRR bit set",
+        "5. CPU IF verification (RFLAGS.IF==1) & Instruction Boundary synchronization",
+        "6. CPU Automatic Stack Alignment & InterruptFrame Push (SS, RSP, RFLAGS, CS, RIP)",
+        "7. IDTR reference & IDT[64] Interrupt Gate descriptor verification & load",
+        "8. Hardware clears IF (CLI mode) to prevent re-entrant nested interrupts",
+    ]
+    for i, t in enumerate(hw_tasks):
+        ax1.text(0.8, 8.35 - i * 0.42, t, fontsize=7.5, color="#1565C0")
+
+    ax1.plot([0.5, 9.5], [4.8, 4.8], color="#D32F2F", linestyle="--", linewidth=2.0)
+    ax1.text(5.0, 4.8, "  BOUNDARY: RIP Loaded with IntHandlerXHCI / RSP Aligned  ",
+             ha="center", va="center", fontsize=7.5, fontweight="bold", color="#D32F2F",
+             bbox=dict(boxstyle="square,pad=0.2", facecolor="#FFEBEE", edgecolor="#D32F2F"))
+
+    sw_box = patches.FancyBboxPatch((0.5, 0.4), 9.0, 4.1, boxstyle="round,pad=0.1,rounding_size=0.15",
+                                    facecolor="#E8F5E9", edgecolor="#388E3C", linewidth=1.5)
+    ax1.add_patch(sw_box)
+    ax1.text(0.8, 4.15, "[SOFTWARE RESPONSIBILITY] (Compiler & OS Kernel)", fontsize=9.5, fontweight="bold", color="#1B5E20")
+    sw_tasks = [
+        "1. Compiler __attribute__((interrupt)) prologue: Push scratch GPRs (RAX..R11)",
+        "2. xHCI Event Ring inspection loop: while (xhc->PrimaryEventRing()->HasFront())",
+        "3. Event dispatch: ProcessEvent(*xhc) -> MouseObserver (dx, dy)",
+        "4. GUI / Desktop reaction: mouse_cursor->MoveRelative() (Redraw sprite)",
+        "5. NotifyEndOfInterrupt(): Write 0 to Local APIC EOI register (0xFEE000B0)",
+        "6. Compiler epilogue: Pop scratch GPRs in exact reverse order",
+        "7. Execution of IRETQ instruction to hand control back to CPU hardware",
+        "8. Hardware completes return: Pops RIP, CS, RFLAGS, RSP, SS & Restores IF",
+    ]
+    for i, t in enumerate(sw_tasks):
+        ax1.text(0.8, 3.70 - i * 0.42, t, fontsize=7.5, color="#2E7D32")
+
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+    ax2.text(5.0, 9.6, "x86-64 Stack Frame 4-Stage Lifecycle",
+             ha="center", fontsize=12.5, fontweight="bold", color="#E65100")
+
+    phases = [
+        ("Phase 1: Normal Execution", "HLT in KernelMain", ["(Previous Stack Data)"], 0x7FFFFFFF0, "#ECEFF1", "#607D8B", 8.8),
+        ("Phase 2: Hardware Interrupt", "CPU pushes InterruptFrame", ["SS (0x00)", "RSP (Old 0x...F0)", "RFLAGS (IF=1)", "CS (0x08)", "RIP (HLT addr)"], 0x7FFFFFFC8, "#E3F2FD", "#1565C0", 6.6),
+        ("Phase 3: Handler Execution", "Compiler pushes GPRs", ["Scratch GPRs (RAX..R11)", "SS, RSP, RFLAGS, CS, RIP"], 0x7FFFFFF80, "#FFF3E0", "#E65100", 4.1),
+        ("Phase 4: Post-IRETQ", "Resumed KernelMain", ["(Previous Stack Data)"], 0x7FFFFFFF0, "#E8F5E9", "#2E7D32", 1.6),
+    ]
+
+    for title, subtitle, stack_items, rsp_val, bg_c, border_c, y_pos in phases:
+        box = patches.FancyBboxPatch((0.5, y_pos - 1.8), 9.0, 1.8, boxstyle="round,pad=0.1,rounding_size=0.1",
+                                     facecolor=bg_c, edgecolor=border_c, linewidth=1.3)
+        ax2.add_patch(box)
+        ax2.text(0.8, y_pos - 0.35, f"{title} - {subtitle}", fontsize=8.8, fontweight="bold", color=border_c)
+        ax2.text(9.2, y_pos - 0.35, f"RSP = 0x{rsp_val:X}", ha="right", fontsize=7.5, fontfamily="monospace", color="#37474F")
+
+        n_items = len(stack_items)
+        item_w = 8.2 / n_items
+        for idx, item in enumerate(stack_items):
+            slot_x = 0.9 + idx * item_w
+            slot_rect = patches.Rectangle((slot_x, y_pos - 1.55), item_w - 0.1, 0.95,
+                                          facecolor="white", edgecolor=border_c, linewidth=0.8)
+            ax2.add_patch(slot_rect)
+            ax2.text(slot_x + (item_w - 0.1) / 2, y_pos - 1.08, item, ha="center", va="center",
+                     fontsize=7.2, fontfamily="monospace", color="#263238")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
