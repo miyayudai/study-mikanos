@@ -24965,3 +24965,404 @@ def plot_cpu_exception_types_and_handling(output_path: str) -> str:
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 7.4: IDT (Interrupt Descriptor Table) & Gate Descriptors
+# ==============================================================================
+
+class DescriptorType(IntEnum):
+    """x86-64 System Segment & Gate Descriptor Types in IDT/GDT."""
+    kUpper8Bytes = 0
+    kLDT = 2
+    kTSSAvailable = 9
+    kTSSBusy = 11
+    kCallGate = 12
+    kInterruptGate = 14
+    kTrapGate = 15
+
+
+@dataclass
+class InterruptDescriptorAttribute:
+    """16-bit Attribute word for x86-64 Interrupt Descriptor."""
+    interrupt_stack_table: int = 0  # bits 0..2 (IST: 0 = current stack, 1..7 = IST1..7)
+    type: DescriptorType = DescriptorType.kInterruptGate  # bits 8..11 (0xE = 64-bit Interrupt Gate)
+    descriptor_privilege_level: int = 0  # bits 13..14 (DPL: 0 = Ring 0, 3 = Ring 3)
+    present: bool = False  # bit 15 (P: 1 = Valid/Present; Default 0 for uninitialized entries)
+
+    @property
+    def raw_value(self) -> int:
+        """Serialize attribute to 16-bit unsigned integer matching C++ union."""
+        val = (self.interrupt_stack_table & 0x7)
+        val |= (int(self.type) & 0xF) << 8
+        val |= (self.descriptor_privilege_level & 0x3) << 13
+        if self.present:
+            val |= 1 << 15
+        return val
+
+    @classmethod
+    def from_raw(cls, raw: int) -> "InterruptDescriptorAttribute":
+        """Deserialize from 16-bit unsigned integer."""
+        ist = raw & 0x7
+        type_val = (raw >> 8) & 0xF
+        dpl = (raw >> 13) & 0x3
+        present = bool((raw >> 15) & 0x1)
+        valid_types = {e.value: e for e in DescriptorType}
+        desc_type = valid_types.get(type_val, DescriptorType.kInterruptGate)
+        return cls(
+            interrupt_stack_table=ist,
+            type=desc_type,
+            descriptor_privilege_level=dpl,
+            present=present,
+        )
+
+
+def make_idt_attr(
+    desc_type: DescriptorType = DescriptorType.kInterruptGate,
+    descriptor_privilege_level: int = 0,
+    present: bool = True,
+    interrupt_stack_table: int = 0,
+) -> InterruptDescriptorAttribute:
+    """Helper equivalent to C++ constexpr MakeIDTAttr."""
+    return InterruptDescriptorAttribute(
+        interrupt_stack_table=interrupt_stack_table,
+        type=desc_type,
+        descriptor_privilege_level=descriptor_privilege_level,
+        present=present,
+    )
+
+
+@dataclass
+class InterruptDescriptor:
+    """16-byte (128-bit) x86-64 Interrupt Gate Descriptor in IDT."""
+    offset_low: int = 0  # bits 0..15 of handler RIP
+    segment_selector: int = 0  # bits 16..31 (Code Segment Selector, e.g. 0x0008)
+    attr: InterruptDescriptorAttribute = field(default_factory=InterruptDescriptorAttribute)  # bits 32..47
+    offset_middle: int = 0  # bits 48..63 of handler RIP
+    offset_high: int = 0  # bits 64..95 of handler RIP
+    reserved: int = 0  # bits 96..127 (Must be zero)
+
+    @property
+    def offset(self) -> int:
+        """Reconstruct the full 64-bit handler RIP from offset_low, middle, and high."""
+        return (self.offset_high << 32) | (self.offset_middle << 16) | self.offset_low
+
+    def set_offset(self, addr: int) -> None:
+        """Split a 64-bit linear address into low (16b), middle (16b), and high (32b)."""
+        self.offset_low = addr & 0xFFFF
+        self.offset_middle = (addr >> 16) & 0xFFFF
+        self.offset_high = (addr >> 32) & 0xFFFFFFFF
+
+    def to_bytes(self) -> bytes:
+        """Pack into 16 raw bytes matching x86-64 hardware IDT entry."""
+        attr_word = self.attr.raw_value
+        return struct.pack(
+            "<HHHHII",
+            self.offset_low,
+            self.segment_selector,
+            attr_word,
+            self.offset_middle,
+            self.offset_high,
+            self.reserved,
+        )
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "InterruptDescriptor":
+        """Unpack 16 raw bytes into InterruptDescriptor."""
+        if len(data) != 16:
+            raise ValueError(f"InterruptDescriptor must be 16 bytes, got {len(data)}")
+        low, sel, attr_raw, mid, high, res = struct.unpack("<HHHHII", data)
+        return cls(
+            offset_low=low,
+            segment_selector=sel,
+            attr=InterruptDescriptorAttribute.from_raw(attr_raw),
+            offset_middle=mid,
+            offset_high=high,
+            reserved=res,
+        )
+
+
+@dataclass
+class IDTR:
+    """10-byte (80-bit) IDTR register representation for LIDT instruction."""
+    limit: int = 4095  # 16-bit: Size of IDT in bytes - 1 (256 * 16 - 1 = 0x0FFF)
+    base: int = 0  # 64-bit: Linear base address of IDT (&idt[0])
+
+    def to_bytes(self) -> bytes:
+        """Pack into 10 bytes: uint16 limit followed by uint64 base."""
+        return struct.pack("<HQ", self.limit, self.base)
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "IDTR":
+        if len(data) != 10:
+            raise ValueError(f"IDTR must be 10 bytes, got {len(data)}")
+        limit, base = struct.unpack("<HQ", data)
+        return cls(limit=limit, base=base)
+
+
+class IDTTable:
+    """Simulates the 256-entry x86-64 Interrupt Descriptor Table."""
+
+    def __init__(self, size: int = 256):
+        self.size = size
+        self.entries: list[InterruptDescriptor] = [InterruptDescriptor() for _ in range(size)]
+
+    def set_entry(
+        self,
+        vector: int,
+        attr: InterruptDescriptorAttribute,
+        offset: int,
+        segment_selector: int,
+    ) -> None:
+        """Configure entry for vector matching MikanOS SetIDTEntry."""
+        if not (0 <= vector < self.size):
+            raise IndexError(f"Vector {vector} out of range (0..{self.size - 1})")
+        desc = self.entries[vector]
+        desc.attr = attr
+        desc.set_offset(offset)
+        desc.segment_selector = segment_selector
+
+    def get_entry(self, vector: int) -> InterruptDescriptor:
+        if not (0 <= vector < self.size):
+            raise IndexError(f"Vector {vector} out of range (0..{self.size - 1})")
+        return self.entries[vector]
+
+    def make_idtr(self, base_address: int) -> IDTR:
+        """Generate corresponding IDTR value."""
+        return IDTR(limit=self.size * 16 - 1, base=base_address)
+
+    def dispatch(self, vector: int) -> dict[str, Any]:
+        """Simulate CPU hardware vector lookup and validation."""
+        if not (0 <= vector < self.size):
+            return {"success": False, "error": "VectorOutOfRange", "vector": vector}
+        desc = self.entries[vector]
+        if not desc.attr.present:
+            return {
+                "success": False,
+                "error": "NotPresent",
+                "vector": vector,
+                "exception": "#NP (Segment Not Present Exception, Vector 11)",
+            }
+        return {
+            "success": True,
+            "vector": vector,
+            "handler_address": desc.offset,
+            "segment_selector": desc.segment_selector,
+            "ist": desc.attr.interrupt_stack_table,
+            "type": desc.attr.type.name,
+            "dpl": desc.attr.descriptor_privilege_level,
+        }
+
+
+def plot_idt_descriptor_16byte_layout(output_path: Path | str) -> Path:
+    """Generate high-DPI figure of x86-64 16-byte Interrupt Gate Descriptor layout (Figure 7.07)."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(14, 11), gridspec_kw={"height_ratios": [1.1, 1.0]})
+    fig.patch.set_facecolor("#FFFFFF")
+
+    # -------------------------------------------------------------
+    # Upper subplot: 128-bit (16-byte) Layout Diagram (Bitfield bars)
+    # -------------------------------------------------------------
+    ax0.set_facecolor("#FAFAFC")
+    ax0.set_xlim(-1, 33)
+    ax0.set_ylim(-0.5, 5.0)
+    ax0.axis("off")
+
+    ax0.text(16, 4.6, "x86-64 割り込みゲート記述子（16バイト / 128ビット）のビット詳細レイアウト",
+             ha="center", va="center", fontsize=13, fontweight="bold", color="#1A237E")
+    ax0.text(16, 4.2, "『ゼロからのOS自作入門』第7章 7.4節 / Intel 64 and IA-32 SDM Vol.3A Section 6.14.1",
+             ha="center", va="center", fontsize=9.5, color="#546E7A")
+
+    # Lower 64-bit word (Bytes 0..7)
+    # Bits: 0..15: offset_low, 16..31: segment_selector, 32..34: IST, 35..39: 0, 40..43: Type, 44: 0, 45..46: DPL, 47: P, 48..63: offset_middle
+    # We display them in two 32-bit rows for clarity:
+    # Row 1: Bytes 12..15 (Reserved 32b) & Bytes 8..11 (Offset High 32b)
+    # Row 2: Bytes 4..7 (Offset Middle 16b + Attr 16b) & Bytes 0..3 (Segment Selector 16b + Offset Low 16b)
+
+    # Let's draw 4 rows of 32 bits (Bytes 12..15, 8..11, 4..7, 0..3)
+    rows_def = [
+        ("Bytes 12..15 (Bits 96..127)", 3.2, [
+            ("Reserved (Must be zero / 予約領域: 常に0)", 32, "#ECEFF1", "#78909C", "uint32_t reserved (bits 96..127 = 0x00000000)")
+        ]),
+        ("Bytes 8..11 (Bits 64..95)", 2.3, [
+            ("Offset High (ハンドラ仮想アドレス bits 64..95)", 32, "#FFEBEE", "#C62828", "uint32_t offset_high = (handler_rip >> 32)")
+        ]),
+        ("Bytes 4..7 (Bits 32..63)", 1.4, [
+            ("Offset Middle (bits 48..63)", 16, "#FFF3E0", "#E65100", "uint16_t offset_middle"),
+            ("P", 1, "#E8F5E9", "#2E7D32", "bit 47: P=1"),
+            ("DPL", 2, "#E0F2F1", "#00796B", "bits 45..46: 0"),
+            ("0", 1, "#ECEFF1", "#B0BEC5", "bit 44: 0"),
+            ("Type", 4, "#E1F5FE", "#0288D1", "bits 40..43: 0xE"),
+            ("0", 5, "#ECEFF1", "#B0BEC5", "bits 35..39: 0"),
+            ("IST", 3, "#EDE7F6", "#512DA8", "bits 32..34: 0"),
+        ]),
+        ("Bytes 0..3 (Bits 0..31)", 0.5, [
+            ("Segment Selector (コードセグメントセレクタ / CS)", 16, "#E8EAF6", "#303F9F", "uint16_t segment_selector = GetCS() = 0x0008"),
+            ("Offset Low (ハンドラ仮想アドレス bits 0..15)", 16, "#FCE4EC", "#AD1457", "uint16_t offset_low = (handler_rip & 0xFFFF)")
+        ]),
+    ]
+
+    for label, y, fields in rows_def:
+        ax0.text(0, y + 0.38, label, fontsize=9.0, fontweight="bold", color="#37474F")
+        x_cur = 0.0
+        # Draw from left (bit 31) to right (bit 0) in each 32-bit chunk
+        for f_name, width, bg_col, border_col, sub_desc in fields:
+            w = (width / 32.0) * 32.0
+            rect = plt.Rectangle((x_cur, y - 0.28), w, 0.55, facecolor=bg_col, edgecolor=border_col, linewidth=1.4)
+            ax0.add_patch(rect)
+            # Text
+            text_x = x_cur + w / 2.0
+            ax0.text(text_x, y + 0.04, f_name, ha="center", va="center", fontsize=8.2, fontweight="bold", color=border_col)
+            ax0.text(text_x, y - 0.16, f"({width} bits)", ha="center", va="center", fontsize=7.2, color="#616161")
+            x_cur += w
+
+    # -------------------------------------------------------------
+    # Lower subplot: Detailed Fields Specification Table
+    # -------------------------------------------------------------
+    ax1.set_facecolor("#FFFFFF")
+    ax1.axis("off")
+
+    table_data = [
+        ["フィールド名", "ビット位置", "型・サイズ", "MikanOS での設定値", "ハードウェア仕様 & 役割・選定動機"],
+        ["offset_low", "0 .. 15", "uint16_t (16b)", "handler & 0xFFFF", "ハンドラ関数先頭アドレスの下位16ビット。x86-32時代の構造互換"],
+        ["segment_selector", "16 .. 31", "uint16_t (16b)", "GetCS() (0x0008)", "ハンドラを実行するコードセグメントセレクタ。カーネルCS (Ring 0)"],
+        ["IST", "32 .. 34", "3 bits", "0 (通常スタック)", "Interrupt Stack Table番号。0は現在のRSPを使用。1..7でTSS専用スタック切替"],
+        ["Type", "40 .. 43", "4 bits", "0xE (Interrupt Gate)", "0xE (14) = 64-bit Interrupt Gate (IFクリア). 0xF (15) = Trap Gate (IF維持)"],
+        ["DPL", "45 .. 46", "2 bits", "0 (Ring 0)", "Descriptor Privilege Level。INT n命令による起動を許可する最小特権レベル"],
+        ["P (Present)", "47", "1 bit", "1 (有効)", "記述子の有効ビット。0の状態で割り込みが発生すると #NP 例外が発生する"],
+        ["offset_middle", "48 .. 63", "uint16_t (16b)", "(handler >> 16) & 0xFFFF", "ハンドラアドレスの中位16ビット（bit 16〜31）。x86-32のOffset Highに相当"],
+        ["offset_high", "64 .. 95", "uint32_t (32b)", "handler >> 32", "ハンドラアドレスの上位32ビット（bit 32〜63）。x86-64 Long Modeで新規拡張"],
+        ["reserved", "96 .. 127", "uint32_t (32b)", "0x00000000", "将来のプロセッサ拡張用予約領域。Intel SDM仕様により必ず0クリア"],
+    ]
+
+    col_widths = [0.15, 0.09, 0.13, 0.18, 0.45]
+    table = ax1.table(
+        cellText=table_data,
+        cellLoc="left",
+        colWidths=col_widths,
+        loc="center",
+        bbox=[0.0, 0.05, 1.0, 0.90]
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.0)
+
+    # Style table headers and alternating rows
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("#CFD8DC")
+        cell.set_linewidth(1.0)
+        if row == 0:
+            cell.set_facecolor("#1A237E")
+            cell.set_text_props(color="#FFFFFF", fontweight="bold")
+            cell.set_height(0.10)
+        else:
+            cell.set_height(0.088)
+            if row % 2 == 1:
+                cell.set_facecolor("#F8F9FA")
+            else:
+                cell.set_facecolor("#FFFFFF")
+            if col == 0:
+                cell.set_text_props(fontfamily="monospace", fontweight="bold", color="#0D47A1")
+            elif col == 3:
+                cell.set_text_props(fontfamily="monospace", color="#B71C1C")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_lidt_instruction_and_vector_dispatch(output_path: Path | str) -> Path:
+    """Generate high-DPI figure of LIDT instruction execution and hardware vector dispatch (Figure 7.08)."""
+    setup_plot_style()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(15, 9), gridspec_kw={"width_ratios": [1.0, 1.2]})
+    fig.patch.set_facecolor("#FFFFFF")
+
+    # -------------------------------------------------------------
+    # Left subplot: IDTR register and LoadIDT stack layout
+    # -------------------------------------------------------------
+    ax0.set_facecolor("#FAFAFC")
+    ax0.set_xlim(0, 10)
+    ax0.set_ylim(0, 11)
+    ax0.axis("off")
+
+    ax0.text(5.0, 10.4, "【LIDT 命令と IDTR (10バイト) スタック構造】", ha="center", fontsize=11.5, fontweight="bold", color="#1A237E")
+
+    # IDTR register box
+    rect_idtr = plt.Rectangle((1.0, 8.8), 8.0, 1.2, facecolor="#E8EAF6", edgecolor="#303F9F", linewidth=1.5)
+    ax0.add_patch(rect_idtr)
+    ax0.text(5.0, 9.7, "CPU 内部レジスタ: IDTR (80 bits = 10 Bytes)", ha="center", fontsize=9.5, fontweight="bold", color="#1A237E")
+    ax0.text(2.6, 9.2, "limit (16b): 0x0FFF", ha="center", fontsize=8.5, fontfamily="monospace", color="#C2185B", fontweight="bold")
+    ax0.text(6.8, 9.2, "base (64b): &idt[0] (リニア仮想アドレス)", ha="center", fontsize=8.5, fontfamily="monospace", color="#0D47A1")
+
+    # Stack layout in LoadIDT
+    ax0.text(5.0, 8.2, "LoadIDT 関数実行時のスタック状態 (asmfunc.asm)", ha="center", fontsize=9.5, fontweight="bold", color="#37474F")
+
+    stack_boxes = [
+        ("RBP 呼び出し元保存値 [RBP]", "8 Bytes (QWORD)", "#ECEFF1", "#607D8B", 7.2),
+        ("[RSP + 2 .. RSP + 9]: base (64b)", "&idt[0] = 0x00000000001xxxxx", "#E3F2FD", "#1565C0", 5.8),
+        ("[RSP + 0 .. RSP + 1]: limit (16b)", "sizeof(idt) - 1 = 4095 (0x0FFF)", "#FCE4EC", "#AD1457", 4.6),
+        ("（sub rsp, 10 で確保された10バイト領域）", "lidt [rsp] 命令のオペランド参照先", "#FFF8E1", "#FFA000", 3.4),
+    ]
+
+    for title, desc, bg_c, border_c, y in stack_boxes:
+        rect = plt.Rectangle((1.2, y - 0.45), 7.6, 0.9, facecolor=bg_c, edgecolor=border_c, linewidth=1.3)
+        ax0.add_patch(rect)
+        ax0.text(5.0, y + 0.12, title, ha="center", va="center", fontsize=8.5, fontfamily="monospace", fontweight="bold", color=border_c)
+        ax0.text(5.0, y - 0.20, desc, ha="center", va="center", fontsize=7.6, color="#424242")
+
+    code_asm = (
+        "; asmfunc.asm: LoadIDT 実装\n"
+        "LoadIDT:\n"
+        "    push rbp\n"
+        "    mov  rbp, rsp\n"
+        "    sub  rsp, 10       ; 10バイト確保\n"
+        "    mov  [rsp], di     ; limit (16b)\n"
+        "    mov  [rsp + 2], rsi; offset (64b)\n"
+        "    lidt [rsp]         ; IDTRへ一括ロード!\n"
+        "    mov  rsp, rbp\n"
+        "    pop  rbp\n"
+        "    ret"
+    )
+    rect_code = plt.Rectangle((1.2, 0.4), 7.6, 2.5, facecolor="#263238", edgecolor="#37474F", linewidth=1.2)
+    ax0.add_patch(rect_code)
+    ax0.text(1.5, 1.65, code_asm, fontsize=7.4, fontfamily="monospace", color="#80CBC4")
+
+    # -------------------------------------------------------------
+    # Right subplot: Vector 0x40 Hardware Dispatch Sequence Flow
+    # -------------------------------------------------------------
+    ax1.set_facecolor("#FAFAFC")
+    ax1.set_xlim(0, 11)
+    ax1.set_ylim(0, 11)
+    ax1.axis("off")
+
+    ax1.text(5.5, 10.4, "【ベクタ割り込み発生時の CPU ハードウェア参照シーケンス】", ha="center", fontsize=11.5, fontweight="bold", color="#004D40")
+
+    flow_steps = [
+        ("Step 1: 割り込み検知", "xHCIコントローラからベクタ 0x40 (64) のMSI割り込みを受信", "#E0F2F1", "#00796B", 9.2),
+        ("Step 2: リミット検査", "0x40 * 16 + 15 <= IDTR.limit (4095) をハードウェア検証 (超過時は #GP)", "#FFF9C4", "#F57F17", 7.6),
+        ("Step 3: エントリフェッチ", "アドレス [IDTR.base + 0x40 * 16] から 16バイトの記述子を読み出し", "#E8F5E9", "#2E7D32", 6.0),
+        ("Step 4: 属性検証", "P=1 (Present) かつ Type=0xE (Interrupt Gate) を検証 (不適合時 #NP/#GP)", "#EDE7F6", "#512DA8", 4.4),
+        ("Step 5: スタック退避 & IF=0", "SS, RSP, RFLAGS, CS, RIP をスタックへ自動 PUSH し、CLI (IF=0) を実行", "#FCE4EC", "#C2185B", 2.8),
+        ("Step 6: ハンドラジャンプ", "RIP = (high << 32) | (mid << 16) | low, CS = selector へジャンプ！", "#E1F5FE", "#0288D1", 1.2),
+    ]
+
+    for title, desc, bg_c, border_c, y in flow_steps:
+        rect = plt.Rectangle((0.6, y - 0.55), 9.8, 1.05, facecolor=bg_c, edgecolor=border_c, linewidth=1.4)
+        ax1.add_patch(rect)
+        ax1.text(0.9, y + 0.18, title, fontsize=9.0, fontweight="bold", color=border_c)
+        ax1.text(0.9, y - 0.22, desc, fontsize=7.8, color="#212121")
+        if y > 1.5:
+            # Draw downward arrow
+            ax1.annotate("", xy=(5.5, y - 0.58), xytext=(5.5, y - 0.88),
+                         arrowprops=dict(arrowstyle="->", color="#78909C", lw=1.5))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

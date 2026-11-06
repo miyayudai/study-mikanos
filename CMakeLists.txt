@@ -179,6 +179,9 @@ add_test(NAME test_ch07_interrupt_handler_sim COMMAND ch07_interrupt_handler_sim
 add_executable(ch07_interrupt_vector_sim src/ch07/interrupt_vector_sim.cpp)
 add_test(NAME test_ch07_interrupt_vector_sim COMMAND ch07_interrupt_vector_sim)
 
+add_executable(ch07_idt_descriptor_sim src/ch07/idt_descriptor_sim.cpp)
+add_test(NAME test_ch07_idt_descriptor_sim COMMAND ch07_idt_descriptor_sim)
+
 
 
 

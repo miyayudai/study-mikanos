@@ -401,6 +401,14 @@ from common.os_sim import (
     InterruptVectorSpace,
     plot_interrupt_vector_space_map,
     plot_cpu_exception_types_and_handling,
+    DescriptorType,
+    InterruptDescriptorAttribute,
+    make_idt_attr,
+    InterruptDescriptor,
+    IDTR,
+    IDTTable,
+    plot_idt_descriptor_16byte_layout,
+    plot_lidt_instruction_and_vector_dispatch,
 )
 
 __all__ = [
@@ -804,4 +812,12 @@ __all__ = [
     "InterruptVectorSpace",
     "plot_interrupt_vector_space_map",
     "plot_cpu_exception_types_and_handling",
+    "DescriptorType",
+    "InterruptDescriptorAttribute",
+    "make_idt_attr",
+    "InterruptDescriptor",
+    "IDTR",
+    "IDTTable",
+    "plot_idt_descriptor_16byte_layout",
+    "plot_lidt_instruction_and_vector_dispatch",
 ]
