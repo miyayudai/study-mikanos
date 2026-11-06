@@ -446,6 +446,12 @@ from common.os_sim import (
     plot_arrayqueue_ring_buffer_structure,
     plot_push_pop_state_transition_sequence,
     plot_buffer_boundary_and_full_empty_logic,
+    MessageType,
+    SimMessage,
+    EventLoopSim,
+    plot_sti_hlt_race_condition_and_interrupt_shadow,
+    plot_top_half_bottom_half_queue_sequence,
+    plot_event_driven_os_state_machine,
 )
 
 __all__ = [
@@ -894,4 +900,10 @@ __all__ = [
     "plot_arrayqueue_ring_buffer_structure",
     "plot_push_pop_state_transition_sequence",
     "plot_buffer_boundary_and_full_empty_logic",
+    "MessageType",
+    "SimMessage",
+    "EventLoopSim",
+    "plot_sti_hlt_race_condition_and_interrupt_shadow",
+    "plot_top_half_bottom_half_queue_sequence",
+    "plot_event_driven_os_state_machine",
 ]

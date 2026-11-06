@@ -197,6 +197,9 @@ add_test(NAME test_ch07_fifo_filo_sim COMMAND ch07_fifo_filo_sim)
 add_executable(ch07_array_queue_sim src/ch07/array_queue_sim.cpp)
 add_test(NAME test_ch07_array_queue_sim COMMAND ch07_array_queue_sim)
 
+add_executable(ch07_event_loop_sim src/ch07/event_loop_sim.cpp)
+add_test(NAME test_ch07_event_loop_sim COMMAND ch07_event_loop_sim)
+
 
 
 

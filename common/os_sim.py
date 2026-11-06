@@ -27950,3 +27950,370 @@ def plot_buffer_boundary_and_full_empty_logic(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 7.10: Event Loop, Interrupt Shadowing & Race Condition Simulators
+# ==============================================================================
+
+class MessageType(IntEnum):
+    kInterruptXHCI = 0
+    kTimer = 1
+    kKeyInput = 2
+
+
+@dataclass
+class SimMessage:
+    msg_type: MessageType
+    data: int = 0
+    timestamp_us: float = 0.0
+
+
+class EventLoopSim:
+    """
+    Simulates MikanOS Section 7.10 Event Loop & Top/Bottom Half Architecture.
+    Demonstrates CLI/STI critical section and race condition safety.
+    """
+    def __init__(self, capacity: int = 32):
+        self.capacity = capacity
+        self.queue = ArrayQueueSim(capacity=capacity)
+        self.interrupt_flag = True  # IF in RFLAGS (True = enabled / STI)
+        self.cpu_halted = False
+        self.event_sequence = 0
+        self.processed_events: List[SimMessage] = []
+        self.overflow_count = 0
+        self.lost_wakeup_occurred = False
+
+    def cli(self):
+        """CLI: Clear Interrupt Flag (IF = 0)."""
+        self.interrupt_flag = False
+
+    def sti(self):
+        """STI: Set Interrupt Flag (IF = 1)."""
+        self.interrupt_flag = True
+
+    def int_handler_xhci(self, event_data: int = 0, timestamp_us: float = 0.0) -> bool:
+        """
+        Simulated Top Half ISR (IntHandlerXHCI).
+        Executes on hardware interrupt. Pushes message to queue and issues EOI.
+        """
+        msg = SimMessage(MessageType.kInterruptXHCI, event_data, timestamp_us)
+        success = self.queue.push(msg)
+        if not success:
+            self.overflow_count += 1
+            return False
+        # If CPU was halted in HLT, interrupt wakes it up:
+        if self.cpu_halted:
+            self.cpu_halted = False
+        return True
+
+    def step_event_loop_safe(self) -> Optional[SimMessage]:
+        """
+        Safe MikanOS 7.10 implementation using STI; HLT atomic emulation.
+        """
+        self.cli()
+        if self.queue.count == 0:
+            # Atomic transition to halt: interrupt cannot sneak in between
+            self.sti()
+            self.cpu_halted = True
+            return None
+
+        msg = self.queue.pop()
+        self.sti()
+
+        if msg is not None:
+            self.processed_events.append(msg)
+        return msg
+
+    def step_event_loop_flawed_with_injected_interrupt(self, event_data: int = 42) -> Dict[str, Any]:
+        """
+        Demonstrates the classic 'Lost Wakeup Problem' (Race condition):
+        1. cli() -> check queue is empty.
+        2. sti() -> interrupt arrives RIGHT HERE before hlt()!
+        3. Hardware ISR pushes message to queue and attempts to wake CPU.
+        4. CPU enters hlt() without realizing queue is now NOT empty!
+        5. Result: CPU deadlocks / hangs in HLT with pending messages!
+        """
+        self.cli()
+        was_empty = (self.queue.count == 0)
+
+        trace = []
+        trace.append(("CLI", "Interrupt Flag IF=0. Checking queue...", self.queue.count, self.interrupt_flag, self.cpu_halted))
+
+        if was_empty:
+            trace.append(("QUEUE_EMPTY", "Queue is empty. Deciding to sleep.", self.queue.count, self.interrupt_flag, self.cpu_halted))
+            
+            # Flawed separate STI
+            self.sti()
+            trace.append(("STI", "Interrupt Flag IF=1. Interrupts unmasked!", self.queue.count, self.interrupt_flag, self.cpu_halted))
+
+            # ASYNCHRONOUS HARDWARE INTERRUPT ARRIVES IN THE GAP!
+            self.int_handler_xhci(event_data=event_data)
+            trace.append(("INTERRUPT_FIRED", f"Top Half fired! Pushed msg (data={event_data}). Queue count={self.queue.count}", 
+                          self.queue.count, self.interrupt_flag, self.cpu_halted))
+
+            # CPU now executes separate HLT!
+            self.cpu_halted = True
+            self.lost_wakeup_occurred = True
+            trace.append(("HLT_LOST_WAKEUP", "CPU entered HLT! Lost wakeup: Queue is NOT empty, but CPU is sleeping!", 
+                          self.queue.count, self.interrupt_flag, self.cpu_halted))
+
+            return {
+                "deadlock": True,
+                "pending_count": self.queue.count,
+                "trace": trace
+            }
+
+        msg = self.queue.pop()
+        self.sti()
+        return {"deadlock": False, "msg": msg, "trace": trace}
+
+
+def plot_sti_hlt_race_condition_and_interrupt_shadow(output_path: str = "7/result/fig7_22_sti_hlt_race_condition_and_interrupt_shadow.png") -> str:
+    """
+    Figure 7.22:
+    Visualizes the STI/HLT race condition (Lost Wakeup Problem) vs the x86-64
+    STI; HLT Interrupt Shadowing hardware guarantee (Intel SDM Vol 2B).
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 10), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.0], hspace=0.35)
+
+    # --------------------------------------------------------------------------
+    # Panel 1: Flawed Separate STI and HLT (Lost Wakeup / Deadlock)
+    # --------------------------------------------------------------------------
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(-0.5, 4.5)
+    ax1.set_yticks([0.5, 1.5, 2.5, 3.5])
+    ax1.set_yticklabels([
+        "CPU State\n(Running / HLT)",
+        "Queue Count\n(# of Msgs)",
+        "Interrupt Flag\n(RFLAGS.IF)",
+        "Instruction\nSequence"
+    ], fontsize=10, fontweight="bold", color="#37474F")
+    ax1.set_title("Scenario A: Naive Separate 'STI' followed by 'HLT' (Fatal Race Condition: Lost Wakeup)",
+                  fontsize=12, fontweight="bold", color="#C62828", pad=12)
+    ax1.grid(axis="x", linestyle="--", alpha=0.4)
+
+    # Instruction bar
+    ax1.barh(3.5, 25, left=0, height=0.6, color="#455A64", edgecolor="#263238", label="CLI & Check")
+    ax1.text(12.5, 3.5, "CLI\nif (Count==0)", ha="center", va="center", color="white", fontsize=9, fontweight="bold")
+
+    ax1.barh(3.5, 25, left=25, height=0.6, color="#E53935", edgecolor="#B71C1C", label="Separate STI")
+    ax1.text(37.5, 3.5, "STI\n(Interrupts Unmasked)", ha="center", va="center", color="white", fontsize=9, fontweight="bold")
+
+    ax1.barh(3.5, 15, left=50, height=0.6, color="#FB8C00", edgecolor="#E65100", label="Asynchronous ISR")
+    ax1.text(57.5, 3.5, "Hardware\nInterrupt!", ha="center", va="center", color="white", fontsize=8.5, fontweight="bold")
+
+    ax1.barh(3.5, 35, left=65, height=0.6, color="#7B1FA2", edgecolor="#4A148C", label="HLT")
+    ax1.text(82.5, 3.5, "HLT\n(CPU Sleeps Permanently!)", ha="center", va="center", color="white", fontsize=9, fontweight="bold")
+
+    # RFLAGS.IF line
+    ax1.step([0, 25, 50, 100], [2.2, 2.2, 2.8, 2.8], where="post", color="#1E88E5", lw=2.5)
+    ax1.text(12, 2.3, "IF = 0 (Disabled)", color="#0D47A1", fontsize=8.5, fontweight="bold")
+    ax1.text(40, 2.9, "IF = 1 (Enabled)", color="#0D47A1", fontsize=8.5, fontweight="bold")
+
+    # Queue Count line
+    ax1.step([0, 50, 60, 100], [1.2, 1.2, 1.8, 1.8], where="post", color="#43A047", lw=2.5)
+    ax1.text(25, 1.3, "Count = 0 (Empty)", color="#1B5E20", fontsize=8.5, fontweight="bold")
+    ax1.text(75, 1.9, "Count = 1 (Message Waiting!)", color="#1B5E20", fontsize=8.5, fontweight="bold")
+
+    # CPU State bar
+    ax1.barh(0.5, 65, left=0, height=0.5, color="#81C784", edgecolor="#388E3C")
+    ax1.text(32.5, 0.5, "CPU RUNNING (Active)", ha="center", va="center", color="#1B5E20", fontsize=9, fontweight="bold")
+
+    ax1.barh(0.5, 35, left=65, height=0.5, color="#EF9A9A", edgecolor="#D32F2F")
+    ax1.text(82.5, 0.5, "CPU HALTED (DEADLOCK / HANG!)", ha="center", va="center", color="#B71C1C", fontsize=9, fontweight="bold")
+
+    # Critical vulnerability callout
+    ax1.annotate(
+        "FATAL GAP: Interrupt arrived after STI but BEFORE HLT!\nMessage was pushed, but CPU immediately entered sleep!\nCPU will NEVER wake up until the NEXT mouse move!",
+        xy=(57.5, 3.1), xytext=(57.5, 0.9),
+        arrowprops=dict(facecolor="#D50000", edgecolor="#B71C1C", width=2, headwidth=8),
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="#FFEBEE", edgecolor="#EF5350", lw=1.5),
+        fontsize=9, fontweight="bold", color="#B71C1C", ha="center"
+    )
+
+    # --------------------------------------------------------------------------
+    # Panel 2: x86-64 STI; HLT with Interrupt Shadowing (Provably Safe)
+    # --------------------------------------------------------------------------
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(-0.5, 4.5)
+    ax2.set_yticks([0.5, 1.5, 2.5, 3.5])
+    ax2.set_yticklabels([
+        "CPU State\n(Running / HLT)",
+        "Queue Count\n(# of Msgs)",
+        "Interrupt Flag\n(RFLAGS.IF)",
+        "Instruction\nSequence"
+    ], fontsize=10, fontweight="bold", color="#37474F")
+    ax2.set_title("Scenario B: MikanOS 'STI; HLT' with Hardware Interrupt Shadowing (Intel SDM Vol 2B Specification)",
+                  fontsize=12, fontweight="bold", color="#2E7D32", pad=12)
+    ax2.grid(axis="x", linestyle="--", alpha=0.4)
+
+    ax2.barh(3.5, 30, left=0, height=0.6, color="#455A64", edgecolor="#263238")
+    ax2.text(15, 3.5, "CLI\nif (Count == 0)", ha="center", va="center", color="white", fontsize=9, fontweight="bold")
+
+    ax2.barh(3.5, 20, left=30, height=0.6, color="#2E7D32", edgecolor="#1B5E20")
+    ax2.text(40, 3.5, "asm(\"sti\\n\\thlt\")\n(Atomic Shadow)", ha="center", va="center", color="white", fontsize=9, fontweight="bold")
+
+    ax2.barh(3.5, 20, left=50, height=0.6, color="#FB8C00", edgecolor="#E65100")
+    ax2.text(60, 3.5, "Interrupt ISR\n(IntHandlerXHCI)", ha="center", va="center", color="white", fontsize=8.5, fontweight="bold")
+
+    ax2.barh(3.5, 30, left=70, height=0.6, color="#0288D1", edgecolor="#01579B")
+    ax2.text(85, 3.5, "Main Loop Resumes\nPop & ProcessEvent", ha="center", va="center", color="white", fontsize=9, fontweight="bold")
+
+    # RFLAGS.IF line
+    ax2.step([0, 30, 40, 100], [2.2, 2.2, 2.8, 2.8], where="post", color="#1E88E5", lw=2.5)
+    ax2.text(15, 2.3, "IF = 0 (CLI Protected)", color="#0D47A1", fontsize=8.5, fontweight="bold")
+    ax2.text(55, 2.9, "IF = 1 (Unmasked after HLT starts)", color="#0D47A1", fontsize=8.5, fontweight="bold")
+
+    # Queue Count line
+    ax2.step([0, 55, 65, 80, 100], [1.2, 1.2, 1.8, 1.8, 1.2], where="post", color="#43A047", lw=2.5)
+    ax2.text(25, 1.3, "Count = 0", color="#1B5E20", fontsize=8.5, fontweight="bold")
+    ax2.text(68, 1.9, "Push (Count=1)", color="#1B5E20", fontsize=8.5, fontweight="bold")
+    ax2.text(90, 1.3, "Pop (Count=0)", color="#1B5E20", fontsize=8.5, fontweight="bold")
+
+    # CPU State bar
+    ax2.barh(0.5, 40, left=0, height=0.5, color="#81C784", edgecolor="#388E3C")
+    ax2.text(20, 0.5, "CPU RUNNING", ha="center", va="center", color="#1B5E20", fontsize=9, fontweight="bold")
+
+    ax2.barh(0.5, 10, left=40, height=0.5, color="#FFE082", edgecolor="#FFA000")
+    ax2.text(45, 0.5, "HLT (Idle)", ha="center", va="center", color="#E65100", fontsize=8, fontweight="bold")
+
+    ax2.barh(0.5, 50, left=50, height=0.5, color="#81C784", edgecolor="#388E3C")
+    ax2.text(75, 0.5, "CPU WAKES UP IMMEDIATELY & CONSUMES EVENT", ha="center", va="center", color="#1B5E20", fontsize=9, fontweight="bold")
+
+    # Shadow explanation callout
+    ax2.annotate(
+        "INTEL SDM SPECIFICATION: Interrupt Shadowing after STI\n"
+        "STI inhibits interrupts until AFTER the execution of the next instruction (HLT).\n"
+        "Thus, CPU enters low-power sleep state before any interrupt can be serviced,\n"
+        "guaranteeing immediate wakeup without lost events!",
+        xy=(40, 3.1), xytext=(40, 1.1),
+        arrowprops=dict(facecolor="#2E7D32", edgecolor="#1B5E20", width=2, headwidth=8),
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="#E8F5E9", edgecolor="#66BB6A", lw=1.5),
+        fontsize=9, fontweight="bold", color="#1B5E20", ha="center"
+    )
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_top_half_bottom_half_queue_sequence(output_path: str = "7/result/fig7_23_top_half_bottom_half_queue_sequence.png") -> str:
+    """
+    Figure 7.23:
+    UML sequence diagram of Top Half (IntHandlerXHCI) producing events into ArrayQueue
+    and Bottom Half (KernelMain Event Loop) consuming events with CLI/STI synchronization.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig, ax = plt.subplots(figsize=(15, 9), facecolor="#F8F9FA")
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+
+    ax.set_title("Figure 7.23: Top Half & Bottom Half Asynchronous Coordination via ArrayQueue<Message>",
+                 fontsize=13, fontweight="bold", color="#1A237E", pad=20)
+
+    lifelines = [
+        (12, "Hardware\n(xHCI Mouse)", "#ECEFF1", "#37474F"),
+        (32, "CPU Core\n(x86-64 / IDT)", "#E3F2FD", "#1565C0"),
+        (52, "Top Half ISR\n(IntHandlerXHCI)", "#FFF3E0", "#E65100"),
+        (72, "Message Queue\n(ArrayQueue)", "#E8F5E9", "#2E7D32"),
+        (90, "Bottom Half\n(KernelMain Loop)", "#F3E5F5", "#6A1B9A"),
+    ]
+
+    for x, label, fcolor, ecolor in lifelines:
+        ax.plot([x, x], [10, 85], color="#90A4AE", linestyle="--", lw=1.5, zorder=1)
+        ax.text(x, 89, label, ha="center", va="center", fontsize=9.5, fontweight="bold",
+                color=ecolor, bbox=dict(boxstyle="round,pad=0.4", facecolor=fcolor, edgecolor=ecolor, lw=1.5))
+
+    messages = [
+        (80, 12, 32, "1. PCI MSI Interrupt Signal (Level/Edge)", "#D32F2F"),
+        (74, 32, 52, "2. Vector kXHCI dispatched via IDT[0x40]", "#1565C0"),
+        (68, 52, 72, "3. main_queue->Push(Message{kInterruptXHCI})", "#E65100"),
+        (62, 72, 52, "4. Return kSuccess (O(1) index update)", "#2E7D32"),
+        (56, 52, 32, "5. NotifyEndOfInterrupt() [Local APIC EOI]", "#F57C00"),
+        (50, 52, 32, "6. IRETQ (Fast Return to Preempted Task)", "#37474F"),
+        (42, 90, 32, "7. CLI (Mask Interrupts for Queue Inspect)", "#6A1B9A"),
+        (36, 90, 72, "8. Count() > 0 -> Front() & Pop()", "#4A148C"),
+        (30, 90, 32, "9. STI (Re-enable Interrupts immediately)", "#1565C0"),
+        (24, 90, 12, "10. ProcessEvent(*xhc) -> EventRing dequeue", "#00838F"),
+        (18, 90, 90, "11. Dispatch MouseObserver -> Draw cursor", "#AD1457"),
+    ]
+
+    for y, fx, tx, text, col in messages:
+        if fx == tx:
+            ax.annotate("", xy=(fx + 2, y - 2), xytext=(fx, y),
+                        arrowprops=dict(arrowstyle="->", color=col, lw=1.8, connectionstyle="arc3,rad=-0.4"))
+            ax.text(fx - 1, y - 1, text, ha="right", va="center", fontsize=8.5, fontweight="bold", color=col)
+        else:
+            ax.annotate("", xy=(tx, y), xytext=(fx, y),
+                        arrowprops=dict(arrowstyle="->", color=col, lw=2.0))
+            mid_x = (fx + tx) / 2
+            ax.text(mid_x, y + 2, text, ha="center", va="bottom", fontsize=8.5, fontweight="bold", color=col)
+
+    box_text = (
+        "Key Architectural Invariants:\n"
+        "• Top Half Execution Time: ~0.1 us (Pushes fixed 16-byte Message struct, sends EOI, immediate IRETQ).\n"
+        "• Bottom Half Execution Time: ~10-100 us (Processes xHCI TRB ring, redraws mouse cursor, handles window movement).\n"
+        "• Decoupling Principle: Heavy rendering NEVER runs in interrupt context; nested interrupts are prevented."
+    )
+    ax.text(50, 4, box_text, ha="center", va="center", fontsize=9.2, fontfamily="monospace", color="#263238",
+            bbox=dict(boxstyle="round,pad=0.6", facecolor="#FFF9C4", edgecolor="#FBC02D", lw=1.5))
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_event_driven_os_state_machine(output_path: str = "7/result/fig7_24_event_driven_os_state_machine.png") -> str:
+    """
+    Figure 7.24:
+    State transition machine of the Event-Driven MikanOS Kernel and CPU Power Management.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig, ax = plt.subplots(figsize=(14, 8), facecolor="#F8F9FA")
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.axis("off")
+
+    ax.set_title("Figure 7.24: Event-Driven OS Kernel Finite State Machine & CPU Power Model",
+                 fontsize=13, fontweight="bold", color="#0D47A1", pad=15)
+
+    states = [
+        (20, 50, "STATE: IDLE / SLEEP\n[CPU in HLT Mode]\nPower: ~0.5W (C1 State)\nInterrupts: Enabled (IF=1)", "#E8EAF6", "#3F51B5"),
+        (50, 80, "STATE: TOP HALF ISR\n[IntHandlerXHCI]\nEnqueue Message\nSend APIC EOI\nTime: ~0.1 us", "#FFE0B2", "#E65100"),
+        (50, 20, "STATE: CRITICAL SECTION\n[CLI / Queue Pop]\nIF = 0 (Atomic)\nCheck Count() == 0\nTime: ~10 ns", "#FFCDD2", "#C62828"),
+        (80, 50, "STATE: BOTTOM HALF\n[Event Loop Processing]\nProcessEvent(*xhc)\nMouse Cursor / GUI\nInterrupts: Enabled (IF=1)", "#C8E6C9", "#2E7D32"),
+    ]
+
+    for x, y, text, fcol, ecol in states:
+        ax.text(x, y, text, ha="center", va="center", fontsize=9, fontweight="bold", color=ecol,
+                bbox=dict(boxstyle="round,pad=0.8", facecolor=fcol, edgecolor=ecol, lw=2.0))
+
+    ax.annotate("", xy=(40, 78), xytext=(24, 60),
+                arrowprops=dict(arrowstyle="->", color="#E65100", lw=2, connectionstyle="arc3,rad=-0.2"))
+    ax.text(25, 75, "Hardware Interrupt\n(Wakes from HLT)", color="#E65100", fontsize=8.5, fontweight="bold", ha="center")
+
+    ax.annotate("", xy=(50, 32), xytext=(50, 68),
+                arrowprops=dict(arrowstyle="->", color="#37474F", lw=2))
+    ax.text(53, 50, "IRETQ (Pushed to Queue)\nReturn to Event Loop", color="#37474F", fontsize=8.5, fontweight="bold", ha="left")
+
+    ax.annotate("", xy=(70, 42), xytext=(58, 26),
+                arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2, connectionstyle="arc3,rad=-0.2"))
+    ax.text(72, 28, "Count > 0\nPop() & STI", color="#2E7D32", fontsize=8.5, fontweight="bold", ha="center")
+
+    ax.annotate("", xy=(58, 18), xytext=(75, 38),
+                arrowprops=dict(arrowstyle="->", color="#C62828", lw=2, connectionstyle="arc3,rad=-0.2"))
+    ax.text(68, 14, "Event Handled\nLoop: CLI", color="#C62828", fontsize=8.5, fontweight="bold", ha="center")
+
+    ax.annotate("", xy=(26, 42), xytext=(40, 22),
+                arrowprops=dict(arrowstyle="->", color="#3F51B5", lw=2, connectionstyle="arc3,rad=-0.2"))
+    ax.text(25, 26, "Count == 0\nasm(\"sti\\n\\thlt\")", color="#3F51B5", fontsize=8.5, fontweight="bold", ha="center")
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
