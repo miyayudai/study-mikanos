@@ -94,7 +94,7 @@ cmake --build build
 | **第4章** | ピクセル描画とmake入門 | 5 | `day04a`–`04d` | Makefile、System V ABI、`PixelWriter`、vtable、ELFローダ | [`4_Exercises.ipynb`](4/4_Exercises.ipynb) | `[x]` 完了 (6/6) |
 | **第5章** | 文字表示とコンソールクラス | 6 | `day05a`–`05f` | ビットマップフォント、分割コンパイル、`Console`、`printk` | [`5_Exercises.ipynb`](5/5_Exercises.ipynb) | `[x]` 完了 (7/7) |
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | `[x]` 完了 (5/5) |
-| **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | `7_Exercises.ipynb` | `[ ]` 進行中 (10/11) |
+| **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | `8_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
@@ -225,6 +225,7 @@ cmake --build build
 | [`7.8_FIFO_vs_FILO_Data_Structures.ipynb`](7/7.8_FIFO_vs_FILO_Data_Structures.ipynb) | 7.8 FIFOとFILO（キューvsスタック比較・因果律と打鍵順序保証・ドラッグ状態機械矛盾・飢餓現象解析・3大キュー方式比較・malloc非依存静的リングバッファ・2のべき乗ビットマスク最適化・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.8_FIFO_vs_FILO_Data_Structures.ipynb) |
 | [`7.9_Implementing_Ring_Buffer_ArrayQueue.ipynb`](7/7.9_Implementing_Ring_Buffer_ArrayQueue.ipynb) | 7.9 キューの実装（`osbook_day07b`・`ArrayQueue<T>`クラステンプレート・依存性注入ゼロ動的確保・`read_pos_`/`write_pos_`/`count_`不変条件・`if`循環分岐数理とCPU除算回避・満杯/空境界判定・1スロット犠牲vs 100%利用効率・ヘッダオンリーODR設計・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.9_Implementing_Ring_Buffer_ArrayQueue.ipynb) |
 | [`7.10_Event_Loop_with_Interrupt_Queue.ipynb`](7/7.10_Event_Loop_with_Interrupt_Queue.ipynb) | 7.10 キューを使った割り込み高速化（`osbook_day07b`・Top Half/Bottom Half完全分離・`struct Message`・極小化`IntHandlerXHCI`・`KernelMain`イベントループ・`CLI`クリティカルセクション保護・Lost Wakeupスリープ喪失問題とTOCTOU数理・x86-64 `STI; HLT` 割り込みシャドウハードウェア保証・イベント駆動OS状態機械・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7.10_Event_Loop_with_Interrupt_Queue.ipynb) |
+| [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | 第7章 演習問題（割り込みとFIFO 総合演習・スタックフレーム数理・ベクタ空間・IDT記述子分解・PCI MSIレジスタ導出・FIFO vs FILO挙動シミュレーション・ArrayQueue循環数理・CLI/STIとSTI;HLT割り込みシャドウ・C++20単体検証・10問自己採点クイズ・10軸レーダーチャート） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/7/7_Exercises.ipynb) |
 
 
 

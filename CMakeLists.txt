@@ -200,6 +200,9 @@ add_test(NAME test_ch07_array_queue_sim COMMAND ch07_array_queue_sim)
 add_executable(ch07_event_loop_sim src/ch07/event_loop_sim.cpp)
 add_test(NAME test_ch07_event_loop_sim COMMAND ch07_event_loop_sim)
 
+add_executable(ch07_os_chapter7_exercises src/ch07/os_chapter7_exercises.cpp)
+add_test(NAME test_ch07_os_chapter7_exercises COMMAND ch07_os_chapter7_exercises --test)
+
 
 
 
