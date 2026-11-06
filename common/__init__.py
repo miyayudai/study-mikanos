@@ -471,6 +471,10 @@ from common.os_sim import (
     plot_fig8_07_data_structure_relocation_danger,
     plot_fig8_08_copy_constructor_and_stack_isolation,
     plot_fig8_09_memory_map_buffer_lifetime_safety,
+    KernelStackSimulator,
+    plot_fig8_10_kernel_stack_relocation_architecture,
+    plot_fig8_11_system_v_abi_stack_alignment_rules,
+    plot_fig8_12_stack_growth_and_pointer_arithmetics,
 )
 
 __all__ = [
@@ -944,4 +948,8 @@ __all__ = [
     "plot_fig8_07_data_structure_relocation_danger",
     "plot_fig8_08_copy_constructor_and_stack_isolation",
     "plot_fig8_09_memory_map_buffer_lifetime_safety",
+    "KernelStackSimulator",
+    "plot_fig8_10_kernel_stack_relocation_architecture",
+    "plot_fig8_11_system_v_abi_stack_alignment_rules",
+    "plot_fig8_12_stack_growth_and_pointer_arithmetics",
 ]

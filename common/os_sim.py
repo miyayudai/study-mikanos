@@ -30282,3 +30282,396 @@ def plot_fig8_09_memory_map_buffer_lifetime_safety(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 8.4: Kernel Stack Relocation & System V AMD64 ABI Invariants
+# ==============================================================================
+
+class KernelStackSimulator:
+    """Simulator for Section 8.4: Kernel Stack Relocation and System V ABI Invariants.
+
+    Demonstrates:
+      1. Dangerous state of running on UEFI firmware stack after ExitBootServices.
+      2. Relocation to 1 MiB dedicated .bss kernel stack (alignas(16) uint8_t[1024*1024]).
+      3. System V AMD64 ABI 16-byte stack alignment invariants.
+      4. x86-64 Full Descending Stack pointer arithmetic.
+    """
+
+    KERNEL_STACK_SIZE: int = 1024 * 1024  # 1 MiB
+    UEFI_STACK_SIZE: int = 64 * 1024      # 64 KiB typical UEFI stack
+    REQUIRED_ALIGNMENT: int = 16
+
+    def __init__(
+        self,
+        kernel_stack_base: int = 0x0012_0000,
+        uefi_stack_base: int = 0x7000_0000,
+    ):
+        self.kernel_stack_base = kernel_stack_base
+        self.kernel_stack_top = kernel_stack_base + self.KERNEL_STACK_SIZE
+        self.uefi_stack_base = uefi_stack_base
+        self.uefi_stack_top = uefi_stack_base + self.UEFI_STACK_SIZE
+
+    @staticmethod
+    def verify_alignment(address: int, alignment: int = 16) -> bool:
+        """Verify whether an address is aligned to the specified power-of-two boundary."""
+        return (address % alignment) == 0
+
+    def simulate_stack_switch(
+        self,
+        rdi_val: int = 0xE000_0000,
+        rsi_val: int = 0x1000_0000,
+    ) -> dict:
+        """Simulate execution of asmfunc.asm KernelMain stack switch routine.
+
+        Assembly sequence:
+          KernelMain:
+              mov rsp, kernel_main_stack + 1024 * 1024
+              call KernelMainNewStack
+          .fin:
+              hlt
+              jmp .fin
+        """
+        # Step 0: Initial state on UEFI stack
+        initial_rsp = self.uefi_stack_top - 8
+        cur_rdi = rdi_val
+        cur_rsi = rsi_val
+
+        # Step 1: mov rsp, kernel_main_stack + 1024 * 1024
+        new_rsp = self.kernel_stack_top
+        pre_call_aligned = self.verify_alignment(new_rsp, self.REQUIRED_ALIGNMENT)
+
+        # Step 2: call KernelMainNewStack (pushes 8-byte return address .fin)
+        call_rsp = new_rsp - 8
+        func_entry_offset = call_rsp % self.REQUIRED_ALIGNMENT  # Must be 8 according to System V ABI
+
+        # Step 3: Function prologue in callee (push rbp; mov rbp, rsp)
+        prologue_rsp = call_rsp - 8
+        post_prologue_aligned = self.verify_alignment(prologue_rsp, self.REQUIRED_ALIGNMENT)
+
+        # Step 4: Local stack allocation (e.g. sub rsp, 32 for local buffers)
+        local_alloc_rsp = prologue_rsp - 32
+        local_alloc_aligned = self.verify_alignment(local_alloc_rsp, self.REQUIRED_ALIGNMENT)
+
+        # Step 5: Epilogue and return to .fin
+        epilogue_rsp = local_alloc_rsp + 32 + 8 + 8  # restored to new_rsp
+        halted = True
+
+        return {
+            "initial_rsp": initial_rsp,
+            "kernel_stack_base": self.kernel_stack_base,
+            "kernel_stack_top": self.kernel_stack_top,
+            "pre_call_rsp": new_rsp,
+            "pre_call_aligned": pre_call_aligned,
+            "func_entry_rsp": call_rsp,
+            "func_entry_offset": func_entry_offset,
+            "func_entry_valid": (func_entry_offset == 8),
+            "post_prologue_rsp": prologue_rsp,
+            "post_prologue_aligned": post_prologue_aligned,
+            "local_alloc_rsp": local_alloc_rsp,
+            "local_alloc_aligned": local_alloc_aligned,
+            "epilogue_rsp": epilogue_rsp,
+            "rdi_preserved": (cur_rdi == rdi_val),
+            "rsi_preserved": (cur_rsi == rsi_val),
+            "halted_at_fin": halted,
+        }
+
+    def simulate_sse_alignment_fault(self, misaligned: bool = False) -> dict:
+        """Simulate whether an SSE aligned move (e.g., movaps [rsp], xmm0) succeeds or causes #GP."""
+        base_rsp = self.kernel_stack_top - 16
+        test_rsp = base_rsp - (8 if misaligned else 0)
+
+        is_aligned = (test_rsp % 16 == 0)
+        fault = not is_aligned
+        return {
+            "test_rsp": test_rsp,
+            "is_aligned_16": is_aligned,
+            "causes_general_protection_fault": fault,
+            "instruction": "movaps [rsp], xmm0",
+            "exception": "#GP(0) General Protection Fault" if fault else "None (Execution Success)",
+        }
+
+    def simulate_stack_capacity(self, frame_size: int = 64) -> dict:
+        """Compare stack recursion depth and capacity between UEFI stack and Kernel 1MiB stack."""
+        uefi_max_frames = self.UEFI_STACK_SIZE // frame_size
+        kernel_max_frames = self.KERNEL_STACK_SIZE // frame_size
+        return {
+            "frame_size": frame_size,
+            "uefi_stack_size_bytes": self.UEFI_STACK_SIZE,
+            "uefi_max_frames": uefi_max_frames,
+            "kernel_stack_size_bytes": self.KERNEL_STACK_SIZE,
+            "kernel_max_frames": kernel_max_frames,
+            "depth_multiplier": kernel_max_frames / uefi_max_frames,
+        }
+
+
+def plot_fig8_10_kernel_stack_relocation_architecture(output_path: str = None) -> str:
+    """Figure 8.10: UEFI Stack Danger vs Dedicated 1MiB .bss Kernel Stack Architecture."""
+    if output_path is None:
+        base_dir = Path(__file__).resolve().parent.parent / "8" / "result"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(base_dir / "fig8_10_kernel_stack_relocation_architecture.png")
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 9), gridspec_kw={"width_ratios": [1.1, 1.0, 1.1]})
+    fig.suptitle(
+        "Figure 8.10: Kernel Stack Relocation Architecture (UEFI Stack vs. Dedicated .bss 1MiB Stack)",
+        fontsize=14, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # Panel 1: UEFI Stack Problem
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("[DANGER] UEFI Firmware Stack (Transient)", fontsize=11, fontweight="bold", color="#C62828", pad=10)
+
+    r_uefi = plt.Rectangle((10, 20), 80, 70, facecolor="#FFEBEE", edgecolor="#D32F2F", linewidth=2.0)
+    ax1.add_patch(r_uefi)
+    ax1.text(50, 85, "UEFI BootServicesData / LoaderData", fontsize=10, fontweight="bold", color="#B71C1C", ha="center")
+    ax1.text(50, 78, "Base: ~0x70000000 | Size: ~64 KiB", fontsize=8.5, color="#5D4037", ha="center")
+
+    r_corrupt = plt.Rectangle((15, 30), 70, 35, facecolor="#FFCDD2", edgecolor="#C62828", linestyle="--", linewidth=1.5)
+    ax1.add_patch(r_corrupt)
+    ax1.text(50, 52, "EXITBOOTSERVICES() CONSEQUENCE:\nMemory reclaimed as FREE RAM!\nAllocator WILL overwrite this stack!", fontsize=9, fontweight="bold", color="#B71C1C", ha="center")
+
+    dangers = [
+        "[X] Size: Only ~32-64 KiB (Prone to overflow)",
+        "[X] Ownership: Owned by UEFI firmware",
+        "[X] Lifetime: Ends upon ExitBootServices()",
+        "[X] Catastrophe: Silent OS kernel crash",
+    ]
+    for i, d in enumerate(dangers):
+        ax1.text(12, 14 - i * 3.5, d, fontsize=8.5, color="#C62828")
+
+    # Panel 2: Assembly Transition Bridge
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("[BRIDGE] asmfunc.asm: KernelMain", fontsize=11, fontweight="bold", color="#2E7D32", pad=10)
+
+    r_asm = plt.Rectangle((5, 15), 90, 78, facecolor="#E8F5E9", edgecolor="#388E3C", linewidth=2.0)
+    ax2.add_patch(r_asm)
+    ax2.text(50, 87, "kernel/asmfunc.asm Assembly Switch", fontsize=10, fontweight="bold", color="#1B5E20", ha="center")
+
+    asm_code = (
+        "global KernelMain\n"
+        "KernelMain:\n"
+        "  ; 1. Switch stack pointer\n"
+        "  mov rsp, kernel_main_stack + 1024*1024\n"
+        "\n"
+        "  ; 2. Call C++ on new stack\n"
+        "  ;    (RDI, RSI untouched!)\n"
+        "  call KernelMainNewStack\n"
+        "\n"
+        "  ; 3. Safety Catch Loop\n"
+        ".fin:\n"
+        "  hlt\n"
+        "  jmp .fin"
+    )
+    ax2.text(12, 48, asm_code, fontfamily="monospace", fontsize=9, color="#004D40",
+             bbox=dict(boxstyle="round,pad=0.6", facecolor="#C8E6C9", edgecolor="#4CAF50"))
+
+    ax2.annotate("", xy=(50, 18), xytext=(50, 24), arrowprops=dict(arrowstyle="->", color="#1B5E20", lw=2))
+    ax2.text(50, 16, "Preserves RDI/RSI & Catches Return", fontsize=8.5, fontweight="bold", color="#1B5E20", ha="center")
+
+    # Panel 3: Dedicated Kernel Stack
+    ax3.set_xlim(0, 100)
+    ax3.set_ylim(0, 100)
+    ax3.axis("off")
+    ax3.set_title("[SAFE] Dedicated 1MiB .bss Stack", fontsize=11, fontweight="bold", color="#1565C0", pad=10)
+
+    r_bss = plt.Rectangle((10, 20), 80, 70, facecolor="#E3F2FD", edgecolor="#1976D2", linewidth=2.0)
+    ax3.add_patch(r_bss)
+    ax3.text(50, 85, "alignas(16) uint8_t kernel_main_stack", fontsize=9.5, fontweight="bold", color="#0D47A1", ha="center")
+    ax3.text(50, 78, "Section: .bss | Size: 1024 * 1024 (1 MiB)", fontsize=8.5, color="#0D47A1", ha="center")
+
+    # Stack Top arrow
+    ax3.annotate("Initial RSP (Stack Top)\nbase + 1024 * 1024", xy=(85, 72), xytext=(45, 65),
+                 arrowprops=dict(arrowstyle="->", color="#0D47A1", lw=1.8),
+                 fontsize=8.5, fontweight="bold", color="#0D47A1")
+
+    # Stack growth direction arrow
+    ax3.annotate("", xy=(25, 30), xytext=(25, 65),
+                 arrowprops=dict(arrowstyle="->", color="#C2185B", lw=2.5))
+    ax3.text(28, 48, "Growth Direction\n(Downwards / Decrement)", fontsize=8.5, fontweight="bold", color="#C2185B")
+
+    advantages = [
+        "[OK] Size: Exactly 1,048,576 bytes (1 MiB)",
+        "[OK] Alignment: alignas(16) ensures RSP%16==0",
+        "[OK] Lifetime: Permanent in kernel .bss space",
+        "[OK] Safety: Completely decoupled from UEFI",
+    ]
+    for i, a in enumerate(advantages):
+        ax3.text(12, 14 - i * 3.5, a, fontsize=8.5, color="#1565C0")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_11_system_v_abi_stack_alignment_rules(output_path: str = None) -> str:
+    """Figure 8.11: System V AMD64 ABI 16-Byte Stack Alignment and SSE Safety."""
+    if output_path is None:
+        base_dir = Path(__file__).resolve().parent.parent / "8" / "result"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(base_dir / "fig8_11_system_v_abi_stack_alignment_rules.png")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8), gridspec_kw={"width_ratios": [1.2, 1.0]})
+    fig.suptitle(
+        "Figure 8.11: System V AMD64 ABI 16-Byte Stack Alignment & Hardware Invariants",
+        fontsize=14, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # Left Panel: Stack Alignment Lifecycle Stages
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("Stack Frame Lifecycle & RSP Modulo Transitions", fontsize=11, fontweight="bold", color="#37474F", pad=10)
+
+    stages = [
+        ("Stage 1: Pre-Call (asmfunc.asm)", "mov rsp, kernel_main_stack + 1024*1024", "RSP % 16 == 0", "#E8F5E9", "#2E7D32"),
+        ("Stage 2: Function Entry (Inside Callee)", "call KernelMainNewStack (pushes 8B ret)", "RSP % 16 == 8", "#FFF3E0", "#E65100"),
+        ("Stage 3: Post-Prologue (RBP Saved)", "push rbp (pushes 8B old rbp)", "RSP % 16 == 0", "#E1F5FE", "#0277BD"),
+        ("Stage 4: Local Allocation", "sub rsp, 16*N (allocates aligned locals)", "RSP % 16 == 0", "#EDE7F6", "#4527A0"),
+    ]
+
+    for idx, (title, code, inv, bg, edge) in enumerate(stages):
+        y = 75 - idx * 22
+        r = plt.Rectangle((5, y), 90, 18, facecolor=bg, edgecolor=edge, linewidth=1.5)
+        ax1.add_patch(r)
+        ax1.text(10, y + 13, title, fontsize=9.5, fontweight="bold", color=edge)
+        ax1.text(12, y + 7, f"Assembly: {code}", fontfamily="monospace", fontsize=8.5, color="#263238")
+        ax1.text(70, y + 13, f"Invariant: {inv}", fontfamily="monospace", fontsize=9, fontweight="bold", color=edge,
+                 bbox=dict(boxstyle="square,pad=0.2", facecolor="#FFFFFF", edgecolor=edge))
+        if idx < len(stages) - 1:
+            ax1.annotate("", xy=(50, y - 3), xytext=(50, y),
+                         arrowprops=dict(arrowstyle="->", color="#78909C", lw=1.8))
+
+    # Right Panel: Why Alignment Matters (SSE Aligned Access Crash Scenario)
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("Hardware Consequence: Aligned vs Misaligned SSE Instructions", fontsize=11, fontweight="bold", color="#37474F", pad=10)
+
+    # Safe Case
+    r_safe = plt.Rectangle((5, 52), 90, 42, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.5)
+    ax2.add_patch(r_safe)
+    ax2.text(10, 87, "CASE A: Aligned RSP (RSP % 16 == 0) [OK]", fontsize=10, fontweight="bold", color="#1B5E20")
+    safe_lines = [
+        "Instruction:  movaps [rsp], xmm0  ; 128-bit SSE Aligned Store",
+        "Hardware:     CPU MMU checks low 4 bits: rsp & 0xF == 0",
+        "Result:       Ultra-fast atomic 128-bit memory transaction",
+        "Status:       [PASS] Zero CPU exception, optimal performance",
+    ]
+    for i, line in enumerate(safe_lines):
+        ax2.text(10, 79 - i * 6.5, line, fontfamily="monospace", fontsize=8.5, color="#004D40")
+
+    # Fault Case
+    r_fault = plt.Rectangle((5, 5), 90, 42, facecolor="#FFEBEE", edgecolor="#C62828", linewidth=1.5)
+    ax2.add_patch(r_fault)
+    ax2.text(10, 40, "CASE B: Misaligned RSP (RSP % 16 != 0) [CRASH]", fontsize=10, fontweight="bold", color="#B71C1C")
+    fault_lines = [
+        "Instruction:  movaps [rsp], xmm0  ; 128-bit SSE Aligned Store",
+        "Hardware:     CPU MMU checks low 4 bits: rsp & 0xF != 0",
+        "Trap:         CPU fires Vector 13: #GP (General Protection)",
+        "Status:       [PANIC] Kernel triple fault / instant reboot",
+    ]
+    for i, line in enumerate(fault_lines):
+        ax2.text(10, 32 - i * 6.5, line, fontfamily="monospace", fontsize=8.5, color="#B71C1C")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_12_stack_growth_and_pointer_arithmetics(output_path: str = None) -> str:
+    """Figure 8.12: x86-64 Full Descending Stack Pointer Arithmetics and Capacity."""
+    if output_path is None:
+        base_dir = Path(__file__).resolve().parent.parent / "8" / "result"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(base_dir / "fig8_12_stack_growth_and_pointer_arithmetics.png")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8), gridspec_kw={"width_ratios": [1.1, 1.1]})
+    fig.suptitle(
+        "Figure 8.12: Full Descending Stack Pointer Arithmetics & 1MiB Boundary Capacity",
+        fontsize=14, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # Left Panel: Pointer Arithmetics & Full Descending Stack Concept
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title("Full Descending Stack Memory Model", fontsize=11, fontweight="bold", color="#37474F", pad=10)
+
+    # Memory bar
+    r_stack = plt.Rectangle((25, 15), 50, 70, facecolor="#F5F5F5", edgecolor="#424242", linewidth=2.0)
+    ax1.add_patch(r_stack)
+
+    # Initial RSP (Top)
+    ax1.plot([20, 80], [85, 85], color="#1565C0", linewidth=3)
+    ax1.text(82, 85, "Initial RSP = base + 1024*1024\n(Array Top End)", fontsize=8.5, fontweight="bold", color="#1565C0", va="center")
+
+    # First pushed slot
+    r_slot1 = plt.Rectangle((25, 78), 50, 7, facecolor="#BBDEFB", edgecolor="#1976D2")
+    ax1.add_patch(r_slot1)
+    ax1.text(50, 81.5, "1st push (RSP -= 8): Return Addr (.fin)", fontsize=8, color="#0D47A1", ha="center", va="center")
+
+    # Second pushed slot
+    r_slot2 = plt.Rectangle((25, 71), 50, 7, facecolor="#C8E6C9", edgecolor="#388E3C")
+    ax1.add_patch(r_slot2)
+    ax1.text(50, 74.5, "2nd push (RSP -= 8): Saved RBP", fontsize=8, color="#1B5E20", ha="center", va="center")
+
+    # Stack growth arrow
+    ax1.annotate("", xy=(15, 25), xytext=(15, 85),
+                 arrowprops=dict(arrowstyle="->", color="#C2185B", lw=3))
+    ax1.text(10, 55, "RSP Decrements\n(Push / Call)", fontsize=9, fontweight="bold", color="#C2185B", rotation=90, va="center")
+
+    # Stack Base
+    ax1.plot([20, 80], [15, 15], color="#C62828", linewidth=3)
+    ax1.text(82, 15, "Stack Base = kernel_main_stack\n(Overflow Boundary)", fontsize=8.5, fontweight="bold", color="#C62828", va="center")
+
+    # Formulas box
+    formulas = (
+        "Stack Invariants:\n"
+        "• PUSH val:  RSP = RSP - 8;  *RSP = val\n"
+        "• POP reg:   reg = *RSP;     RSP = RSP + 8\n"
+        "• CALL fn:   RSP = RSP - 8;  *RSP = RIP_next\n"
+        "• RET:       RIP = *RSP;     RSP = RSP + 8"
+    )
+    ax1.text(50, 45, formulas, fontfamily="monospace", fontsize=8.5, color="#263238", ha="center",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#FFF9C4", edgecolor="#FBC02D"))
+
+    # Right Panel: Capacity Comparison (UEFI vs Kernel)
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title("Stack Frame Capacity Comparison (at 64 Bytes / Frame)", fontsize=11, fontweight="bold", color="#37474F", pad=10)
+
+    # UEFI Bar
+    r_uefi_cap = plt.Rectangle((10, 58), 25, 25, facecolor="#FFCDD2", edgecolor="#C62828", linewidth=1.5)
+    ax2.add_patch(r_uefi_cap)
+    ax2.text(22.5, 75, "UEFI Stack", fontsize=10, fontweight="bold", color="#B71C1C", ha="center")
+    ax2.text(22.5, 68, "64 KiB\n(1,024 frames)", fontsize=9, color="#B71C1C", ha="center")
+
+    # Kernel Bar
+    r_kern_cap = plt.Rectangle((50, 20), 40, 63, facecolor="#C8E6C9", edgecolor="#2E7D32", linewidth=1.5)
+    ax2.add_patch(r_kern_cap)
+    ax2.text(70, 75, "Kernel .bss Stack", fontsize=10, fontweight="bold", color="#1B5E20", ha="center")
+    ax2.text(70, 68, "1,024 KiB (1 MiB)\n(16,384 frames)", fontsize=9, color="#1B5E20", ha="center")
+    ax2.text(70, 40, "16x CAPACITY INCREASE!\nSafely handles deep calls,\ninterrupt frames, and debug logs",
+             fontsize=8.5, fontweight="bold", color="#1B5E20", ha="center")
+
+    # Comparison bullets
+    bullets = [
+        "• Deep recursion / complex call graphs no longer threaten stack corruption",
+        "• Interrupt handling context saves (InterruptFrame) require robust stack space",
+        "• .bss allocation incurs ZERO file size cost in ELF binary image",
+    ]
+    for idx, b in enumerate(bullets):
+        ax2.text(5, 12 - idx * 4, b, fontsize=8.5, color="#37474F")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
