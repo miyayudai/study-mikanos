@@ -409,6 +409,15 @@ from common.os_sim import (
     IDTTable,
     plot_idt_descriptor_16byte_layout,
     plot_lidt_instruction_and_vector_dispatch,
+    MSITriggerMode,
+    MSIDeliveryMode,
+    CapabilityHeader,
+    MSICapability,
+    PCIDeviceMSISimulator,
+    format_msi_address,
+    format_msi_data,
+    plot_msi_vs_legacy_interrupts,
+    plot_pci_capability_linked_list_and_msi_register,
 )
 
 __all__ = [
@@ -820,4 +829,13 @@ __all__ = [
     "IDTTable",
     "plot_idt_descriptor_16byte_layout",
     "plot_lidt_instruction_and_vector_dispatch",
+    "MSITriggerMode",
+    "MSIDeliveryMode",
+    "CapabilityHeader",
+    "MSICapability",
+    "PCIDeviceMSISimulator",
+    "format_msi_address",
+    "format_msi_data",
+    "plot_msi_vs_legacy_interrupts",
+    "plot_pci_capability_linked_list_and_msi_register",
 ]

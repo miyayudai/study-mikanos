@@ -25366,3 +25366,562 @@ def plot_lidt_instruction_and_vector_dispatch(output_path: Path | str) -> Path:
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 7.5: PCI MSI (Message Signaled Interrupts)
+# ==============================================================================
+
+class MSITriggerMode(IntEnum):
+    """MSI Trigger Mode (Edge vs Level)."""
+    kEdge = 0
+    kLevel = 1
+
+
+class MSIDeliveryMode(IntEnum):
+    """MSI Delivery Mode to CPU Local APIC."""
+    kFixed = 0b000
+    kLowestPriority = 0b001
+    kSMI = 0b010
+    kNMI = 0b100
+    kINIT = 0b101
+    kExtINT = 0b111
+
+
+PCI_CAP_ID_MSI: int = 0x05
+PCI_CAP_ID_MSIX: int = 0x11
+PCI_CAP_PTR_OFFSET: int = 0x34
+LOCAL_APIC_BASE_DEFAULT: int = 0xFEE00000
+LOCAL_APIC_ID_REG_ADDR: int = 0xFEE00020
+
+
+@dataclass
+class CapabilityHeader:
+    """PCI 32-bit Capability Header union representation."""
+    cap_id: int = 0       # bits 0..7: Capability ID (0x05 = MSI, 0x11 = MSI-X)
+    next_ptr: int = 0     # bits 8..15: Next capability offset in config space (0 = end)
+    cap: int = 0          # bits 16..31: Capability specific control/status
+
+    @property
+    def raw_value(self) -> int:
+        return (self.cap_id & 0xFF) | ((self.next_ptr & 0xFF) << 8) | ((self.cap & 0xFFFF) << 16)
+
+    @classmethod
+    def from_raw(cls, raw: int) -> "CapabilityHeader":
+        return cls(
+            cap_id=raw & 0xFF,
+            next_ptr=(raw >> 8) & 0xFF,
+            cap=(raw >> 16) & 0xFFFF,
+        )
+
+
+@dataclass
+class MSICapability:
+    """PCI MSI Capability structure representation matching MikanOS MSICapability."""
+    cap_id: int = PCI_CAP_ID_MSI       # bits 0..7
+    next_ptr: int = 0                  # bits 8..15
+    msi_enable: bool = False           # bit 16
+    multi_msg_capable: int = 0         # bits 17..19 (2^N messages capable)
+    multi_msg_enable: int = 0          # bits 20..22 (2^M messages enabled)
+    addr_64_capable: bool = False      # bit 23 (64-bit message address capable)
+    per_vector_mask_capable: bool = False  # bit 24 (Per-vector masking capable)
+
+    msg_addr: int = 0                  # Message Address (32-bit)
+    msg_upper_addr: int = 0            # Message Upper Address (32-bit)
+    msg_data: int = 0                  # Message Data (16-bit / 32-bit register)
+    mask_bits: int = 0                 # Mask Bits (32-bit)
+    pending_bits: int = 0              # Pending Bits (32-bit)
+
+    @property
+    def header_raw(self) -> int:
+        val = (self.cap_id & 0xFF) | ((self.next_ptr & 0xFF) << 8)
+        if self.msi_enable:
+            val |= 1 << 16
+        val |= (self.multi_msg_capable & 0x7) << 17
+        val |= (self.multi_msg_enable & 0x7) << 20
+        if self.addr_64_capable:
+            val |= 1 << 23
+        if self.per_vector_mask_capable:
+            val |= 1 << 24
+        return val
+
+
+def format_msi_address(
+    apic_id: int,
+    base: int = LOCAL_APIC_BASE_DEFAULT,
+    redir_hint: int = 0,
+    dest_mode: int = 0,
+) -> int:
+    """Format 32-bit Message Address for Local APIC on x86-64.
+
+    Address format:
+      bits 31..20: 0xFEE (Fixed APIC base)
+      bits 19..12: Destination ID (APIC ID)
+      bit 3: Redirection Hint Indication (RH)
+      bit 2: Destination Mode (DM: 0=Physical, 1=Logical)
+      bits 1..0: 00
+    """
+    addr = (base & 0xFFF00000) | ((apic_id & 0xFF) << 12)
+    if redir_hint:
+        addr |= (1 << 3)
+    if dest_mode:
+        addr |= (1 << 2)
+    return addr
+
+
+def format_msi_data(
+    vector: int,
+    delivery_mode: MSIDeliveryMode = MSIDeliveryMode.kFixed,
+    trigger_mode: MSITriggerMode = MSITriggerMode.kEdge,
+) -> int:
+    """Format 16-bit/32-bit Message Data for Local APIC on x86-64.
+
+    Data format:
+      bits 7..0: Interrupt Vector (e.g. 0x40)
+      bits 10..8: Delivery Mode (e.g. 000 = Fixed)
+      bit 14: Level (1 = Assert)
+      bit 15: Trigger Mode (0 = Edge, 1 = Level)
+    """
+    msg_data = (int(delivery_mode) << 8) | (vector & 0xFF)
+    if trigger_mode == MSITriggerMode.kLevel:
+        msg_data |= 0xC000
+    return msg_data
+
+
+class PCIDeviceMSISimulator:
+    """Simulates PCI configuration space and MSI capability registers."""
+
+    def __init__(self, bus: int = 0, device: int = 0, function: int = 0):
+        self.bus = bus
+        self.device = device
+        self.function = function
+        # 256 bytes standard PCI configuration space
+        self.config_space = bytearray(256)
+        # Capabilities linked list setup
+        self.capabilities: Dict[int, Dict[str, Any]] = {}
+
+    def read_conf_reg(self, reg_addr: int) -> int:
+        """Read 32-bit integer (little endian) from config space."""
+        aligned_addr = reg_addr & 0xFC
+        return struct.unpack_from("<I", self.config_space, aligned_addr)[0]
+
+    def write_conf_reg(self, reg_addr: int, value: int) -> None:
+        """Write 32-bit integer (little endian) into config space."""
+        aligned_addr = reg_addr & 0xFC
+        struct.pack_into("<I", self.config_space, aligned_addr, value & 0xFFFFFFFF)
+
+    def add_capability(self, cap_addr: int, cap_id: int, next_ptr: int, cap_data: int = 0) -> None:
+        """Register a capability header at specified offset."""
+        header = CapabilityHeader(cap_id=cap_id, next_ptr=next_ptr, cap=cap_data)
+        self.write_conf_reg(cap_addr, header.raw_value)
+        self.capabilities[cap_addr] = {
+            "cap_id": cap_id,
+            "next_ptr": next_ptr,
+            "cap": cap_data,
+        }
+
+    def setup_msi_capability(
+        self,
+        cap_addr: int,
+        next_ptr: int = 0,
+        addr_64_capable: bool = True,
+        multi_msg_capable: int = 0,
+        per_vector_mask_capable: bool = False,
+    ) -> None:
+        """Setup MSI capability registers at cap_addr."""
+        msi = MSICapability(
+            cap_id=PCI_CAP_ID_MSI,
+            next_ptr=next_ptr,
+            addr_64_capable=addr_64_capable,
+            multi_msg_capable=multi_msg_capable,
+            per_vector_mask_capable=per_vector_mask_capable,
+        )
+        self.write_conf_reg(cap_addr, msi.header_raw)
+        self.write_conf_reg(cap_addr + 4, 0)
+        if addr_64_capable:
+            self.write_conf_reg(cap_addr + 8, 0)
+            self.write_conf_reg(cap_addr + 12, 0)
+        else:
+            self.write_conf_reg(cap_addr + 8, 0)
+
+    def read_msi_capability(self, cap_addr: int) -> MSICapability:
+        """Read MSICapability structure from config space matching MikanOS ReadMSICapability."""
+        header_val = self.read_conf_reg(cap_addr)
+        cap_id = header_val & 0xFF
+        next_ptr = (header_val >> 8) & 0xFF
+        msi_enable = bool((header_val >> 16) & 0x1)
+        multi_msg_capable = (header_val >> 17) & 0x7
+        multi_msg_enable = (header_val >> 20) & 0x7
+        addr_64_capable = bool((header_val >> 23) & 0x1)
+        per_vector_mask_capable = bool((header_val >> 24) & 0x1)
+
+        msg_addr = self.read_conf_reg(cap_addr + 4)
+        msg_upper_addr = 0
+        msg_data_addr = cap_addr + 8
+        if addr_64_capable:
+            msg_upper_addr = self.read_conf_reg(cap_addr + 8)
+            msg_data_addr = cap_addr + 12
+
+        msg_data = self.read_conf_reg(msg_data_addr)
+        mask_bits = 0
+        pending_bits = 0
+        if per_vector_mask_capable:
+            mask_bits = self.read_conf_reg(msg_data_addr + 4)
+            pending_bits = self.read_conf_reg(msg_data_addr + 8)
+
+        return MSICapability(
+            cap_id=cap_id,
+            next_ptr=next_ptr,
+            msi_enable=msi_enable,
+            multi_msg_capable=multi_msg_capable,
+            multi_msg_enable=multi_msg_enable,
+            addr_64_capable=addr_64_capable,
+            per_vector_mask_capable=per_vector_mask_capable,
+            msg_addr=msg_addr,
+            msg_upper_addr=msg_upper_addr,
+            msg_data=msg_data,
+            mask_bits=mask_bits,
+            pending_bits=pending_bits,
+        )
+
+    def write_msi_capability(self, cap_addr: int, msi: MSICapability) -> None:
+        """Write MSICapability structure to config space matching MikanOS WriteMSICapability."""
+        self.write_conf_reg(cap_addr, msi.header_raw)
+        self.write_conf_reg(cap_addr + 4, msi.msg_addr)
+
+        msg_data_addr = cap_addr + 8
+        if msi.addr_64_capable:
+            self.write_conf_reg(cap_addr + 8, msi.msg_upper_addr)
+            msg_data_addr = cap_addr + 12
+
+        self.write_conf_reg(msg_data_addr, msi.msg_data)
+
+        if msi.per_vector_mask_capable:
+            self.write_conf_reg(msg_data_addr + 4, msi.mask_bits)
+            self.write_conf_reg(msg_data_addr + 8, msi.pending_bits)
+
+    def configure_msi_register(
+        self,
+        cap_addr: int,
+        msg_addr: int,
+        msg_data: int,
+        num_vector_exponent: int = 0,
+    ) -> bool:
+        """Configure MSI register matching MikanOS ConfigureMSIRegister."""
+        msi_cap = self.read_msi_capability(cap_addr)
+
+        if msi_cap.multi_msg_capable <= num_vector_exponent:
+            msi_cap.multi_msg_enable = msi_cap.multi_msg_capable
+        else:
+            msi_cap.multi_msg_enable = num_vector_exponent
+
+        msi_cap.msi_enable = True
+        msi_cap.msg_addr = msg_addr
+        msi_cap.msg_data = msg_data
+
+        self.write_msi_capability(cap_addr, msi_cap)
+        return True
+
+    def configure_msi(
+        self,
+        msg_addr: int,
+        msg_data: int,
+        num_vector_exponent: int = 0,
+    ) -> Tuple[bool, str]:
+        """Scan capability list from 0x34 and configure MSI matching MikanOS ConfigureMSI."""
+        cap_addr = self.read_conf_reg(PCI_CAP_PTR_OFFSET) & 0xFF
+        msi_cap_addr = 0
+        msix_cap_addr = 0
+
+        while cap_addr != 0:
+            header_val = self.read_conf_reg(cap_addr)
+            cap_id = header_val & 0xFF
+            next_ptr = (header_val >> 8) & 0xFF
+
+            if cap_id == PCI_CAP_ID_MSI:
+                msi_cap_addr = cap_addr
+            elif cap_id == PCI_CAP_ID_MSIX:
+                msix_cap_addr = cap_addr
+
+            cap_addr = next_ptr
+
+        if msi_cap_addr != 0:
+            self.configure_msi_register(msi_cap_addr, msg_addr, msg_data, num_vector_exponent)
+            return True, f"Configured MSI at 0x{msi_cap_addr:02X}"
+        elif msix_cap_addr != 0:
+            return False, f"MSI-X at 0x{msix_cap_addr:02X} (Not implemented in MikanOS)"
+
+        return False, "No MSI or MSI-X capability found (kNoPCIMSI)"
+
+    def configure_msi_fixed_destination(
+        self,
+        apic_id: int,
+        trigger_mode: MSITriggerMode,
+        delivery_mode: MSIDeliveryMode,
+        vector: int,
+        num_vector_exponent: int = 0,
+    ) -> Tuple[bool, str]:
+        """Configure MSI with fixed Local APIC destination matching MikanOS ConfigureMSIFixedDestination."""
+        msg_addr = format_msi_address(apic_id=apic_id)
+        msg_data = format_msi_data(vector=vector, delivery_mode=delivery_mode, trigger_mode=trigger_mode)
+        return self.configure_msi(msg_addr, msg_data, num_vector_exponent)
+
+
+def plot_msi_vs_legacy_interrupts(output_path: str) -> str:
+    """Figure 7.09: Legacy Pin-based (INTx) vs Message Signaled Interrupts (MSI)."""
+    setup_plot_style()
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(15, 8.5), facecolor="#F8F9FA")
+    fig.suptitle(
+        "Figure 7.09: 従来のピン割り込み (Legacy INTx) vs メッセージシグナル割り込み (MSI) アーキテクチャ比較",
+        fontsize=14,
+        fontweight="bold",
+        color="#212121",
+        y=0.98,
+    )
+
+    # -------------------------------------------------------------
+    # Left: Legacy INTx Interrupts
+    # -------------------------------------------------------------
+    ax0.set_facecolor("#FAFAFC")
+    ax0.set_xlim(0, 10)
+    ax0.set_ylim(0, 11)
+    ax0.axis("off")
+
+    ax0.text(5.0, 10.4, "【従来のピン割り込み (Legacy INTx / PCI PIC/IO-APIC)】", ha="center", fontsize=11.5, fontweight="bold", color="#B71C1C")
+
+    # Devices
+    dev_a = plt.Rectangle((0.8, 8.2), 3.2, 1.3, facecolor="#FFEBEE", edgecolor="#D32F2F", linewidth=1.5)
+    ax0.add_patch(dev_a)
+    ax0.text(2.4, 9.0, "PCI デバイス A\n(例: xHCI USB)", ha="center", va="center", fontsize=9.0, fontweight="bold", color="#B71C1C")
+
+    dev_b = plt.Rectangle((6.0, 8.2), 3.2, 1.3, facecolor="#FFEBEE", edgecolor="#D32F2F", linewidth=1.5)
+    ax0.add_patch(dev_b)
+    ax0.text(7.6, 9.0, "PCI デバイス B\n(例: ネットワークカード)", ha="center", va="center", fontsize=9.0, fontweight="bold", color="#B71C1C")
+
+    # Shared Physical Line
+    rect_line = plt.Rectangle((1.5, 6.2), 7.0, 0.8, facecolor="#FFCDD2", edgecolor="#C62828", linewidth=2.0)
+    ax0.add_patch(rect_line)
+    ax0.text(5.0, 6.6, "共有割り込みピン配線 (INTA# / Wire-OR 回路)", ha="center", va="center", fontsize=9.5, fontweight="bold", color="#B71C1C")
+
+    # Connecting lines from devices to shared pin
+    ax0.annotate("", xy=(2.4, 7.0), xytext=(2.4, 8.2), arrowprops=dict(arrowstyle="->", color="#C62828", lw=2.0))
+    ax0.annotate("", xy=(7.6, 7.0), xytext=(7.6, 8.2), arrowprops=dict(arrowstyle="->", color="#C62828", lw=2.0))
+
+    # IO-APIC / PIC
+    rect_apic = plt.Rectangle((2.5, 4.4), 5.0, 1.1, facecolor="#FFE0B2", edgecolor="#E65100", linewidth=1.5)
+    ax0.add_patch(rect_apic)
+    ax0.text(5.0, 4.95, "I/O APIC (またはレガシー 8259 PIC)", ha="center", va="center", fontsize=9.5, fontweight="bold", color="#E65100")
+    ax0.annotate("", xy=(5.0, 5.5), xytext=(5.0, 6.2), arrowprops=dict(arrowstyle="->", color="#C62828", lw=2.0))
+
+    # CPU Core
+    rect_cpu = plt.Rectangle((2.5, 2.6), 5.0, 1.1, facecolor="#ECEFF1", edgecolor="#37474F", linewidth=1.5)
+    ax0.add_patch(rect_cpu)
+    ax0.text(5.0, 3.15, "CPU コア (Local APIC)", ha="center", va="center", fontsize=9.5, fontweight="bold", color="#263238")
+    ax0.annotate("", xy=(5.0, 3.7), xytext=(5.0, 4.4), arrowprops=dict(arrowstyle="->", color="#E65100", lw=2.0))
+
+    # Problem Box
+    prob_text = (
+        "▲ レガシーINTxの致命的な課題・ボトルネック:\n"
+        "1. 物理ピン数制限 (INTA#〜INTD# の4本のみ)\n"
+        "2. ピン共有 (Sharing): 複数デバイスが同一ピンを共用\n"
+        "3. ポーリング多発: 割り込み発生時、OSは共有全デバイスの\n"
+        "   ステータスレジスタを走査して発生源を特定（遅延・高負荷）\n"
+        "4. マルチコア親和性の低さ（固定ルーティング）"
+    )
+    rect_prob = plt.Rectangle((0.6, 0.4), 8.8, 1.9, facecolor="#FFF3E0", edgecolor="#FF9800", linewidth=1.2)
+    ax0.add_patch(rect_prob)
+    ax0.text(0.9, 1.35, prob_text, fontsize=8.0, color="#BF360C")
+
+    # -------------------------------------------------------------
+    # Right: MSI / MSI-X (Message Signaled Interrupts)
+    # -------------------------------------------------------------
+    ax1.set_facecolor("#FAFAFC")
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 11)
+    ax1.axis("off")
+
+    ax1.text(5.0, 10.4, "【MSI (Message Signaled Interrupts) / PCI Express】", ha="center", fontsize=11.5, fontweight="bold", color="#1B5E20")
+
+    # Devices
+    dev_a_msi = plt.Rectangle((0.8, 8.2), 3.2, 1.3, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.5)
+    ax1.add_patch(dev_a_msi)
+    ax1.text(2.4, 9.0, "xHCI USB コントローラ\n(MSI 有効化)", ha="center", va="center", fontsize=9.0, fontweight="bold", color="#1B5E20")
+
+    dev_b_msi = plt.Rectangle((6.0, 8.2), 3.2, 1.3, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.5)
+    ax1.add_patch(dev_b_msi)
+    ax1.text(7.6, 9.0, "NVMe / NIC デバイス\n(MSI/MSI-X 有効化)", ha="center", va="center", fontsize=9.0, fontweight="bold", color="#1B5E20")
+
+    # PCI Express Bus & Transaction
+    rect_pcie = plt.Rectangle((1.0, 6.2), 8.0, 0.9, facecolor="#C8E6C9", edgecolor="#388E3C", linewidth=2.0)
+    ax1.add_patch(rect_pcie)
+    ax1.text(5.0, 6.65, "PCI Express ファブリック (パケットベース通信)", ha="center", va="center", fontsize=9.5, fontweight="bold", color="#1B5E20")
+
+    # Arrows representing Memory Write Transactions
+    ax1.annotate(
+        "Memory Write Packet\nAddr: 0xFEE00000 | (APIC<<12)\nData: Vector 0x40",
+        xy=(2.4, 6.2), xytext=(2.4, 8.2),
+        ha="center", va="center",
+        fontsize=7.3, fontfamily="monospace", color="#1B5E20", fontweight="bold",
+        arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2.0)
+    )
+
+    ax1.annotate(
+        "Memory Write Packet\nAddr: 0xFEE01000 (Core 1)\nData: Vector 0x41",
+        xy=(7.6, 6.2), xytext=(7.6, 8.2),
+        ha="center", va="center",
+        fontsize=7.3, fontfamily="monospace", color="#1B5E20", fontweight="bold",
+        arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2.0)
+    )
+
+    # CPU Local APICs
+    lapic_0 = plt.Rectangle((1.0, 3.4), 3.6, 1.6, facecolor="#E1F5FE", edgecolor="#0288D1", linewidth=1.5)
+    ax1.add_patch(lapic_0)
+    ax1.text(2.8, 4.4, "CPU 0 Local APIC", ha="center", va="center", fontsize=9.2, fontweight="bold", color="#01579B")
+    ax1.text(2.8, 3.8, "APIC ID = 0 (BSP)\nVector 0x40 受信!", ha="center", va="center", fontsize=8.0, color="#0277BD")
+
+    lapic_1 = plt.Rectangle((5.4, 3.4), 3.6, 1.6, facecolor="#E1F5FE", edgecolor="#0288D1", linewidth=1.5)
+    ax1.add_patch(lapic_1)
+    ax1.text(7.2, 4.4, "CPU 1 Local APIC", ha="center", va="center", fontsize=9.2, fontweight="bold", color="#01579B")
+    ax1.text(7.2, 3.8, "APIC ID = 1 (AP)\nVector 0x41 受信!", ha="center", va="center", fontsize=8.0, color="#0277BD")
+
+    ax1.annotate("", xy=(2.8, 5.0), xytext=(2.8, 6.2), arrowprops=dict(arrowstyle="->", color="#0288D1", lw=2.0))
+    ax1.annotate("", xy=(7.2, 5.0), xytext=(7.2, 6.2), arrowprops=dict(arrowstyle="->", color="#0288D1", lw=2.0))
+
+    # Advantage Box
+    adv_text = (
+        "■ MSI (Message Signaled Interrupts) の圧倒的優位性:\n"
+        "1. ピン完全不要: 通常のインバウンドメモリ書き込みとして伝送\n"
+        "2. 共有なし (No Sharing): デバイスごとに固有のベクタを割り当て可能\n"
+        "3. 即時ディスパッチ: 割り込み源特定のための無駄なポーリングゼロ\n"
+        "4. マルチコア完全最適: メモリアドレスで配送先 Local APIC を自在に制御\n"
+        "5. 複数ベクタ対応: 1デバイスで最大32ベクタ（MSI-Xは最大2048）"
+    )
+    rect_adv = plt.Rectangle((0.6, 0.4), 8.8, 2.3, facecolor="#E8F8F5", edgecolor="#00897B", linewidth=1.2)
+    ax1.add_patch(rect_adv)
+    ax1.text(0.9, 1.55, adv_text, fontsize=8.0, color="#004D40")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_pci_capability_linked_list_and_msi_register(output_path: str) -> str:
+    """Figure 7.10: PCI Capability Linked List & MSI Register/Address/Data Layout."""
+    setup_plot_style()
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(15.5, 9.0), facecolor="#F8F9FA")
+    fig.suptitle(
+        "Figure 7.10: PCI ケーパビリティ単方向連結リスト走査 & MSI レジスタ構造・Local APIC アドレス/データ導出",
+        fontsize=14,
+        fontweight="bold",
+        color="#212121",
+        y=0.98,
+    )
+
+    # -------------------------------------------------------------
+    # Left: PCI Capability Linked List Traversal
+    # -------------------------------------------------------------
+    ax0.set_facecolor("#FAFAFC")
+    ax0.set_xlim(0, 10)
+    ax0.set_ylim(0, 11)
+    ax0.axis("off")
+
+    ax0.text(5.0, 10.4, "【PCI コンフィギュレーション空間 & ケーパビリティリスト走査】", ha="center", fontsize=11.0, fontweight="bold", color="#1565C0")
+
+    # Header Type 00h base
+    rect_hdr = plt.Rectangle((1.0, 8.4), 8.0, 1.3, facecolor="#EDE7F6", edgecolor="#5E35B1", linewidth=1.5)
+    ax0.add_patch(rect_hdr)
+    ax0.text(5.0, 9.3, "PCI Configuration Header Type 00h (Offset 0x00..0x3F)", ha="center", fontsize=9.2, fontweight="bold", color="#4527A0")
+    ax0.text(5.0, 8.7, "Offset 0x34: Capabilities Pointer (CapPtr) = 0x50", ha="center", fontsize=8.5, fontfamily="monospace", color="#D81B60", fontweight="bold")
+
+    # Capability Node 1 (Power Management, 0x50)
+    rect_cap1 = plt.Rectangle((1.0, 5.8), 8.0, 1.5, facecolor="#E3F2FD", edgecolor="#1E88E5", linewidth=1.5)
+    ax0.add_patch(rect_cap1)
+    ax0.text(5.0, 6.9, "Offset 0x50: Capability 1 [PCI Power Management (PM)]", ha="center", fontsize=9.0, fontweight="bold", color="#0D47A1")
+    ax0.text(2.6, 6.2, "Cap ID (8b): 0x01", ha="center", fontsize=8.2, fontfamily="monospace", color="#1565C0")
+    ax0.text(7.4, 6.2, "Next Ptr (8b): 0x80", ha="center", fontsize=8.2, fontfamily="monospace", color="#C2185B", fontweight="bold")
+
+    # Arrow from CapPtr to Cap1
+    ax0.annotate("", xy=(5.0, 7.3), xytext=(5.0, 8.4), arrowprops=dict(arrowstyle="->", color="#D81B60", lw=2.0))
+
+    # Capability Node 2 (MSI, 0x80)
+    rect_cap2 = plt.Rectangle((1.0, 3.2), 8.0, 1.6, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=2.0)
+    ax0.add_patch(rect_cap2)
+    ax0.text(5.0, 4.35, "Offset 0x80: Capability 2 [MSI (Message Signaled Interrupts)] [ターゲット発見]", ha="center", fontsize=9.0, fontweight="bold", color="#1B5E20")
+    ax0.text(2.6, 3.65, "Cap ID (8b): 0x05 (kCapabilityMSI)", ha="center", fontsize=8.2, color="#2E7D32", fontweight="bold")
+    ax0.text(7.4, 3.65, "Next Ptr (8b): 0x00 (終端/End of List)", ha="center", fontsize=8.2, color="#C2185B", fontweight="bold")
+
+    # Arrow from Cap1 to Cap2
+    ax0.annotate("", xy=(5.0, 4.8), xytext=(5.0, 5.8), arrowprops=dict(arrowstyle="->", color="#C2185B", lw=2.0))
+
+    # Code / Logic Box
+    code_text = (
+        "// MikanOS pci.cpp capability scan:\n"
+        "uint8_t cap_addr = ReadConfReg(dev, 0x34) & 0xffu;\n"
+        "while (cap_addr != 0) {\n"
+        "    auto header = ReadCapabilityHeader(dev, cap_addr);\n"
+        "    if (header.bits.cap_id == kCapabilityMSI) {\n"
+        "        msi_cap_addr = cap_addr; break;\n"
+        "    }\n"
+        "    cap_addr = header.bits.next_ptr;\n"
+        "}"
+    )
+    rect_code = plt.Rectangle((0.8, 0.4), 8.4, 2.3, facecolor="#263238", edgecolor="#37474F", linewidth=1.2)
+    ax0.add_patch(rect_code)
+    ax0.text(1.1, 1.55, code_text, fontsize=7.6, fontfamily="monospace", color="#80CBC4")
+
+    # -------------------------------------------------------------
+    # Right: MSI Register Layout & Local APIC Formats
+    # -------------------------------------------------------------
+    ax1.set_facecolor("#FAFAFC")
+    ax1.set_xlim(0, 11)
+    ax1.set_ylim(0, 11)
+    ax1.axis("off")
+
+    ax1.text(5.5, 10.4, "【MSI レジスタ構造 & Local APIC メッセージ導出】", ha="center", fontsize=11.0, fontweight="bold", color="#004D40")
+
+    # MSI Capability 16/24 Byte Layout Box
+    msi_fields = [
+        ("Offset +0x00: Header (32b)", "CapID:0x05 | NextPtr | MsgCtrl (MSI Enable=1, 64bCapable=1, MultiMsg=0)", "#E8F5E9", "#2E7D32", 9.2),
+        ("Offset +0x04: Message Address (32b)", "0xFEE00000 | (apic_id << 12) -> Local APIC 物理宛先アドレス", "#E3F2FD", "#1565C0", 7.8),
+        ("Offset +0x08: Message Upper Addr (32b)", "0x00000000 (32bit アドレス空間のため上位 32bit は 0)", "#F5F5F5", "#9E9E9E", 6.4),
+        ("Offset +0x0C: Message Data (16/32b)", "0xC040: (DeliveryMode::kFixed << 8) | Vector 0x40 | Level 0xC000", "#FFF3E0", "#E65100", 5.0),
+    ]
+
+    for title, desc, bg_c, border_c, y in msi_fields:
+        rect = plt.Rectangle((0.6, y - 0.55), 9.8, 1.1, facecolor=bg_c, edgecolor=border_c, linewidth=1.3)
+        ax1.add_patch(rect)
+        ax1.text(0.9, y + 0.20, title, fontsize=8.6, fontfamily="monospace", fontweight="bold", color=border_c)
+        ax1.text(0.9, y - 0.22, desc, fontsize=7.6, color="#37474F")
+
+    # Local APIC Address & Data Bit Breakdown Boxes
+    ax1.text(5.5, 3.9, "x86-64 Local APIC メッセージアドレス/データ ビット完全解読", ha="center", fontsize=9.2, fontweight="bold", color="#37474F")
+
+    addr_breakdown = (
+        "Message Address [31:0] = 0xFEE00000 | (apic_id << 12)\n"
+        " +--------------+----------------+-------+----+----+----+\n"
+        " | 31 .. 20(12b)| 19 .. 12 (8b)  |11..4  | 3  | 2  |1:0 |\n"
+        " | 0xFEE (Fixed)| Dest APIC ID   | RSV=0 | RH | DM | 00 |\n"
+        " +--------------+----------------+-------+----+----+----+\n"
+        "   - RH (Redirection Hint): 0 (Direct to APIC), DM: 0 (Physical Dest)"
+    )
+    rect_addr = plt.Rectangle((0.6, 2.05), 9.8, 1.65, facecolor="#E1F5FE", edgecolor="#0288D1", linewidth=1.2)
+    ax1.add_patch(rect_addr)
+    ax1.text(0.8, 2.85, addr_breakdown, fontsize=7.2, fontfamily="monospace", color="#01579B")
+
+    data_breakdown = (
+        "Message Data [15:0] = (delivery_mode << 8) | vector | (trigger_mode ? 0xC000 : 0)\n"
+        " +------+------+---------+---------------+--------------+\n"
+        " |  15  |  14  | 13 .. 11| 10 .. 8 (3b)  |  7 .. 0 (8b) |\n"
+        " | TM=1 | L=1  | RSV = 0 | Delivery: 000 | Vector: 0x40 |\n"
+        " +------+------+---------+---------------+--------------+\n"
+        "   - TM=1 & L=1 (Level Assert = 0xC000), Vector = 0x40 (InterruptVector::kXHCI)"
+    )
+    rect_data = plt.Rectangle((0.6, 0.35), 9.8, 1.55, facecolor="#FFF8E1", edgecolor="#FFA000", linewidth=1.2)
+    ax1.add_patch(rect_data)
+    ax1.text(0.8, 1.10, data_breakdown, fontsize=7.2, fontfamily="monospace", color="#E65100")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
