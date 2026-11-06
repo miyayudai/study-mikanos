@@ -72,6 +72,11 @@ htmlcov/
 5/5/
 6/6/
 7/7/
+8/8/
+
+# Temporary helper scripts
+_append_*.py
+generate_*.py
 
 # Jupyter Notebook
 .ipynb_checkpoints/

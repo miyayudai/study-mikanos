@@ -204,6 +204,9 @@ add_test(NAME test_ch07_event_loop_sim COMMAND ch07_event_loop_sim)
 add_executable(ch08_memory_role_sim src/ch08/memory_role_sim.cpp)
 add_test(NAME test_ch08_memory_role_sim COMMAND ch08_memory_role_sim)
 
+add_executable(ch08_uefi_memmap_sim src/ch08/uefi_memmap_sim.cpp)
+add_test(NAME test_ch08_uefi_memmap_sim COMMAND ch08_uefi_memmap_sim --test)
+
 add_executable(ch07_os_chapter7_exercises src/ch07/os_chapter7_exercises.cpp)
 add_test(NAME test_ch07_os_chapter7_exercises COMMAND ch07_os_chapter7_exercises --test)
 

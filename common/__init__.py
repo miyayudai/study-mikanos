@@ -461,6 +461,10 @@ from common.os_sim import (
     plot_fig8_01_physical_vs_virtual_memory_architecture,
     plot_fig8_02_memory_management_data_structures_comparison,
     plot_fig8_03_chapter8_memory_subsystem_roadmap,
+    KernelMemoryMapInspector,
+    plot_fig8_04_uefi_memory_map_kernel_handoff,
+    plot_fig8_05_memory_descriptor_stepping_math,
+    plot_fig8_06_available_memory_distribution,
 )
 
 __all__ = [
@@ -924,4 +928,8 @@ __all__ = [
     "plot_fig8_01_physical_vs_virtual_memory_architecture",
     "plot_fig8_02_memory_management_data_structures_comparison",
     "plot_fig8_03_chapter8_memory_subsystem_roadmap",
+    "KernelMemoryMapInspector",
+    "plot_fig8_04_uefi_memory_map_kernel_handoff",
+    "plot_fig8_05_memory_descriptor_stepping_math",
+    "plot_fig8_06_available_memory_distribution",
 ]

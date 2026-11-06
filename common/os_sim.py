@@ -29326,3 +29326,517 @@ def plot_fig8_03_chapter8_memory_subsystem_roadmap(output_path: str = "8/result/
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ============================================================================
+# Chapter 8.2: Inspecting UEFI MemoryMap in Kernel (day08a)
+# ============================================================================
+
+class KernelMemoryMapInspector:
+    """
+    Simulates MikanOS day08a Kernel memory map inspection and free physical memory scanning.
+    """
+    AVAILABLE_MEMORY_TYPES = (
+        UefiMemoryType.EfiBootServicesCode,
+        UefiMemoryType.EfiBootServicesData,
+        UefiMemoryType.EfiConventionalMemory,
+    )
+
+    @staticmethod
+    def is_available(mtype: UefiMemoryType | int) -> bool:
+        if isinstance(mtype, int):
+            try:
+                mtype = UefiMemoryType(mtype)
+            except ValueError:
+                return False
+        return mtype in KernelMemoryMapInspector.AVAILABLE_MEMORY_TYPES
+
+    @classmethod
+    def scan_available_memory(cls, memmap_sim: UefiMemoryMapSimulator) -> list[dict[str, Any]]:
+        """
+        Scans memory descriptors using byte-level descriptor_size stepping,
+        mirroring KernelMain pointer arithmetic in MikanOS day08a:
+          for (uintptr_t iter = buffer; iter < buffer + map_size; iter += descriptor_size)
+        """
+        available_regions = []
+        for desc in memmap_sim.descriptors:
+            if cls.is_available(desc.type):
+                bytes_len = desc.size_bytes
+                end_addr = desc.physical_start + bytes_len - 1
+                available_regions.append({
+                    "type": desc.type,
+                    "type_name": desc.type.name,
+                    "physical_start": desc.physical_start,
+                    "physical_end": end_addr,
+                    "number_of_pages": desc.number_of_pages,
+                    "size_bytes": bytes_len,
+                    "size_mib": bytes_len / (1024 * 1024),
+                    "attribute": desc.attribute,
+                })
+        return available_regions
+
+    @classmethod
+    def calculate_total_available_bytes(cls, memmap_sim: UefiMemoryMapSimulator) -> int:
+        regions = cls.scan_available_memory(memmap_sim)
+        return sum(r["size_bytes"] for r in regions)
+
+    @classmethod
+    def simulate_unsafe_stepping(cls, memmap_sim: UefiMemoryMapSimulator) -> list[dict[str, Any]]:
+        """
+        Simulates the critical bug if sizeof(MemoryDescriptor) (40 bytes) was used
+        instead of descriptor_size (e.g. 48 bytes).
+        Returns a list of corrupted descriptor records read at bad offsets.
+        """
+        raw_buffer = bytearray()
+        for desc in memmap_sim.descriptors:
+            raw_buffer.extend(desc.to_bytes(descriptor_size=memmap_sim.descriptor_size))
+
+        results = []
+        sizeof_struct = 40
+        num_items = len(memmap_sim.descriptors)
+        for i in range(num_items):
+            bad_offset = i * sizeof_struct
+            if bad_offset + sizeof_struct <= len(raw_buffer):
+                data = raw_buffer[bad_offset:bad_offset + sizeof_struct]
+                raw_type, pad, phys, virt, pages, attr = struct.unpack("<IIQQQQ", data)
+                is_corrupted = (bad_offset != i * memmap_sim.descriptor_size)
+                results.append({
+                    "index": i,
+                    "offset_read": bad_offset,
+                    "expected_offset": i * memmap_sim.descriptor_size,
+                    "raw_type": raw_type,
+                    "physical_start": phys,
+                    "number_of_pages": pages,
+                    "is_corrupted": is_corrupted,
+                })
+        return results
+
+    @classmethod
+    def create_typical_qemu_memmap(cls) -> UefiMemoryMapSimulator:
+        """Creates a realistic UEFI memory map matching QEMU OVMF ~3 GiB RAM boot configuration."""
+        sim = UefiMemoryMapSimulator(descriptor_size=48, descriptor_version=1)
+        entries = [
+            (UefiMemoryType.EfiReservedMemoryType, 0x0000_0000, 160, 0x8),       # 0..0x9FFFF (IVT/BIOS/EBDA)
+            (UefiMemoryType.EfiConventionalMemory, 0x0010_0000, 16128, 0x8),     # 1 MiB..64 MiB RAM
+            (UefiMemoryType.EfiBootServicesCode,   0x0400_0000, 2048, 0x8),      # 64 MiB..72 MiB (8 MiB BS Code)
+            (UefiMemoryType.EfiBootServicesData,   0x0480_0000, 4096, 0x8),      # 72 MiB..88 MiB (16 MiB BS Data)
+            (UefiMemoryType.EfiLoaderCode,         0x0580_0000, 512, 0x8),       # 88 MiB..90 MiB (Loader Code)
+            (UefiMemoryType.EfiLoaderData,         0x05A0_0000, 512, 0x8),       # 90 MiB..92 MiB (Loader Data / MemMap)
+            (UefiMemoryType.EfiConventionalMemory, 0x05C0_0000, 755712, 0x8),    # 92 MiB..3040 MiB (Huge free RAM)
+            (UefiMemoryType.EfiACPIReclaimMemory,  0xBE00_0000, 512, 0x8),       # ACPI Tables
+            (UefiMemoryType.EfiACPIMemoryNVS,      0xBE20_0000, 512, 0x8),       # ACPI NVS
+            (UefiMemoryType.EfiRuntimeServicesCode, 0xBE40_0000, 256, 0x8 | 0x8000_0000_0000_0000),
+            (UefiMemoryType.EfiRuntimeServicesData, 0xBE50_0000, 256, 0x8 | 0x8000_0000_0000_0000),
+            (UefiMemoryType.EfiMemoryMappedIO,     0xFEE0_0000, 1, 0x1 | 0x8000_0000_0000_0000), # Local APIC
+            (UefiMemoryType.EfiMemoryMappedIO,     0xFEC0_0000, 1, 0x1 | 0x8000_0000_0000_0000), # IO-APIC
+        ]
+        for mtype, phys, pages, attr in entries:
+            sim.add_descriptor(UefiMemoryDescriptor(
+                type=mtype,
+                physical_start=phys,
+                virtual_start=phys,
+                number_of_pages=pages,
+                attribute=attr,
+                pad=0
+            ))
+        return sim
+
+
+def plot_fig8_04_uefi_memory_map_kernel_handoff(output_path: str = "8/result/fig8_04_uefi_memory_map_kernel_handoff.png") -> str:
+    """
+    Visualizes bootloader-to-kernel argument handoff under System V AMD64 ABI:
+    RDI -> const FrameBufferConfig&, RSI -> const MemoryMap&.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 10.5), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.1], width_ratios=[1.0, 1.0], hspace=0.32, wspace=0.25)
+
+    # --------------------------------------------------------------------------
+    # Panel 1: System V AMD64 ABI Register Assignment
+    # --------------------------------------------------------------------------
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(-0.5, 9.5)
+    ax1.axis("off")
+    ax1.set_title("System V AMD64 ABI: KernelMain Handoff Registers",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # Bootloader side box
+    r_boot = plt.Rectangle((5, 5.0), 40, 3.8, facecolor="#E3F2FD", edgecolor="#1976D2", linewidth=1.8)
+    ax1.add_patch(r_boot)
+    ax1.text(25, 8.2, "MikanLoaderPkg / Main.c", fontsize=10, fontweight="bold", color="#0D47A1", ha="center")
+    ax1.text(7, 7.2, "typedef void EntryPointType(", fontsize=8.5, fontfamily="monospace", color="#1565C0")
+    ax1.text(10, 6.4, "const FrameBufferConfig*,", fontsize=8.5, fontfamily="monospace", color="#1565C0")
+    ax1.text(10, 5.6, "const MemoryMap*);", fontsize=8.5, fontfamily="monospace", color="#1565C0")
+
+    # Kernel side box
+    r_kern = plt.Rectangle((55, 5.0), 40, 3.8, facecolor="#E8F5E9", edgecolor="#388E3C", linewidth=1.8)
+    ax1.add_patch(r_kern)
+    ax1.text(75, 8.2, "Kernel / main.cpp", fontsize=10, fontweight="bold", color="#1B5E20", ha="center")
+    ax1.text(57, 7.2, 'extern "C" void KernelMain(', fontsize=8.5, fontfamily="monospace", color="#2E7D32")
+    ax1.text(60, 6.4, "const FrameBufferConfig& config,", fontsize=8.5, fontfamily="monospace", color="#2E7D32")
+    ax1.text(60, 5.6, "const MemoryMap& memmap);", fontsize=8.5, fontfamily="monospace", color="#2E7D32")
+
+    # Registers in between
+    r_rdi = plt.Rectangle((12, 1.0), 34, 2.6, facecolor="#FFF9C4", edgecolor="#FBC02D", linewidth=1.5)
+    ax1.add_patch(r_rdi)
+    ax1.text(29, 3.0, "Register %rdi (1st Arg)", fontsize=9.5, fontweight="bold", color="#F57F17", ha="center")
+    ax1.text(29, 2.0, "Pointer to &config\n(FrameBufferConfig*)", fontsize=8.5, fontfamily="monospace", color="#5D4037", ha="center")
+
+    r_rsi = plt.Rectangle((54, 1.0), 34, 2.6, facecolor="#FFF9C4", edgecolor="#FBC02D", linewidth=1.5)
+    ax1.add_patch(r_rsi)
+    ax1.text(71, 3.0, "Register %rsi (2nd Arg)", fontsize=9.5, fontweight="bold", color="#F57F17", ha="center")
+    ax1.text(71, 2.0, "Pointer to &memmap\n(MemoryMap*)", fontsize=8.5, fontfamily="monospace", color="#5D4037", ha="center")
+
+    # Connect arrows
+    ax1.annotate("", xy=(29, 3.7), xytext=(25, 5.0), arrowprops=dict(arrowstyle="->", color="#1976D2", lw=2))
+    ax1.annotate("", xy=(71, 3.7), xytext=(75, 5.0), arrowprops=dict(arrowstyle="->", color="#388E3C", lw=2))
+
+    # --------------------------------------------------------------------------
+    # Panel 2: MemoryMap Structure Layout (48 bytes)
+    # --------------------------------------------------------------------------
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(-0.5, 9.5)
+    ax2.axis("off")
+    ax2.set_title("struct MemoryMap Layout & Pointers (kernel/memory_map.hpp)",
+                  fontsize=12, fontweight="bold", color="#4A148C", pad=12)
+
+    mm_fields = [
+        ("0x00", "buffer_size", "unsigned long long (8B)", "Total allocated buffer capacity (e.g. 16 KiB)", "#EDE7F6"),
+        ("0x08", "buffer", "void* (8B)", "Pointer to contiguous array of MemoryDescriptor", "#D1C4E9"),
+        ("0x10", "map_size", "unsigned long long (8B)", "Actual valid payload size (e.g. 48B * N descs)", "#EDE7F6"),
+        ("0x18", "map_key", "unsigned long long (8B)", "Key returned by GetMemoryMap() for ExitBootServices", "#D1C4E9"),
+        ("0x20", "descriptor_size", "unsigned long long (8B)", "Size of single descriptor including padding (48B)", "#FFF3E0"),
+        ("0x28", "descriptor_version", "uint32_t (4B) + 4B pad", "Descriptor version (typically 1)", "#EDE7F6"),
+    ]
+    for i, (offset, fname, ftype, fdesc, bg) in enumerate(mm_fields):
+        y = 8.2 - i * 1.45
+        r = plt.Rectangle((5, y - 0.55), 90, 1.25, facecolor=bg, edgecolor="#7E57C2", linewidth=1.2)
+        ax2.add_patch(r)
+        ax2.text(7, y + 0.15, f"{offset} : {fname}", fontsize=9, fontfamily="monospace", fontweight="bold", color="#311B92")
+        ax2.text(42, y + 0.15, ftype, fontsize=8.5, fontfamily="monospace", color="#512DA8")
+        ax2.text(7, y - 0.35, fdesc, fontsize=8, color="#37474F")
+
+    # --------------------------------------------------------------------------
+    # Panel 3: Descriptor Buffer Architecture & Scanning Bounds
+    # --------------------------------------------------------------------------
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.set_xlim(0, 100)
+    ax3.set_ylim(-0.5, 9.5)
+    ax3.axis("off")
+    ax3.set_title("Contiguous Descriptor Buffer & Loop Stepping Bounds",
+                  fontsize=12, fontweight="bold", color="#00695C", pad=12)
+
+    r_buf = plt.Rectangle((5, 4.0), 90, 4.8, facecolor="#E0F2F1", edgecolor="#00897B", linewidth=1.8)
+    ax3.add_patch(r_buf)
+    ax3.text(8, 8.2, "MemoryMap.buffer (Contiguous Buffer in Memory)", fontsize=10, fontweight="bold", color="#004D40")
+
+    slots = [
+        ("Desc [0]", "0x00", "Reserved", "#B2DFDB"),
+        ("Desc [1]", "+48B", "Conventional", "#80CBC4"),
+        ("Desc [2]", "+96B", "BootServicesCode", "#4DB6AC"),
+        ("Desc [...]", "...", "...", "#E0F2F1"),
+        ("Desc [N-1]", "+map_size-48B", "MMIO / ACPI", "#80CBC4"),
+    ]
+    for idx, (lbl, off, mkind, bg) in enumerate(slots):
+        x = 8 + idx * 17.5
+        r_slot = plt.Rectangle((x, 4.8), 16.5, 2.8, facecolor=bg, edgecolor="#004D40", linewidth=1.2)
+        ax3.add_patch(r_slot)
+        ax3.text(x + 8.25, 6.8, lbl, fontsize=8.5, fontfamily="monospace", fontweight="bold", color="#004D40", ha="center")
+        ax3.text(x + 8.25, 5.8, off, fontsize=8, fontfamily="monospace", color="#00796B", ha="center")
+        ax3.text(x + 8.25, 5.1, mkind, fontsize=7.5, color="#004D40", ha="center")
+
+    # Loop logic code block
+    r_code = plt.Rectangle((5, 0.4), 90, 3.0, facecolor="#263238", edgecolor="#37474F", linewidth=1.5)
+    ax3.add_patch(r_code)
+    code_lines = [
+        "uintptr_t begin = reinterpret_cast<uintptr_t>(memory_map.buffer);",
+        "uintptr_t end   = begin + memory_map.map_size;",
+        "for (uintptr_t iter = begin; iter < end; iter += memory_map.descriptor_size) {",
+        "    auto desc = reinterpret_cast<const MemoryDescriptor*>(iter); // Safe access",
+        "}",
+    ]
+    for i, line in enumerate(code_lines):
+        ax3.text(7, 2.8 - i * 0.52, line, fontsize=8.5, fontfamily="monospace", color="#80CBC4")
+
+    # --------------------------------------------------------------------------
+    # Panel 4: Memory Classification by Post-ExitBootServices Reusability
+    # --------------------------------------------------------------------------
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.set_xlim(0, 100)
+    ax4.set_ylim(-0.5, 9.5)
+    ax4.axis("off")
+    ax4.set_title("Memory Reusability Classification Post ExitBootServices()",
+                  fontsize=12, fontweight="bold", color="#BF360C", pad=12)
+
+    cat_boxes = [
+        ("1. Available for OS RAM (Recycled by MikanOS)",
+         "- EfiConventionalMemory: Unused physical RAM.\n- EfiBootServicesCode: UEFI boot routines discarded post boot.\n- EfiBootServicesData: Boot service data pools discarded post boot.",
+         "#E8F5E9", "#2E7D32", 7.5),
+        ("2. OS-Internal Retention Required (Do Not Overwrite)",
+         "- EfiLoaderCode / EfiLoaderData: Bootloader executable & MemMap itself.\n- EfiACPIReclaimMemory / ACPIMemoryNVS: ACPI root system tables.\n- EfiRuntimeServicesCode / Data: Needed if OS calls UEFI at runtime.",
+         "#FFF3E0", "#E65100", 4.3),
+        ("3. Non-RAM Hardware / Reserved (Never Allocate)",
+         "- EfiMemoryMappedIO: PCI BARs, APIC registers (Not Physical RAM!).\n- EfiMemoryMappedIOPortSpace: I/O space mappings.\n- EfiReservedMemoryType / EfiUnusableMemory: Faulty or platform reserved.",
+         "#FFEBEE", "#C62828", 1.1),
+    ]
+    for title, desc, bg, border, y in cat_boxes:
+        r = plt.Rectangle((5, y - 0.45), 90, 2.7, facecolor=bg, edgecolor=border, linewidth=1.5)
+        ax4.add_patch(r)
+        ax4.text(7, y + 1.8, title, fontsize=9.5, fontweight="bold", color=border)
+        ax4.text(7, y + 0.6, desc, fontsize=8.5, color="#263238")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_05_memory_descriptor_stepping_math(output_path: str = "8/result/fig8_05_memory_descriptor_stepping_math.png") -> str:
+    """
+    Visualizes the exact byte-level mathematics of descriptor stepping:
+    sizeof(MemoryDescriptor) == 40 bytes vs descriptor_size == 48 bytes,
+    and the disastrous off-by-8 byte memory corruption caused by naive pointer stepping.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 11), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.1, 1.0], hspace=0.35)
+
+    # --------------------------------------------------------------------------
+    # Panel 1: Correct Stepping (iter += descriptor_size, 48 bytes)
+    # --------------------------------------------------------------------------
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(-0.5, 9.5)
+    ax1.axis("off")
+    ax1.set_title("Correct Pointer Arithmetic: iter += memory_map.descriptor_size (Step = 48 Bytes)",
+                  fontsize=12, fontweight="bold", color="#1B5E20", pad=12)
+
+    # Entry 0
+    r0 = plt.Rectangle((5, 4.5), 43, 3.8, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.8)
+    ax1.add_patch(r0)
+    ax1.text(7, 7.8, "Descriptor [0] @ Byte Offset 0", fontsize=10, fontweight="bold", color="#1B5E20")
+
+    fields0 = [
+        ("type (4B)", 7, 6.2, 7, "#C8E6C9"),
+        ("pad (4B)", 15, 6.2, 6, "#E0E0E0"),
+        ("phys (8B)", 22, 6.2, 8, "#A5D6A7"),
+        ("virt (8B)", 31, 6.2, 8, "#81C784"),
+        ("pages (8B)", 40, 6.2, 7, "#66BB6A"),
+    ]
+    for lbl, x, y, w, bg in fields0:
+        rf = plt.Rectangle((x, y), w, 1.2, facecolor=bg, edgecolor="#2E7D32", linewidth=1.0)
+        ax1.add_patch(rf)
+        ax1.text(x + w / 2, y + 0.6, lbl, fontsize=7.5, fontfamily="monospace", ha="center", va="center", color="#1B5E20")
+
+    # 8-byte vendor padding at end of Entry 0
+    r0_pad = plt.Rectangle((40, 4.8), 7, 1.2, facecolor="#FFF9C4", edgecolor="#FBC02D", linewidth=1.2, linestyle="--")
+    ax1.add_patch(r0_pad)
+    ax1.text(43.5, 5.4, "Pad (8B)", fontsize=7.5, fontfamily="monospace", ha="center", va="center", color="#F57F17")
+    ax1.text(7, 5.0, "Data fields = 40B | UEFI Vendor Alignment Padding = 8B | Total = 48 Bytes", fontsize=8, color="#33691E")
+
+    # Entry 1
+    r1 = plt.Rectangle((52, 4.5), 43, 3.8, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.8)
+    ax1.add_patch(r1)
+    ax1.text(54, 7.8, "Descriptor [1] @ Byte Offset 48 (Exact Target!)", fontsize=10, fontweight="bold", color="#1B5E20")
+
+    fields1 = [
+        ("type (4B)", 54, 6.2, 7, "#C8E6C9"),
+        ("pad (4B)", 62, 6.2, 6, "#E0E0E0"),
+        ("phys (8B)", 69, 6.2, 8, "#A5D6A7"),
+        ("virt (8B)", 78, 6.2, 8, "#81C784"),
+        ("pages (8B)", 87, 6.2, 7, "#66BB6A"),
+    ]
+    for lbl, x, y, w, bg in fields1:
+        rf = plt.Rectangle((x, y), w, 1.2, facecolor=bg, edgecolor="#2E7D32", linewidth=1.0)
+        ax1.add_patch(rf)
+        ax1.text(x + w / 2, y + 0.6, lbl, fontsize=7.5, fontfamily="monospace", ha="center", va="center", color="#1B5E20")
+
+    r1_pad = plt.Rectangle((87, 4.8), 7, 1.2, facecolor="#FFF9C4", edgecolor="#FBC02D", linewidth=1.2, linestyle="--")
+    ax1.add_patch(r1_pad)
+    ax1.text(90.5, 5.4, "Pad (8B)", fontsize=7.5, fontfamily="monospace", ha="center", va="center", color="#F57F17")
+    ax1.text(54, 5.0, "Type reads correctly: kEfiConventionalMemory / kEfiBootServicesCode", fontsize=8, color="#33691E")
+
+    # Green Arrow showing exact 48B step
+    ax1.annotate("iter += descriptor_size (48 Bytes)", xy=(52, 8.5), xytext=(5, 8.5),
+                 arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2.5),
+                 fontsize=9.5, fontweight="bold", color="#1B5E20", ha="center")
+
+    # --------------------------------------------------------------------------
+    # Panel 2: Incorrect Stepping (desc++, sizeof = 40 bytes)
+    # --------------------------------------------------------------------------
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(-0.5, 9.5)
+    ax2.axis("off")
+    ax2.set_title("Buggy Array Indexing: desc++ / sizeof(MemoryDescriptor) (Step = 40 Bytes -> Fatal Off-by-8 Corruption)",
+                  fontsize=12, fontweight="bold", color="#B71C1C", pad=12)
+
+    # Raw memory background
+    r_raw = plt.Rectangle((5, 4.0), 90, 4.2, facecolor="#FFEBEE", edgecolor="#C62828", linewidth=1.8)
+    ax2.add_patch(r_raw)
+    ax2.text(7, 7.6, "Physical Byte Buffer in Memory (48B per entry in UEFI)", fontsize=10, fontweight="bold", color="#B71C1C")
+
+    # Entry 0 boundaries
+    r_e0 = plt.Rectangle((7, 5.2), 43, 2.0, facecolor="#FFCDD2", edgecolor="#D32F2F", linewidth=1.0)
+    ax2.add_patch(r_e0)
+    ax2.text(28.5, 6.2, "Real Entry [0] (Bytes 0 .. 47: 40B data + 8B pad)", fontsize=8.5, ha="center", color="#B71C1C")
+
+    # Real Entry 1 boundaries
+    r_e1 = plt.Rectangle((51, 5.2), 43, 2.0, facecolor="#FFCDD2", edgecolor="#D32F2F", linewidth=1.0)
+    ax2.add_patch(r_e1)
+    ax2.text(72.5, 6.2, "Real Entry [1] (Bytes 48 .. 95)", fontsize=8.5, ha="center", color="#B71C1C")
+
+    # Buggy desc[1] access box starting at Byte 40
+    r_bug = plt.Rectangle((43, 1.2), 40, 2.8, facecolor="#FF8A80", edgecolor="#D50000", linewidth=2.0, linestyle="--")
+    ax2.add_patch(r_bug)
+    ax2.text(63, 3.2, "Buggy desc[1] read by C++ compiler (Byte 40 .. 79)", fontsize=9, fontweight="bold", color="#FFFFFF", ha="center")
+    ax2.text(63, 2.4, "- desc->type reads 8-byte padding of Entry 0!\n- desc->physical_start reads split garbage!\n- Crash or silent memory pool corruption!",
+             fontsize=8, color="#FFFFFF", ha="center")
+
+    # Red Arrow showing wrong 40B step
+    ax2.annotate("desc++ (+40B)", xy=(43, 4.2), xytext=(7, 4.2),
+                 arrowprops=dict(arrowstyle="->", color="#D50000", lw=2.5),
+                 fontsize=9.5, fontweight="bold", color="#B71C1C", ha="center")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig8_06_available_memory_distribution(output_path: str = "8/result/fig8_06_available_memory_distribution.png") -> str:
+    """
+    Visualizes realistic UEFI memory distribution (e.g. QEMU OVMF 3 GiB):
+    Available RAM vs UEFI Reserved, MMIO, ACPI, Runtime services.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig = plt.figure(figsize=(16, 10.5), facecolor="#F8F9FA")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.0], width_ratios=[1.0, 1.1], hspace=0.32, wspace=0.25)
+
+    sim = KernelMemoryMapInspector.create_typical_qemu_memmap()
+    regions = KernelMemoryMapInspector.scan_available_memory(sim)
+    total_avail_bytes = KernelMemoryMapInspector.calculate_total_available_bytes(sim)
+
+    # --------------------------------------------------------------------------
+    # Panel 1 (Top Left): Pie Chart of Memory Breakdown
+    # --------------------------------------------------------------------------
+    ax1 = fig.add_subplot(gs[0, 0])
+    labels = [
+        "Conventional (Direct RAM)",
+        "BootServices Code/Data (Recyclable)",
+        "Loader / ACPI / Runtime (Hold)",
+        "MMIO / Reserved",
+    ]
+    # In typical QEMU ~3GiB:
+    # Conventional: ~3011 MiB
+    # BootServices: 24 MiB
+    # Loader/ACPI/Runtime: ~4 MiB
+    # MMIO: Virtual device registers (e.g. 8 KiB in descriptors)
+    sizes = [3011, 24, 4, 1]
+    colors = ["#4CAF50", "#8BC34A", "#FF9800", "#F44336"]
+    explode = (0.05, 0.1, 0.1, 0.1)
+
+    wedges, texts, autotexts = ax1.pie(
+        sizes, explode=explode, labels=labels, autopct="%1.1f%%",
+        startangle=140, colors=colors, textprops=dict(fontsize=8.5)
+    )
+    for at in autotexts:
+        at.set_fontsize(8.5)
+        at.set_fontweight("bold")
+    ax1.set_title("UEFI Memory Map Space Allocation (QEMU OVMF ~3 GiB)",
+                  fontsize=12, fontweight="bold", color="#0D47A1", pad=12)
+
+    # --------------------------------------------------------------------------
+    # Panel 2 (Top Right): Summary Statistics Table
+    # --------------------------------------------------------------------------
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(-0.5, 9.5)
+    ax2.axis("off")
+    ax2.set_title("Available Physical RAM Scanned by KernelMain",
+                  fontsize=12, fontweight="bold", color="#1B5E20", pad=12)
+
+    r_box = plt.Rectangle((5, 1.0), 90, 8.0, facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.8)
+    ax2.add_patch(r_box)
+
+    stat_lines = [
+        ("Total Available Memory:", f"{total_avail_bytes / (1024*1024):.1f} MiB ({total_avail_bytes / (1024**3):.2f} GiB)", "#1B5E20"),
+        ("Total Available Pages:", f"{total_avail_bytes // 4096:,} Pages (4 KiB each)", "#2E7D32"),
+        ("Available Segments Count:", f"{len(regions)} Contiguous Descriptors", "#33691E"),
+        ("Largest Free Block:", f"{regions[3]['size_mib']:.1f} MiB (0x{regions[3]['physical_start']:08X}..)", "#1B5E20"),
+        ("BootServices Recycled:", "24.0 MiB (Code + Data pools)", "#558B2F"),
+        ("MMIO / Reserved Filtered:", "Filtered out (Local APIC, IO-APIC, BIOS)", "#C62828"),
+    ]
+    for i, (k, v, col) in enumerate(stat_lines):
+        y = 7.8 - i * 1.15
+        ax2.text(8, y, k, fontsize=9.5, fontweight="bold", color="#263238")
+        ax2.text(50, y, v, fontsize=9.5, fontfamily="monospace", color=col)
+
+    # --------------------------------------------------------------------------
+    # Panel 3 (Bottom): Physical Address Space Distribution Bar
+    # --------------------------------------------------------------------------
+    ax3 = fig.add_subplot(gs[1, :])
+    ax3.set_xlim(0, 100)
+    ax3.set_ylim(-0.5, 9.5)
+    ax3.axis("off")
+    ax3.set_title("Physical Address Range Distribution (0x0000_0000 .. 0xFFFF_FFFF)",
+                  fontsize=12, fontweight="bold", color="#37474F", pad=12)
+
+    # Address bar framework
+    r_bar_bg = plt.Rectangle((5, 5.0), 90, 2.5, facecolor="#ECEFF1", edgecolor="#78909C", linewidth=1.5)
+    ax3.add_patch(r_bar_bg)
+
+    # Segments in physical bar
+    # 0..1MB: Reserved (1%)
+    r_seg0 = plt.Rectangle((5, 5.0), 2, 2.5, facecolor="#EF5350", edgecolor="#C62828", linewidth=1.0)
+    ax3.add_patch(r_seg0)
+    # 1MB..64MB: Conventional (6%)
+    r_seg1 = plt.Rectangle((7, 5.0), 6, 2.5, facecolor="#66BB6A", edgecolor="#2E7D32", linewidth=1.0)
+    ax3.add_patch(r_seg1)
+    # 64MB..88MB: BootServices Code/Data (3%)
+    r_seg2 = plt.Rectangle((13, 5.0), 4, 2.5, facecolor="#9CCC65", edgecolor="#558B2F", linewidth=1.0)
+    ax3.add_patch(r_seg2)
+    # 88MB..92MB: Loader (1%)
+    r_seg3 = plt.Rectangle((17, 5.0), 2, 2.5, facecolor="#FFA726", edgecolor="#E65100", linewidth=1.0)
+    ax3.add_patch(r_seg3)
+    # 92MB..3040MB: Huge Conventional (65%)
+    r_seg4 = plt.Rectangle((19, 5.0), 56, 2.5, facecolor="#4CAF50", edgecolor="#1B5E20", linewidth=1.0)
+    ax3.add_patch(r_seg4)
+    # 3040MB..3200MB: ACPI / Runtime (5%)
+    r_seg5 = plt.Rectangle((75, 5.0), 6, 2.5, facecolor="#FF7043", edgecolor="#D84315", linewidth=1.0)
+    ax3.add_patch(r_seg5)
+    # MMIO Hole (PCI / APIC) (14%)
+    r_seg6 = plt.Rectangle((81, 5.0), 14, 2.5, facecolor="#AB47BC", edgecolor="#6A1B9A", linewidth=1.0)
+    ax3.add_patch(r_seg6)
+
+    # Address annotations below bar
+    ax3.text(5, 4.3, "0x0000_0000\n(0 MiB)", fontsize=8, fontfamily="monospace", color="#37474F", ha="center")
+    ax3.text(7, 3.4, "0x0010_0000\n(1 MiB)", fontsize=8, fontfamily="monospace", color="#2E7D32", ha="center")
+    ax3.text(19, 4.3, "0x05C0_0000\n(92 MiB)", fontsize=8, fontfamily="monospace", color="#1B5E20", ha="center")
+    ax3.text(75, 3.4, "0xBE00_0000\n(~3040 MiB)", fontsize=8, fontfamily="monospace", color="#D84315", ha="center")
+    ax3.text(95, 4.3, "0xFFFF_FFFF\n(4 GiB)", fontsize=8, fontfamily="monospace", color="#4A148C", ha="center")
+
+    # Legend
+    legend_items = [
+        ("#4CAF50", "Available RAM (Conventional)"),
+        ("#9CCC65", "BootServices (Recyclable)"),
+        ("#FFA726", "Loader (Bootloader/MemMap)"),
+        ("#FF7043", "ACPI / Runtime Services"),
+        ("#EF5350", "Platform Reserved / BIOS"),
+        ("#AB47BC", "PCI MMIO / Local APIC Space"),
+    ]
+    for idx, (bg, label) in enumerate(legend_items):
+        col_idx = idx % 3
+        row_idx = idx // 3
+        lx = 8 + col_idx * 30
+        ly = 1.8 - row_idx * 0.9
+        r_leg = plt.Rectangle((lx, ly), 3, 0.6, facecolor=bg, edgecolor="#37474F", linewidth=1.0)
+        ax3.add_patch(r_leg)
+        ax3.text(lx + 4, ly + 0.3, label, fontsize=8.5, color="#263238", va="center")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
