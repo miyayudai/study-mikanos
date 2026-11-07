@@ -31693,3 +31693,720 @@ def plot_fig8_18_cr3_and_address_translation_flow(output_path: str = "8/result/f
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 8 Section 8.7: BitmapMemoryManager (osbook_day08c)
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class FrameIDSim:
+    """Strongly-typed 4KiB physical page frame identifier matching MikanOS FrameID."""
+
+    BYTES_PER_FRAME = 4096
+
+    id: int
+
+    def __post_init__(self) -> None:
+        if self.id < 0:
+            raise ValueError(f"FrameID must be non-negative, got {self.id}")
+
+    @property
+    def frame_address(self) -> int:
+        """Physical byte address of the start of this 4KiB frame."""
+        return self.id * self.BYTES_PER_FRAME
+
+    def __repr__(self) -> str:
+        if self.id == (1 << 64) - 1:
+            return "FrameIDSim(kNullFrame)"
+        return f"FrameIDSim(id={self.id}, phys=0x{self.frame_address:08x})"
+
+
+NULL_FRAME_SIM = FrameIDSim((1 << 64) - 1)
+
+
+class MikanBitmapMemoryManagerSim:
+    """Bit-accurate 64-bit MapLineType simulation of MikanOS BitmapMemoryManager (osbook_day08c).
+
+    Reproduces:
+    - 1 bit per 4KiB frame packed into 64-bit unsigned integer lines (MapLineType = uint64_t)
+    - Coordinate math: line_index = frame_id // 64, bit_index = frame_id % 64
+    - First-Fit Allocate(num_frames) with O(N) skip jump (start_frame_id += i + 1)
+    - Free(start_frame, num_frames), MarkAllocated(start_frame, num_frames), SetMemoryRange
+    - UEFI MemoryMap scanning initialization with available_end hole sweeping & FrameID{1} nullptr guard
+    """
+
+    BYTES_PER_FRAME: int = 4096
+    MAX_PHYSICAL_MEMORY_BYTES: int = 128 * 1024 * 1024 * 1024  # 128 GiB
+    FULL_FRAME_COUNT: int = MAX_PHYSICAL_MEMORY_BYTES // BYTES_PER_FRAME  # 33,554,432
+    BITS_PER_MAP_LINE: int = 64
+    FULL_MAP_LINE_COUNT: int = FULL_FRAME_COUNT // BITS_PER_MAP_LINE  # 524,288
+    MASK_64: int = 0xFFFF_FFFF_FFFF_FFFF
+
+    # UEFI MemoryType codes available after ExitBootServices
+    AVAILABLE_UEFI_TYPES: frozenset[int] = frozenset({3, 4, 7})  # BootServicesCode, BootServicesData, Conventional
+
+    def __init__(self, frame_count: int = 8192) -> None:
+        if frame_count <= 0 or frame_count % self.BITS_PER_MAP_LINE != 0:
+            raise ValueError("frame_count must be a positive multiple of 64")
+        self.frame_count = frame_count
+        self.map_line_count = frame_count // self.BITS_PER_MAP_LINE
+        self.alloc_map: list[int] = [0] * self.map_line_count
+        self.range_begin: FrameIDSim = FrameIDSim(0)
+        self.range_end: FrameIDSim = FrameIDSim(frame_count)
+
+    @classmethod
+    def full_spec_metrics(cls) -> dict[str, Any]:
+        """Return exact memory footprint metrics of MikanOS 128GiB BitmapMemoryManager."""
+        alloc_map_bytes = cls.FULL_MAP_LINE_COUNT * 8  # 4,194,304 B = 4 MiB
+        struct_bytes = alloc_map_bytes + 8 + 8  # + range_begin_ (8B) + range_end_ (8B) = 4,194,320 B
+        kernel_stack_bytes = 1024 * 1024  # 1 MiB (Section 8.4 kernel_main_stack)
+        overhead_ratio = alloc_map_bytes / cls.MAX_PHYSICAL_MEMORY_BYTES  # 1 / 32,768 (~0.00305%)
+        return {
+            "max_physical_gib": 128,
+            "bytes_per_frame": cls.BYTES_PER_FRAME,
+            "total_frames": cls.FULL_FRAME_COUNT,
+            "bits_per_map_line": cls.BITS_PER_MAP_LINE,
+            "map_line_count": cls.FULL_MAP_LINE_COUNT,
+            "alloc_map_bytes": alloc_map_bytes,
+            "alloc_map_mib": alloc_map_bytes / (1024 * 1024),
+            "sizeof_bitmap_memory_manager": struct_bytes,
+            "kernel_stack_bytes": kernel_stack_bytes,
+            "exceeds_1mib_stack": struct_bytes > kernel_stack_bytes,
+            "stack_overflow_excess_bytes": struct_bytes - kernel_stack_bytes,
+            "overhead_percentage": overhead_ratio * 100.0,
+        }
+
+    @classmethod
+    def line_and_bit(cls, frame_id: int) -> tuple[int, int]:
+        """Compute (line_index, bit_index) in alloc_map_ for a given frame_id."""
+        if frame_id < 0:
+            raise ValueError("frame_id must be non-negative")
+        return frame_id // cls.BITS_PER_MAP_LINE, frame_id % cls.BITS_PER_MAP_LINE
+
+    @classmethod
+    def frame_from_line_and_bit(cls, line_index: int, bit_index: int) -> FrameIDSim:
+        """Reconstruct FrameIDSim from (line_index, bit_index)."""
+        if line_index < 0 or not (0 <= bit_index < cls.BITS_PER_MAP_LINE):
+            raise ValueError("Invalid line_index or bit_index")
+        return FrameIDSim(line_index * cls.BITS_PER_MAP_LINE + bit_index)
+
+    @classmethod
+    def physical_address_from_line_and_bit(cls, line_index: int, bit_index: int) -> int:
+        """Compute physical byte address 4096 * (64 * n + m)."""
+        return cls.frame_from_line_and_bit(line_index, bit_index).frame_address
+
+    @staticmethod
+    def simulate_signed_32bit_shift_bug(bit_index: int) -> dict[str, Any]:
+        """Demonstrate why C++ `1 << bit_index` (32-bit signed int) fails vs `static_cast<MapLineType>(1) << bit_index`."""
+        if not (0 <= bit_index < 64):
+            raise ValueError("bit_index must be in 0..63")
+        safe_mask_64 = (1 << bit_index) & 0xFFFF_FFFF_FFFF_FFFF
+        if bit_index < 31:
+            buggy_status = "Valid32BitPositive"
+            buggy_mask_64 = safe_mask_64
+        elif bit_index == 31:
+            # In two's complement 32-bit signed int, 1 << 31 is UB in C++17 (valid in C++20 as INT32_MIN = -2147483648),
+            # which sign-extends to uint64_t as 0xFFFFFFFF80000000 -> corrupts ALL upper 33 bits [63:31]!
+            buggy_status = "SignExtensionCorruption_Bits31To63"
+            buggy_mask_64 = 0xFFFF_FFFF_8000_0000
+        else:
+            # Shift >= width of 32-bit int is strict Undefined Behavior in C/C++; x86 SHL EAX, CL masks CL & 0x1F!
+            shl_32 = (1 << (bit_index & 0x1F)) & 0xFFFF_FFFF
+            if shl_32 & 0x8000_0000:
+                buggy_mask_64 = 0xFFFF_FFFF_0000_0000 | shl_32
+            else:
+                buggy_mask_64 = shl_32
+            buggy_status = "UndefinedBehavior_ShiftCountExceeds32BitWidth"
+        return {
+            "bit_index": bit_index,
+            "safe_mask_64": safe_mask_64,
+            "buggy_mask_64": buggy_mask_64,
+            "is_corrupted": safe_mask_64 != buggy_mask_64,
+            "status": buggy_status,
+        }
+
+    def get_bit(self, frame: FrameIDSim) -> bool:
+        """Read allocation bit for frame (True = allocated, False = free)."""
+        line_idx, bit_idx = self.line_and_bit(frame.id)
+        if line_idx >= self.map_line_count:
+            raise IndexError(f"Frame {frame.id} exceeds simulated frame_count {self.frame_count}")
+        return (self.alloc_map[line_idx] & (1 << bit_idx)) != 0
+
+    def set_bit(self, frame: FrameIDSim, allocated: bool) -> None:
+        """Write allocation bit for frame into 64-bit MapLineType."""
+        line_idx, bit_idx = self.line_and_bit(frame.id)
+        if line_idx >= self.map_line_count:
+            raise IndexError(f"Frame {frame.id} exceeds simulated frame_count {self.frame_count}")
+        bit_mask = 1 << bit_idx
+        if allocated:
+            self.alloc_map[line_idx] = (self.alloc_map[line_idx] | bit_mask) & self.MASK_64
+        else:
+            self.alloc_map[line_idx] = (self.alloc_map[line_idx] & (~bit_mask & self.MASK_64)) & self.MASK_64
+
+    def mark_allocated(self, start_frame: FrameIDSim, num_frames: int) -> None:
+        """Mark [start_frame, start_frame + num_frames) as allocated (1)."""
+        if num_frames < 0:
+            raise ValueError("num_frames must be non-negative")
+        for i in range(num_frames):
+            self.set_bit(FrameIDSim(start_frame.id + i), True)
+
+    def set_memory_range(self, range_begin: FrameIDSim, range_end: FrameIDSim) -> None:
+        """Set half-open allocation search range [range_begin, range_end)."""
+        if range_end.id > self.frame_count or range_begin.id > range_end.id:
+            raise ValueError("Invalid memory range bounds")
+        self.range_begin = range_begin
+        self.range_end = range_end
+
+    def allocate(self, num_frames: int) -> tuple[FrameIDSim, str | None]:
+        """Exact reproduction of BitmapMemoryManager::Allocate(size_t num_frames)."""
+        if num_frames <= 0:
+            raise ValueError("num_frames must be positive")
+        start_frame_id = self.range_begin.id
+        while True:
+            i = 0
+            while i < num_frames:
+                if start_frame_id + i >= self.range_end.id:
+                    return NULL_FRAME_SIM, "kNoEnoughMemory"
+                if self.get_bit(FrameIDSim(start_frame_id + i)):
+                    break
+                i += 1
+            if i == num_frames:
+                result_frame = FrameIDSim(start_frame_id)
+                self.mark_allocated(result_frame, num_frames)
+                return result_frame, None
+            start_frame_id += i + 1
+
+    def allocate_with_trace(self, num_frames: int) -> dict[str, Any]:
+        """Execute First-Fit allocation while recording window jump trace and naive comparison."""
+        if num_frames <= 0:
+            raise ValueError("num_frames must be positive")
+
+        # Count naive (+1 increment) bit inspections without modifying bitmap
+        naive_checks = 0
+        s = self.range_begin.id
+        while True:
+            i = 0
+            out = False
+            while i < num_frames:
+                if s + i >= self.range_end.id:
+                    out = True
+                    break
+                naive_checks += 1
+                if self.get_bit(FrameIDSim(s + i)):
+                    break
+                i += 1
+            if out or i == num_frames:
+                break
+            s += 1
+
+        # Execute O(N) jump search and record trace
+        jump_checks = 0
+        probes: list[dict[str, Any]] = []
+        start_frame_id = self.range_begin.id
+        while True:
+            i = 0
+            while i < num_frames:
+                if start_frame_id + i >= self.range_end.id:
+                    probes.append({
+                        "start": start_frame_id,
+                        "checked_len": i,
+                        "outcome": "OutOfRange",
+                        "next_start": None,
+                    })
+                    return {
+                        "frame": NULL_FRAME_SIM,
+                        "error": "kNoEnoughMemory",
+                        "jump_checks": jump_checks,
+                        "naive_checks": naive_checks,
+                        "probes": probes,
+                    }
+                jump_checks += 1
+                if self.get_bit(FrameIDSim(start_frame_id + i)):
+                    probes.append({
+                        "start": start_frame_id,
+                        "checked_len": i + 1,
+                        "collision_frame": start_frame_id + i,
+                        "skip_distance": i + 1,
+                        "outcome": "CollisionJump",
+                        "next_start": start_frame_id + i + 1,
+                    })
+                    break
+                i += 1
+            if i == num_frames:
+                result_frame = FrameIDSim(start_frame_id)
+                self.mark_allocated(result_frame, num_frames)
+                probes.append({
+                    "start": start_frame_id,
+                    "checked_len": num_frames,
+                    "outcome": "Allocated",
+                    "next_start": None,
+                })
+                return {
+                    "frame": result_frame,
+                    "error": None,
+                    "jump_checks": jump_checks,
+                    "naive_checks": naive_checks,
+                    "probes": probes,
+                }
+            start_frame_id += i + 1
+
+    def free(self, start_frame: FrameIDSim, num_frames: int) -> str | None:
+        """Exact reproduction of BitmapMemoryManager::Free(FrameID, size_t)."""
+        if num_frames < 0:
+            raise ValueError("num_frames must be non-negative")
+        for i in range(num_frames):
+            self.set_bit(FrameIDSim(start_frame.id + i), False)
+        return None
+
+    def fragmentation_metrics(self) -> dict[str, Any]:
+        """Calculate free/allocated frame counts and external fragmentation ratio in [range_begin, range_end)."""
+        total = self.range_end.id - self.range_begin.id
+        free_frames = 0
+        largest_run = 0
+        current_run = 0
+        fragments = 0
+
+        for fid in range(self.range_begin.id, self.range_end.id):
+            if not self.get_bit(FrameIDSim(fid)):
+                free_frames += 1
+                if current_run == 0:
+                    fragments += 1
+                current_run += 1
+                if current_run > largest_run:
+                    largest_run = current_run
+            else:
+                current_run = 0
+
+        ext_frag = 0.0 if free_frames == 0 else (1.0 - (largest_run / free_frames))
+        return {
+            "total_frames_in_range": total,
+            "allocated_frames": total - free_frames,
+            "free_frames": free_frames,
+            "free_fragments": fragments,
+            "largest_contiguous_free": largest_run,
+            "external_fragmentation_ratio": ext_frag,
+        }
+
+    def initialize_from_uefi_descriptors(
+        self, descriptors: list[tuple[int, int, int]]
+    ) -> dict[str, Any]:
+        """Reproduce KernelMainNewStack UEFI MemoryMap scanning initialization.
+
+        Args:
+            descriptors: List of (memory_type, physical_start, number_of_pages) tuples sorted by physical_start.
+        """
+        available_end = 0
+        prev_physical_end = 0
+        unlisted_holes: list[tuple[int, int]] = []
+        gap_sweeps: list[tuple[int, int]] = []
+
+        for mem_type, phys_start, num_pages in descriptors:
+            if prev_physical_end < phys_start:
+                unlisted_holes.append((prev_physical_end, phys_start))
+
+            if available_end < phys_start:
+                hole_start_frame = available_end // self.BYTES_PER_FRAME
+                hole_frames = (phys_start - available_end) // self.BYTES_PER_FRAME
+                self.mark_allocated(FrameIDSim(hole_start_frame), hole_frames)
+                gap_sweeps.append((available_end, phys_start))
+
+            phys_end = phys_start + num_pages * self.BYTES_PER_FRAME
+            prev_physical_end = phys_end
+
+            if mem_type in self.AVAILABLE_UEFI_TYPES:
+                available_end = phys_end
+            else:
+                start_f = phys_start // self.BYTES_PER_FRAME
+                count_f = (num_pages * self.BYTES_PER_FRAME) // self.BYTES_PER_FRAME
+                self.mark_allocated(FrameIDSim(start_f), count_f)
+
+        self.set_memory_range(FrameIDSim(1), FrameIDSim(available_end // self.BYTES_PER_FRAME))
+        metrics = self.fragmentation_metrics()
+        return {
+            "available_end": available_end,
+            "range_begin": self.range_begin.id,
+            "range_end": self.range_end.id,
+            "unlisted_holes": unlisted_holes,
+            "gap_sweeps": gap_sweeps,
+            "free_frames": metrics["free_frames"],
+            "allocated_frames": metrics["allocated_frames"],
+        }
+
+
+def plot_fig8_19_bitmap_memory_manager_architecture(
+    output_path: str = "8/result/fig8_19_bitmap_memory_manager_architecture.png",
+) -> str:
+    """Generate Figure 8.19: BitmapMemoryManager 128GiB Bit-Addressing & .bss Placement Architecture."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16.5, 9.0), dpi=300, gridspec_kw={"width_ratios": [1.15, 1.0]})
+    fig.suptitle(
+        "Figure 8.19: MikanOS BitmapMemoryManager Bit-Addressing Math & .bss Placement Architecture",
+        fontsize=13, fontweight="bold", color="#1A237E", y=0.98,
+    )
+
+    # Left Panel: 128 GiB Physical Frames <-> alloc_map_[n] 64-bit MapLineType Bit Grid
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title(
+        "1 Bit = 1 Page Frame (4 KiB): 2D Bit-Coordinate Mapping in alloc_map_",
+        fontsize=10.8, fontweight="bold", color="#283593", pad=10,
+    )
+
+    # Top Formula Banner
+    r_math = plt.Rectangle((3, 80), 94, 16, facecolor="#E8EAF6", edgecolor="#3949AB", lw=1.8)
+    ax1.add_patch(r_math)
+    ax1.text(
+        50, 91.5,
+        "Coordinate Decomposition:  line_index n = FrameID / 64,   bit_index m = FrameID % 64",
+        fontsize=9.0, fontweight="bold", color="#1A237E", ha="center",
+    )
+    ax1.text(
+        50, 84.5,
+        "Physical Address P = 4096 * (64 * n + m)    |    128 GiB = 33,554,432 Frames = 524,288 Lines (uint64_t)",
+        fontsize=8.0, color="#263238", ha="center",
+    )
+
+    # Visual alloc_map_ array lines
+    sample_lines = [
+        ("alloc_map_[0]", "Frames 0..63\n(0x0000_0000 ~ 0x0003_FFFF)", [1, 0, 0, 1, 1, 0, 0, 1], "#E3F2FD", "#1565C0"),
+        ("alloc_map_[1]", "Frames 64..127\n(0x0004_0000 ~ 0x0007_FFFF)", [1, 1, 1, 0, 0, 0, 0, 0], "#E8F5E9", "#2E7D32"),
+        ("alloc_map_[4]", "Frames 256..319\n(0x0010_0000 Kernel ELF!)", [1, 1, 1, 1, 1, 1, 1, 1], "#FFEBEE", "#C62828"),
+        ("alloc_map_[524287]", "Frames 33,554,368..431\n(Top of 128 GiB Space)", [0, 0, 0, 0, 0, 0, 0, 0], "#F3E5F5", "#6A1B9A"),
+    ]
+
+    for row_idx, (lname, desc, bits_preview, fcol, ecol) in enumerate(sample_lines):
+        y_top = 66 - row_idx * 13.5
+        r_lbl = plt.Rectangle((3, y_top), 34, 10.5, facecolor=fcol, edgecolor=ecol, lw=1.5)
+        ax1.add_patch(r_lbl)
+        ax1.text(20, y_top + 7.2, lname, fontsize=8.3, fontweight="bold", color=ecol, ha="center")
+        ax1.text(20, y_top + 2.5, desc, fontsize=6.8, color="#37474F", ha="center")
+
+        # Draw bit cells (m=0, m=1, m=2, ..., m=31, m=32, ..., m=63)
+        bit_labels = ["b0", "b1", "b2", "b3", "...", "b31", "b32", "b63"]
+        for b_i, (b_lbl, b_val) in enumerate(zip(bit_labels, bits_preview)):
+            bx = 39 + b_i * 7.2
+            if b_lbl == "...":
+                ax1.text(bx + 3.2, y_top + 5.2, "...", fontsize=9, fontweight="bold", color="#546E7A", ha="center")
+                continue
+            b_face = "#EF5350" if b_val == 1 else "#C8E6C9"
+            b_edge = "#B71C1C" if b_val == 1 else "#2E7D32"
+            b_txt = "#FFFFFF" if b_val == 1 else "#1B5E20"
+            r_b = plt.Rectangle((bx, y_top + 1.0), 6.5, 8.5, facecolor=b_face, edgecolor=b_edge, lw=1.2)
+            ax1.add_patch(r_b)
+            ax1.text(bx + 3.25, y_top + 6.7, b_lbl, fontsize=6.5, color=b_txt, ha="center")
+            ax1.text(bx + 3.25, y_top + 2.8, str(b_val), fontsize=8.5, fontweight="bold", color=b_txt, ha="center")
+
+    # Legend & Critical C++ 64-bit Shift Trap Warning Box
+    r_warn = plt.Rectangle((3, 4), 94, 18, facecolor="#FFF8E1", edgecolor="#F57F17", lw=1.8)
+    ax1.add_patch(r_warn)
+    ax1.text(
+        6, 17.8,
+        "Critical C++ Bit-Shift Pitfall: Why static_cast<MapLineType>(1) << bit_index is Mandatory!",
+        fontsize=8.6, fontweight="bold", color="#E65100",
+    )
+    ax1.text(
+        6, 7.2,
+        "• Literal `1` is a 32-bit signed `int`! For bit_index == 31, `1 << 31` yields -2147483648, sign-extending to\n"
+        "  0xFFFFFFFF80000000 and corrupting bits 31..63! For bit_index >= 32, `1 << bit_index` is Undefined Behavior (UB)!\n"
+        "• Casting to 64-bit unsigned `MapLineType` (`1UL << bit_index`) guarantees clean single-bit masks across b0..b63.",
+        fontsize=7.5, color="#3E2723",
+    )
+
+    # Right Panel: Why .bss Placement New vs 1MiB Stack Overflow
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.axis("off")
+    ax2.set_title(
+        "Memory Placement: 1 MiB Stack Overflow vs 4 MiB .bss Buffer",
+        fontsize=10.8, fontweight="bold", color="#283593", pad=10,
+    )
+
+    # Left column inside ax2: DANGEROUS Stack Local Variable
+    r_bad = plt.Rectangle((4, 34), 43, 60, facecolor="#FFEBEE", edgecolor="#C62828", lw=2)
+    ax2.add_patch(r_bad)
+    ax2.text(25.5, 89.5, "NG: Local Stack Variable", fontsize=9.0, fontweight="bold", color="#B71C1C", ha="center")
+    ax2.text(25.5, 84.5, "BitmapMemoryManager mgr;", fontsize=7.8, family="monospace", color="#C62828", ha="center")
+
+    r_stk = plt.Rectangle((9, 64), 33, 15, facecolor="#FFCDD2", edgecolor="#D32F2F", lw=1.5)
+    ax2.add_patch(r_stk)
+    ax2.text(25.5, 71.5, "kernel_main_stack\nCapacity = 1.00 MiB", fontsize=8.0, fontweight="bold", color="#B71C1C", ha="center", va="center")
+
+    r_ovf = plt.Rectangle((9, 38), 33, 24, facecolor="#D32F2F", edgecolor="#7F0000", lw=1.8, hatch="//")
+    ax2.add_patch(r_ovf)
+    ax2.text(
+        25.5, 50,
+        "STACK OVERFLOW!\nObject needs 4.00 MiB\nExceeds stack by +3.00 MiB!\nDestroys .bss / .data / .text",
+        fontsize=7.6, fontweight="bold", color="#FFFFFF", ha="center", va="center",
+    )
+
+    # Right column inside ax2: SAFE .bss Placement new
+    r_good = plt.Rectangle((53, 34), 43, 60, facecolor="#E8F5E9", edgecolor="#2E7D32", lw=2)
+    ax2.add_patch(r_good)
+    ax2.text(74.5, 89.5, "OK: .bss + Placement new", fontsize=9.0, fontweight="bold", color="#1B5E20", ha="center")
+    ax2.text(74.5, 84.5, "new(memory_manager_buf) ...", fontsize=7.5, family="monospace", color="#2E7D32", ha="center")
+
+    r_bss = plt.Rectangle((58, 46), 33, 33, facecolor="#C8E6C9", edgecolor="#2E7D32", lw=1.5)
+    ax2.add_patch(r_bss)
+    ax2.text(
+        74.5, 62.5,
+        "Kernel .bss Segment\nmemory_manager_buf\n4,194,320 Bytes (~4.00 MiB)\n\n• Zero-allocated by ELF Loader\n• Constructor called explicitly\n  without C++ CRT startup!",
+        fontsize=7.4, color="#1B5E20", ha="center", va="center",
+    )
+    ax2.text(74.5, 40, "Protected inside EfiLoaderData!", fontsize=7.8, fontweight="bold", color="#1B5E20", ha="center")
+
+    # Bottom Summary Metrics Card
+    r_stat = plt.Rectangle((4, 4), 92, 25, facecolor="#E0F7FA", edgecolor="#00838F", lw=1.8)
+    ax2.add_patch(r_stat)
+    ax2.text(8, 24, "Space Overhead Efficiency of Bitmap PMM:", fontsize=9.0, fontweight="bold", color="#006064")
+    ax2.text(
+        8, 8.5,
+        "• 1 bit tracks 4,096 bytes (32,768 bits) -> Space Overhead = 1 / 32,768 = 0.00305%!\n"
+        "• Managing 128 GiB (137,438,953,472 B) requires strictly 4 MiB (4,194,304 B) of bitmap.\n"
+        "• Constant O(1) bit lookup/free & zero dynamic heap dependency (bootstraps `sbrk` & `new` in Ch.9!).",
+        fontsize=7.8, color="#004D40",
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def plot_fig8_20_first_fit_allocation_and_skip_math(
+    output_path: str = "8/result/fig8_20_first_fit_allocation_and_skip_math.png",
+) -> str:
+    """Generate Figure 8.20: First-Fit Allocate O(N) Jump Optimization & External Fragmentation."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig = plt.figure(figsize=(16.5, 9.8), dpi=300)
+    gs = GridSpec(2, 2, figure=fig, height_ratios=[1.05, 1.0], width_ratios=[1.35, 1.0])
+    fig.suptitle(
+        "Figure 8.20: First-Fit Contiguous Search O(N) Jump Math & External Fragmentation Dynamics",
+        fontsize=13, fontweight="bold", color="#1A237E", y=0.98,
+    )
+
+    # Top-Left: Visual Trace of start_frame_id += i + 1 Jump Optimization
+    ax_jump = fig.add_subplot(gs[0, 0])
+    ax_jump.set_xlim(0, 100)
+    ax_jump.set_ylim(0, 100)
+    ax_jump.axis("off")
+    ax_jump.set_title(
+        "Trace of Allocate(num_frames = 4): Why `start_frame_id += i + 1` Skips Redundant Probes",
+        fontsize=10.5, fontweight="bold", color="#283593", pad=8,
+    )
+
+    # 12 frames: [0:Free, 1:Free, 2:Busy, 3:Free, 4:Busy, 5:Free, 6:Free, 7:Free, 8:Free, 9:Free, 10:Busy, 11:Free]
+    bitmap_demo = [0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0]
+    for idx, val in enumerate(bitmap_demo):
+        bx = 5 + idx * 7.6
+        b_col = "#EF5350" if val == 1 else "#E8F5E9"
+        e_col = "#B71C1C" if val == 1 else "#2E7D32"
+        t_col = "#FFFFFF" if val == 1 else "#1B5E20"
+        rect = plt.Rectangle((bx, 68), 6.8, 16, facecolor=b_col, edgecolor=e_col, lw=1.5)
+        ax_jump.add_patch(rect)
+        ax_jump.text(bx + 3.4, 80, f"F{idx}", fontsize=7.5, fontweight="bold", color=t_col, ha="center")
+        ax_jump.text(bx + 3.4, 72, "1(Busy)" if val else "0(Free)", fontsize=6.3, color=t_col, ha="center")
+
+    # Probe windows
+    probes_vis = [
+        (5 + 0 * 7.6, 3 * 7.6 - 0.8, 52, "Probe 1 (start=0): i=0(0), i=1(0), i=2(1: Collision!) -> Skip i+1 = +3!", "#FFF3E0", "#E65100"),
+        (5 + 3 * 7.6, 2 * 7.6 - 0.8, 34, "Probe 2 (start=3): i=0(0), i=1(1: Collision!) -> Skip i+1 = +2!", "#FFF3E0", "#E65100"),
+        (5 + 5 * 7.6, 4 * 7.6 - 0.8, 15, "Probe 3 (start=5): i=0..3 all 0 -> i == 4 SUCCEEDS! Mark F5..F8 = 1", "#E8F5E9", "#1B5E20"),
+    ]
+    for px, pw, py, ptxt, pfcol, pecol in probes_vis:
+        r_p = plt.Rectangle((px, py), pw, 11, facecolor=pfcol, edgecolor=pecol, lw=1.8)
+        ax_jump.add_patch(r_p)
+        ax_jump.text(5, py - 5.2, ptxt, fontsize=7.8, fontweight="bold", color=pecol)
+
+    # Top-Right: Quantitative Bit-Check Scaling (O(N) Jump vs O(N*k) Naive +1)
+    ax_bench = fig.add_subplot(gs[0, 1])
+    req_sizes = [4, 8, 16, 32, 64]
+    jump_counts = []
+    naive_counts = []
+    for k in req_sizes:
+        sim = MikanBitmapMemoryManagerSim(frame_count=1024)
+        # Place periodic blockers every k frames for the first 8 blocks (so k-1 free + 1 busy repeated 8 times)
+        for blk in range(1, 9):
+            sim.mark_allocated(FrameIDSim(blk * k - 1), 1)
+        tr = sim.allocate_with_trace(k)
+        jump_counts.append(tr["jump_checks"])
+        naive_counts.append(tr["naive_checks"])
+
+    x_idx = np.arange(len(req_sizes))
+    bar_w = 0.36
+    bars_naive = ax_bench.bar(x_idx - bar_w / 2, naive_counts, bar_w, label="Naive `start += 1` O(N·k)", color="#EF5350", edgecolor="#B71C1C")
+    bars_jump = ax_bench.bar(x_idx + bar_w / 2, jump_counts, bar_w, label="MikanOS `start += i + 1` O(N)", color="#26A69A", edgecolor="#00695C")
+    ax_bench.set_xticks(x_idx)
+    ax_bench.set_xticklabels([f"k={k}" for k in req_sizes])
+    ax_bench.set_ylabel("GetBit() Inspections (log scale)")
+    ax_bench.set_yscale("log")
+    ax_bench.set_title("Bit Inspections Before Match (8 Blocked Windows)", fontsize=10.2, fontweight="bold", color="#283593")
+    ax_bench.legend(loc="upper left", fontsize=8)
+    for b in bars_naive:
+        ax_bench.text(b.get_x() + b.get_width() / 2, b.get_height() * 1.12, f"{int(b.get_height())}", ha="center", fontsize=7, color="#B71C1C")
+    for b in bars_jump:
+        ax_bench.text(b.get_x() + b.get_width() / 2, b.get_height() * 1.12, f"{int(b.get_height())}", ha="center", fontsize=7, fontweight="bold", color="#00695C")
+
+    # Bottom Full-Width Panel: Free() & External Fragmentation Timeline
+    ax_frag = fig.add_subplot(gs[1, :])
+    ax_frag.set_xlim(0, 100)
+    ax_frag.set_ylim(0, 100)
+    ax_frag.axis("off")
+    ax_frag.set_title(
+        "Lifecycle of Allocate() / Free() & External Fragmentation Coalescing (12-Frame Arena)",
+        fontsize=10.8, fontweight="bold", color="#283593", pad=8,
+    )
+
+    stages = [
+        (
+            "Stage 1: Allocate A(3), B(2), C(3), D(2)",
+            [("A", 1), ("A", 1), ("A", 1), ("B", 1), ("B", 1), ("C", 1), ("C", 1), ("C", 1), ("D", 1), ("D", 1), ("-", 0), ("-", 0)],
+            "Free = 2 frames | Max Contiguous = 2 | Ext. Frag = 0.0%",
+            "#1565C0",
+        ),
+        (
+            "Stage 2: Free(A, 3) & Free(C, 3) -> Fragmented!",
+            [("-", 0), ("-", 0), ("-", 0), ("B", 1), ("B", 1), ("-", 0), ("-", 0), ("-", 0), ("D", 1), ("D", 1), ("-", 0), ("-", 0)],
+            "Free = 8 frames | Max Contiguous = 3 | Allocate(5) -> kNoEnoughMemory! (Ext. Frag = 62.5%)",
+            "#C62828",
+        ),
+        (
+            "Stage 3: Free(B, 2) -> Adjacent Zero Bits Merge!",
+            [("-", 0), ("-", 0), ("-", 0), ("-", 0), ("-", 0), ("-", 0), ("-", 0), ("-", 0), ("D", 1), ("D", 1), ("-", 0), ("-", 0)],
+            "Free = 10 frames | Max Contiguous = 8 | Allocate(5) -> FrameID{0} SUCCEEDS! (Auto-Coalesced!)",
+            "#2E7D32",
+        ),
+    ]
+
+    for s_idx, (stitle, cells, smetric, scol) in enumerate(stages):
+        y_row = 72 - s_idx * 29
+        ax_frag.text(3, y_row + 13, stitle, fontsize=8.8, fontweight="bold", color=scol)
+        ax_frag.text(46, y_row + 13, smetric, fontsize=8.2, fontweight="bold", color=scol)
+        for c_idx, (clbl, cbusy) in enumerate(cells):
+            cx = 3 + c_idx * 7.8
+            c_face = "#FFCDD2" if cbusy else "#C8E6C9"
+            c_edge = "#C62828" if cbusy else "#2E7D32"
+            c_txt = "#B71C1C" if cbusy else "#1B5E20"
+            r_c = plt.Rectangle((cx, y_row), 7.0, 10.5, facecolor=c_face, edgecolor=c_edge, lw=1.4)
+            ax_frag.add_patch(r_c)
+            ax_frag.text(cx + 3.5, y_row + 5.2, f"F{c_idx}:{clbl}({cbusy})", fontsize=7.0, fontweight="bold", color=c_txt, ha="center", va="center")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def plot_fig8_21_uefi_memmap_to_bitmap_initialization(
+    output_path: str = "8/result/fig8_21_uefi_memmap_to_bitmap_initialization.png",
+) -> str:
+    """Generate Figure 8.21: UEFI MemoryMap Scanning to BitmapMemoryManager Initialization Pipeline."""
+    setup_plot_style()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16.5, 9.8), dpi=300, gridspec_kw={"height_ratios": [1.15, 1.0]})
+    fig.suptitle(
+        "Figure 8.21: Initializing BitmapMemoryManager from UEFI MemoryMap (Hole & Kernel Protection)",
+        fontsize=13, fontweight="bold", color="#1A237E", y=0.98,
+    )
+
+    # Top Panel: Physical Address Space Ribbon & Bitmap Protection Rules
+    ax1.set_xlim(0, 100)
+    ax1.set_ylim(0, 100)
+    ax1.axis("off")
+    ax1.set_title(
+        "Physical Memory Map Translation into Managed Bitmap Range [FrameID{1}, FrameID{available_end / 4KiB})",
+        fontsize=10.8, fontweight="bold", color="#283593", pad=8,
+    )
+
+    regions = [
+        ("Frame 0\n0x0000", "Excluded!\nnullptr\nGuard", 2, 9, "#FFF9C4", "#F57F17", "range_begin_=1"),
+        ("Frames 1..159\n0x001000", "Conventional\nRAM\n(Bit = 0)", 11.5, 13, "#C8E6C9", "#2E7D32", "Free (0)"),
+        ("Frames 160..255\n0x0A0000", "VGA / ROM\nMemory Hole\n(Unlisted!)", 25, 13, "#FFCDD2", "#C62828", "Gap -> Mark 1!"),
+        ("Frames 256..527\n0x100000", "EfiLoaderData\nMikanOS Kernel\n(.text/.bss)", 38.5, 16, "#F8BBD0", "#AD1457", "Kernel -> Mark 1!"),
+        ("Frames 528..2047\n0x210000", "Conventional\nRAM\n(Bit = 0)", 55, 14, "#C8E6C9", "#2E7D32", "Free (0)"),
+        ("2048..2079\n0x800000", "Runtime\nServices\n(Bit = 1)", 69.5, 9.5, "#FFE0B2", "#E65100", "Keep -> 1"),
+        ("2080..4095\n0x820000", "BootServices\nReclaimed!\n(Bit = 0)", 79.5, 11, "#B2DFDB", "#00695C", "Free (0)"),
+        (">= 4096\n0x1400000", "PCI MMIO\nOutside\nrange_end_", 91, 7.5, "#CFD8DC", "#455A64", "Clipped!"),
+    ]
+
+    for title, body, rx, rw, fcol, ecol, badge in regions:
+        rect = plt.Rectangle((rx, 38), rw, 46, facecolor=fcol, edgecolor=ecol, lw=1.8)
+        ax1.add_patch(rect)
+        ax1.text(rx + rw / 2, 76, title, fontsize=7.0, fontweight="bold", color=ecol, ha="center", va="center")
+        ax1.text(rx + rw / 2, 57, body, fontsize=7.0, color="#263238", ha="center", va="center")
+        ax1.text(
+            rx + rw / 2, 29, badge, fontsize=6.8, fontweight="bold", color=ecol, ha="center",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="#FFFFFF", edgecolor=ecol, lw=1.0),
+        )
+
+    # Managed Range Bracket [FrameID{1} .. FrameID{4096})
+    ax1.annotate("", xy=(11.5, 21), xytext=(90.5, 21), arrowprops=dict(arrowstyle="<->", color="#1A237E", lw=2.2))
+    ax1.text(
+        51, 16.5,
+        "Managed Allocation Search Window: SetMemoryRange(FrameID{1}, FrameID{available_end / 4KiB})\n"
+        "• Starts at FrameID{1} (0x1000): Frame 0 (0x0000 == nullptr) is NEVER returned by Allocate()!\n"
+        "• Ends at last usable RAM (available_end): High 4GiB MMIO (0xFEE00000) does NOT inflate range_end_!",
+        fontsize=8.0, fontweight="bold", color="#1A237E", ha="center", va="top",
+    )
+
+    # Bottom Panel: 3-Rule Decision Logic & Quantitative Breakdown
+    ax2.axis("off")
+    ax2.set_xlim(0, 100)
+    ax2.set_ylim(0, 100)
+    ax2.set_title(
+        "Three Invariants of the `KernelMainNewStack` MemoryMap Initialization Loop",
+        fontsize=10.8, fontweight="bold", color="#283593", pad=6,
+    )
+
+    cards = [
+        (
+            "Invariant 1: Unlisted Hole Protection",
+            "if (available_end < desc->physical_start)\n"
+            "  MarkAllocated(available_end, gap);\n\n"
+            "• Bitmap starts all-zero (0 = Free).\n"
+            "• Any physical address gap missing from\n"
+            "  UEFI MemoryMap (VGA/ROM/PCI holes)\n"
+            "  is swept and locked as 1 (Allocated)!",
+            3, "#FFEBEE", "#C62828",
+        ),
+        (
+            "Invariant 2: Kernel Self-Protection",
+            "if (IsAvailable(desc->type))\n"
+            "  available_end = physical_end;\n"
+            "else MarkAllocated(desc_range);\n\n"
+            "• Bootloader allocated Kernel ELF pages\n"
+            "  as `EfiLoaderData` (IsAvailable == false)!\n"
+            "• Kernel .text/.data/.bss (stack, paging,\n"
+            "  4MiB bitmap) are automatically locked!",
+            35.5, "#FCE4EC", "#AD1457",
+        ),
+        (
+            "Invariant 3: Idempotent `available_end`",
+            "SetMemoryRange(FrameID{1},\n"
+            "  FrameID{available_end / 4KiB});\n\n"
+            "• `available_end` ONLY advances on\n"
+            "  usable RAM (`BootServices` / `Conventional`).\n"
+            "• Trailing MMIO descriptors at ~4GiB do\n"
+            "  not advance `available_end`, bounding\n"
+            "  `range_end_` tightly to installed RAM!",
+            68, "#E8F5E9", "#1B5E20",
+        ),
+    ]
+
+    for ctitle, cbody, cx, cfcol, cecol in cards:
+        r_card = plt.Rectangle((cx, 8), 29, 82, facecolor=cfcol, edgecolor=cecol, lw=1.8)
+        ax2.add_patch(r_card)
+        ax2.text(cx + 14.5, 82, ctitle, fontsize=8.8, fontweight="bold", color=cecol, ha="center")
+        ax2.text(cx + 2.0, 42, cbody, fontsize=7.6, color="#263238", va="center")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return output_path

@@ -487,6 +487,12 @@ from common.os_sim import (
     plot_fig8_16_x86_64_4level_paging_architecture,
     plot_fig8_17_identity_mapping_2mib_huge_pages,
     plot_fig8_18_cr3_and_address_translation_flow,
+    FrameIDSim,
+    NULL_FRAME_SIM,
+    MikanBitmapMemoryManagerSim,
+    plot_fig8_19_bitmap_memory_manager_architecture,
+    plot_fig8_20_first_fit_allocation_and_skip_math,
+    plot_fig8_21_uefi_memmap_to_bitmap_initialization,
 )
 
 __all__ = [
@@ -976,4 +982,10 @@ __all__ = [
     "plot_fig8_16_x86_64_4level_paging_architecture",
     "plot_fig8_17_identity_mapping_2mib_huge_pages",
     "plot_fig8_18_cr3_and_address_translation_flow",
+    "FrameIDSim",
+    "NULL_FRAME_SIM",
+    "MikanBitmapMemoryManagerSim",
+    "plot_fig8_19_bitmap_memory_manager_architecture",
+    "plot_fig8_20_first_fit_allocation_and_skip_math",
+    "plot_fig8_21_uefi_memmap_to_bitmap_initialization",
 ]
