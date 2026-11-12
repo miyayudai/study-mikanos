@@ -515,6 +515,12 @@ from common.os_sim import (
     plot_fig9_07_window_layer_layermanager_architecture,
     plot_fig9_08_smart_pointer_ownership_and_control_block,
     plot_fig9_09_layer_updown_stack_manipulation_and_compositing,
+    LAPICTimerRegisterSim,
+    CompositingProfilerSim,
+    MouseObserverLatencySim,
+    plot_fig9_10_lapic_timer_architecture_and_mmio_registers,
+    plot_fig9_11_full_redraw_overhead_and_mouse_latency_timeline,
+    plot_fig9_12_compositing_performance_profiling_and_complexity_analysis,
 )
 
 __all__ = [
@@ -1032,4 +1038,10 @@ __all__ = [
     "plot_fig9_07_window_layer_layermanager_architecture",
     "plot_fig9_08_smart_pointer_ownership_and_control_block",
     "plot_fig9_09_layer_updown_stack_manipulation_and_compositing",
+    "LAPICTimerRegisterSim",
+    "CompositingProfilerSim",
+    "MouseObserverLatencySim",
+    "plot_fig9_10_lapic_timer_architecture_and_mmio_registers",
+    "plot_fig9_11_full_redraw_overhead_and_mouse_latency_timeline",
+    "plot_fig9_12_compositing_performance_profiling_and_complexity_analysis",
 ]

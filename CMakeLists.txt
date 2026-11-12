@@ -237,6 +237,10 @@ add_test(NAME test_ch09_heap_sbrk COMMAND ch09_heap_sbrk --test)
 add_executable(ch09_window_layer src/ch09/os_chapter9_window_layer.cpp)
 add_test(NAME test_ch09_window_layer COMMAND ch09_window_layer)
 
+add_executable(ch09_profiling_compositing src/ch09/os_chapter9_profiling_compositing.cpp)
+add_test(NAME test_ch09_profiling_compositing COMMAND ch09_profiling_compositing)
+
+
 
 
 

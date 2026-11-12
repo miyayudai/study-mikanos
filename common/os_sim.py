@@ -34370,3 +34370,455 @@ def plot_fig9_09_layer_updown_stack_manipulation_and_compositing(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+
+# =============================================================================
+# Chapter 9.4: Compositing Performance Profiling & Local APIC Timer Simulation
+# =============================================================================
+
+class LAPICTimerRegisterSim:
+    """Local APIC Timer MMIO Registers and Countdown Simulation.
+
+    Default Local APIC Base Address: 0xFEE00000
+    - Divide Configuration Register (DCR): 0xFEE003E0
+    - LVT Timer Register:                 0xFEE00320
+    - Initial Count Register (ICR):       0xFEE00380
+    - Current Count Register (CCR):       0xFEE00390
+    """
+    APIC_BASE = 0xFEE00000
+    REG_LVT_TIMER = 0x320
+    REG_INITIAL_COUNT = 0x380
+    REG_CURRENT_COUNT = 0x390
+    REG_DIVIDE_CONFIG = 0x3E0
+    COUNT_MAX = 0xFFFFFFFF
+
+    def __init__(self, core_frequency_hz: float = 1_000_000_000.0):
+        self.core_frequency_hz = float(core_frequency_hz)
+        self.divide_config = 0b1011  # Divide by 1 (1:1) default in MikanOS
+        self.lvt_timer = (0b001 << 16) | 32  # Masked (bit 16=1), Vector 32, One-shot (bit 18:17=00)
+        self.initial_count = 0
+        self.current_count = 0
+        self.is_running = False
+
+    @staticmethod
+    def decode_divide_config(val: int) -> int:
+        """Decode bits 3, 1, 0 of Divide Configuration Register into clock divider ratio."""
+        b3 = (val >> 3) & 1
+        b1 = (val >> 1) & 1
+        b0 = val & 1
+        code = (b3 << 2) | (b1 << 1) | b0
+        mapping = {
+            0b000: 2,
+            0b001: 4,
+            0b010: 8,
+            0b011: 16,
+            0b100: 32,
+            0b101: 64,
+            0b110: 128,
+            0b111: 1,  # 0b1011 in register -> 1:1
+        }
+        return mapping.get(code, 1)
+
+    @property
+    def divider(self) -> int:
+        return self.decode_divide_config(self.divide_config)
+
+    @property
+    def is_masked(self) -> bool:
+        return bool((self.lvt_timer >> 16) & 1)
+
+    @property
+    def timer_mode(self) -> str:
+        mode = (self.lvt_timer >> 17) & 0b11
+        if mode == 0b00:
+            return "One-shot"
+        elif mode == 0b01:
+            return "Periodic"
+        elif mode == 0b10:
+            return "TSC-Deadline"
+        return "Reserved"
+
+    @property
+    def vector(self) -> int:
+        return self.lvt_timer & 0xFF
+
+    def initialize(self, divide_code: int = 0b1011, vector: int = 32, masked: bool = True) -> None:
+        """Equivalent to InitializeLAPICTimer() in MikanOS."""
+        self.divide_config = divide_code
+        mask_bit = 1 if masked else 0
+        self.lvt_timer = (mask_bit << 16) | (vector & 0xFF)
+        self.initial_count = 0
+        self.current_count = 0
+        self.is_running = False
+
+    def start(self, count: int = COUNT_MAX) -> None:
+        """Equivalent to StartLAPICTimer() in MikanOS."""
+        self.initial_count = count & 0xFFFFFFFF
+        self.current_count = self.initial_count
+        self.is_running = True
+
+    def tick_cycles(self, cpu_cycles: int) -> None:
+        """Simulate passage of CPU clock cycles decrementing current_count."""
+        if not self.is_running:
+            return
+        timer_ticks = cpu_cycles // self.divider
+        if timer_ticks >= self.current_count:
+            self.current_count = 0
+            if self.timer_mode == "One-shot":
+                self.is_running = False
+        else:
+            self.current_count -= timer_ticks
+
+    def elapsed(self) -> int:
+        """Equivalent to LAPICTimerElapsed() in MikanOS."""
+        if self.initial_count == 0:
+            return 0
+        return (self.initial_count - self.current_count) & 0xFFFFFFFF
+
+    def stop(self) -> None:
+        """Equivalent to StopLAPICTimer() in MikanOS."""
+        self.initial_count = 0
+        self.is_running = False
+
+
+class CompositingProfilerSim:
+    """Profiles LayerManager::Draw() full compositing overhead and complexity."""
+
+    def __init__(self, screen_width: int = 1024, screen_height: int = 768, bpp: int = 4):
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.bpp = bpp  # Bytes per pixel (4 bytes for 32-bit RGBA)
+
+    @property
+    def total_screen_pixels(self) -> int:
+        return self.screen_width * self.screen_height
+
+    @property
+    def frame_buffer_bytes(self) -> int:
+        return self.total_screen_pixels * self.bpp
+
+    def profile_layers(self, layer_sizes: list[tuple[int, int]]) -> dict:
+        """Profile full redraw of layers in painter's algorithm order."""
+        scanned_pixels = 0
+        written_pixels = 0
+        for w, h in layer_sizes:
+            layer_px = w * h
+            scanned_pixels += layer_px
+            written_pixels += layer_px
+
+        vram_bytes_written = written_pixels * self.bpp
+        vram_mb = vram_bytes_written / (1024 * 1024)
+
+        # Assumptions:
+        # VRAM uncacheable/write-combining MMIO throughput ~ 800 MB/s
+        # 1 pixel write + blend/branch ~ 12 CPU cycles
+        estimated_cycles = scanned_pixels * 12
+        lapic_ticks = estimated_cycles
+        estimated_time_ms = (vram_bytes_written / (800 * 1024 * 1024)) * 1000.0
+
+        return {
+            "num_layers": len(layer_sizes),
+            "scanned_pixels": scanned_pixels,
+            "written_pixels": written_pixels,
+            "vram_bytes": vram_bytes_written,
+            "vram_mb": vram_mb,
+            "estimated_lapic_ticks": lapic_ticks,
+            "estimated_time_ms": estimated_time_ms,
+            "max_fps": 1000.0 / estimated_time_ms if estimated_time_ms > 0 else 0.0,
+        }
+
+    def compare_full_vs_partial(self, mouse_w: int = 16, mouse_h: int = 24) -> dict:
+        """Compare full screen compositing vs dirty-rectangle mouse redraw."""
+        full_px = self.total_screen_pixels
+        mouse_px = mouse_w * mouse_h
+        # Dirty rectangle for moving mouse: union of old and new mouse bounding box (approx 2x)
+        partial_px = mouse_px * 2
+        speedup_ratio = full_px / partial_px if partial_px > 0 else 1.0
+
+        return {
+            "screen_pixels": full_px,
+            "mouse_pixels": mouse_px,
+            "dirty_rect_pixels": partial_px,
+            "speedup_ratio": speedup_ratio,
+            "pixel_reduction_pct": (1.0 - partial_px / full_px) * 100.0,
+        }
+
+
+class MouseObserverLatencySim:
+    """Simulates MouseObserver events, rendering delay, and queue accumulation."""
+
+    def __init__(self, render_time_ms: float = 25.0, event_interval_ms: float = 10.0):
+        self.render_time_ms = render_time_ms
+        self.event_interval_ms = event_interval_ms
+
+    def simulate(self, num_events: int = 10) -> list[dict]:
+        """Simulate sequential mouse movement arrivals and queue backlog."""
+        records = []
+        queue_len = 0
+        server_free_time = 0.0
+
+        for i in range(num_events):
+            event_arrival = i * self.event_interval_ms
+            queue_len += 1
+            start_service = max(event_arrival, server_free_time)
+            finish_service = start_service + self.render_time_ms
+            server_free_time = finish_service
+            latency = finish_service - event_arrival
+            queue_len_at_start = queue_len
+            queue_len -= 1
+
+            records.append({
+                "event_id": i + 1,
+                "arrival_ms": event_arrival,
+                "start_ms": start_service,
+                "finish_ms": finish_service,
+                "latency_ms": latency,
+                "queue_backlog": queue_len_at_start,
+            })
+        return records
+
+
+def plot_fig9_10_lapic_timer_architecture_and_mmio_registers(
+    output_path: Path | str = "9/result/fig9_10_lapic_timer_architecture_and_mmio_registers.png",
+) -> Path:
+    """Figure 9.10: Local APIC Timer Architecture, MMIO Registers, and Countdown Flow."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8.5))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: MMIO Registers & Bit Layout
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("【A】Local APIC タイマ MMIO レジスタ配置とビット構成 (0xFEE00000+)",
+                  fontsize=11.5, fontweight="bold", color="#1565C0", pad=12)
+
+    regs = [
+        ("0xFEE003E0", "Divide Configuration Register (DCR)",
+         "分周比設定 (Divide Config)\nbit 3, 1, 0 で分周比指定: 0b1011 = 1:1 (分周なし)\n他の値: 0b0000(÷2), 0b0001(÷4), 0b0100(÷32)...",
+         "#E3F2FD", "#0D47A1", 0.76),
+        ("0xFEE00320", "LVT Timer Register (0x320)",
+         "Local Vector Table (Timer)\nbit 16: Mask (1=割り込みマスク, 0=発生)\nbit 18:17: Mode (00=One-shot, 01=Periodic)\nbit 7:0: Vector (32 = 0x20)",
+         "#FFF3E0", "#E65100", 0.52),
+        ("0xFEE00380", "Initial Count Register (0x380)",
+         "初期カウントレジスタ (Initial Count)\n32ビット値を書き込むとカウントダウン開始\n0xFFFFFFFF を書き込んで計測開始、0 で停止",
+         "#E8F5E9", "#1B5E20", 0.28),
+        ("0xFEE00390", "Current Count Register (0x390)",
+         "現在カウントレジスタ (Current Count, Read Only)\nタイマ基準クロックで毎周期デクリメント\n経過カウント = Initial Count - Current Count",
+         "#EDE7F6", "#4A148C", 0.04),
+    ]
+
+    for addr, name, desc, bgc, fgc, y_pos in regs:
+        box = FancyBboxPatch((0.04, y_pos), 0.92, 0.20, boxstyle="round,pad=0.02,rounding_size=0.02",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.5)
+        ax1.add_patch(box)
+        ax1.text(0.07, y_pos + 0.16, addr, fontsize=9.2, fontfamily="monospace", fontweight="bold", color=fgc)
+        ax1.text(0.35, y_pos + 0.16, name, fontsize=9.5, fontweight="bold", color="#212121")
+        ax1.text(0.07, y_pos + 0.04, desc, fontsize=8.4, color="#37474F")
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # Right: Profiling Flow
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("【B】LAPIC タイマによる時間計測シーケンスとカウント減算数理",
+                  fontsize=11.5, fontweight="bold", color="#2E7D32", pad=12)
+
+    steps = [
+        ("1. InitializeLAPICTimer()",
+         "divide_config = 0b1011;  // 1:1 分周\n"
+         "lvt_timer = (0b001 << 16) | 32;  // マスク, ワンショット",
+         "#E1F5FE", "#0277BD", 0.77),
+        ("2. StartLAPICTimer()",
+         "initial_count = 0xFFFFFFFF;  // カウントダウン開始\n"
+         "// Current Count は 0xFFFFFFFF から 1 ずつ減少",
+         "#FFF8E1", "#F57F17", 0.54),
+        ("3. 被計測処理の実行",
+         "layer_manager->Draw();  // 全レイヤ全ピクセルを描画\n"
+         "// CPU が重いメモリ転送を実行中にタイマが進行",
+         "#FFEBEE", "#C62828", 0.31),
+        ("4. LAPICTimerElapsed() & StopLAPICTimer()",
+         "elapsed = 0xFFFFFFFF - current_count;\n"
+         "initial_count = 0;  // タイマ停止\n"
+         "printk(\"MouseObserver: elapsed = %u\\n\", elapsed);",
+         "#E8F5E9", "#2E7D32", 0.08),
+    ]
+
+    for i, (title, code, bgc, fgc, y_pos) in enumerate(steps):
+        box = FancyBboxPatch((0.06, y_pos), 0.88, 0.18, boxstyle="round,pad=0.02,rounding_size=0.02",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.5)
+        ax2.add_patch(box)
+        ax2.text(0.09, y_pos + 0.13, title, fontsize=9.8, fontweight="bold", color=fgc)
+        ax2.text(0.09, y_pos + 0.03, code, fontsize=8.6, fontfamily="monospace", color="#212121")
+        if i < len(steps) - 1:
+            ax2.annotate("", xy=(0.50, y_pos - 0.045), xytext=(0.50, y_pos),
+                         arrowprops=dict(arrowstyle="-|>", color="#757575", lw=1.8))
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    plt.suptitle("Figure 9.10: Local APIC (LAPIC) タイマの MMIO レジスタ仕様と高精度時間計測の動作原理",
+                 fontsize=12.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_11_full_redraw_overhead_and_mouse_latency_timeline(
+    output_path: Path | str = "9/result/fig9_11_full_redraw_overhead_and_mouse_latency_timeline.png",
+) -> Path:
+    """Figure 9.11: Mouse Event Stream vs Full Redraw Overhead and Queue Latency Timeline."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 9.5), gridspec_kw={"height_ratios": [1.2, 1.0]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Simulation setup
+    sim = MouseObserverLatencySim(render_time_ms=25.0, event_interval_ms=10.0)
+    results = sim.simulate(num_events=8)
+
+    # Subplot 1: Timeline Gantt Chart
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("【A】マウス割り込み到着 vs 全画面再描画処理時間（16.6msフレーム予算超過とキュー滞留）",
+                  fontsize=11.5, fontweight="bold", color="#C62828", pad=10)
+
+    for rec in results:
+        eid = rec["event_id"]
+        arr = rec["arrival_ms"]
+        st = rec["start_ms"]
+        fn = rec["finish_ms"]
+
+        # Arrival marker
+        ax1.plot([arr, arr], [0.2, 0.7], color="#E65100", linestyle="--", linewidth=1.2)
+        ax1.scatter([arr], [0.75], color="#E65100", s=60, zorder=5)
+        ax1.text(arr, 0.85, f"Event {eid}\n({arr:.0f}ms)", ha="center", fontsize=7.8, color="#BF360C")
+
+        # Redraw duration block
+        rect = Rectangle((st, 0.2), fn - st, 0.35, facecolor="#EF9A9A", edgecolor="#C62828", linewidth=1.2)
+        ax1.add_patch(rect)
+        ax1.text(st + (fn - st) / 2, 0.375, f"Draw({eid})\n25ms", ha="center", va="center",
+                 fontsize=8.0, fontweight="bold", color="#B71C1C")
+
+    # 60 FPS Frame Budget indicator (16.6 ms)
+    ax1.axvspan(0, 16.6, color="#C8E6C9", alpha=0.3, label="60 FPS 理想フレーム予算 (16.6ms)")
+    ax1.set_xlim(-5, 210)
+    ax1.set_ylim(0, 1.1)
+    ax1.set_xlabel("時間経過 (ミリ秒 / ms)", fontsize=10, fontweight="bold")
+    ax1.set_yticks([])
+    ax1.legend(loc="upper right", framealpha=0.9)
+
+    # Subplot 2: Accumulating Event Latency & Backlog
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("【B】再描画遅延によるマウス応答遅延（レイテンシ）の線形爆発",
+                  fontsize=11.5, fontweight="bold", color="#1565C0", pad=10)
+
+    event_ids = [r["event_id"] for r in results]
+    latencies = [r["latency_ms"] for r in results]
+    backlogs = [r["queue_backlog"] for r in results]
+
+    ax2_twin = ax2.twinx()
+    p1 = ax2.plot(event_ids, latencies, "o-", color="#D32F2F", linewidth=2.2, label="応答遅延 (Latency ms)")
+    p2 = ax2_twin.plot(event_ids, backlogs, "s--", color="#1976D2", linewidth=2.0, label="イベントキュー滞留数 (Backlog)")
+
+    ax2.axhline(16.6, color="#388E3C", linestyle=":", linewidth=1.8, label="許容閾値 (16.6ms)")
+
+    ax2.set_xlabel("マウスイベント番号 (Event #)", fontsize=10, fontweight="bold")
+    ax2.set_ylabel("応答遅延時間 (ms)", fontsize=10, fontweight="bold", color="#D32F2F")
+    ax2_twin.set_ylabel("キュー滞留イベント数", fontsize=10, fontweight="bold", color="#1976D2")
+    ax2.set_xticks(event_ids)
+
+    plots = p1 + p2
+    labels = [p.get_label() for p in plots]
+    ax2.legend(plots, labels, loc="upper left", framealpha=0.9)
+
+    plt.suptitle("Figure 9.11: 全画面再描画方式によるマウス遅延・イベントキュー滞留の定量的タイムライン解析",
+                 fontsize=12.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_12_compositing_performance_profiling_and_complexity_analysis(
+    output_path: Path | str = "9/result/fig9_12_compositing_performance_profiling_and_complexity_analysis.png",
+) -> Path:
+    """Figure 9.12: Compositing Complexity Profiling (Full vs Dirty-Rect Redraw)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8.5))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: Redraw cost per resolution
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("【A】画面解像度別の全画面再描画ピクセル数・VRAM転送量 (32bpp)",
+                  fontsize=11.5, fontweight="bold", color="#1565C0", pad=12)
+
+    resolutions = [
+        ("640x480\n(VGA)", 640 * 480, 640 * 480 * 4 / (1024 * 1024)),
+        ("800x600\n(SVGA)", 800 * 600, 800 * 600 * 4 / (1024 * 1024)),
+        ("1024x768\n(XGA / MikanOS)", 1024 * 768, 1024 * 768 * 4 / (1024 * 1024)),
+        ("1280x720\n(720p HD)", 1280 * 720, 1280 * 720 * 4 / (1024 * 1024)),
+        ("1920x1080\n(1080p FHD)", 1920 * 1080, 1920 * 1080 * 4 / (1024 * 1024)),
+    ]
+
+    labels = [r[0] for r in resolutions]
+    pixels_m = [r[1] / 1e6 for r in resolutions]
+    vram_mb = [r[2] for r in resolutions]
+
+    x = np.arange(len(labels))
+    width = 0.38
+
+    b1 = ax1.bar(x - width / 2, pixels_m, width, label="走査ピクセル数 (MegaPixels)", color="#42A5F5", edgecolor="#1565C0")
+    b2 = ax1.bar(x + width / 2, vram_mb, width, label="VRAM転送量 (MB / 32bpp)", color="#FFA726", edgecolor="#E65100")
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels, fontsize=9.0)
+    ax1.set_ylabel("ピクセル数 (M) / データ量 (MB)", fontsize=10, fontweight="bold")
+    ax1.legend(loc="upper left")
+
+    for bar in b1:
+        y = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width() / 2, y + 0.05, f"{y:.2f}M", ha="center", fontsize=8.2, fontweight="bold")
+    for bar in b2:
+        y = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width() / 2, y + 0.05, f"{y:.1f}MB", ha="center", fontsize=8.2, fontweight="bold")
+
+    # Right: Full Redraw vs Dirty Rect (Log Scale)
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("【B】全画面再描画 O(W・H) vs 差分再描画 O(w・h) の圧倒的格差",
+                  fontsize=11.5, fontweight="bold", color="#2E7D32", pad=12)
+
+    categories = ["全画面再描画\n(1024x768)\n9.4節 現行方式", "マウス移動差分\n(16x24 x 2)\n9.5節 最適化後"]
+    pixel_counts = [1024 * 768, 16 * 24 * 2]  # 786,432 vs 768
+    colors = ["#EF5350", "#66BB6A"]
+    edges = ["#C62828", "#2E7D32"]
+
+    bars = ax2.bar(categories, pixel_counts, color=colors, edgecolor=edges, width=0.45)
+    ax2.set_yscale("log")
+    ax2.set_ylabel("再描画ピクセル数 (対数スケール / Log Scale)", fontsize=10, fontweight="bold")
+
+    speedup = pixel_counts[0] / pixel_counts[1]
+    ax2.text(0, pixel_counts[0] * 1.3, f"{pixel_counts[0]:,} px\n(100%)", ha="center", fontsize=9.5, fontweight="bold", color="#C62828")
+    ax2.text(1, pixel_counts[1] * 1.5, f"{pixel_counts[1]:,} px\n(~0.1%)", ha="center", fontsize=9.5, fontweight="bold", color="#2E7D32")
+
+    ax2.annotate(f"約 {speedup:.0f} 倍の描画ピクセル削減！\n(次節 9.5節 で実装する最適化)",
+                 xy=(1, pixel_counts[1] * 3), xytext=(0.4, pixel_counts[0] * 0.1),
+                 arrowprops=dict(arrowstyle="->", color="#0D47A1", lw=2.0),
+                 fontsize=10.0, fontweight="bold", color="#0D47A1",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#E3F2FD", edgecolor="#1565C0"))
+
+    plt.suptitle("Figure 9.12: 重ね合わせ処理のボトルネック定量分析と差分再描画最適化（9.5節）への理論的展望",
+                 fontsize=12.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

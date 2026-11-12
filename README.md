@@ -2,7 +2,7 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-587%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-594%20passed-brightgreen.svg)
 ![Progress](https://img.shields.io/badge/curriculum-32.5%25%20(74%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
@@ -96,7 +96,7 @@ cmake --build build
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | `[x]` 完了 (5/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | [`8_Exercises.ipynb`](8/8_Exercises.ipynb) | `[x]` 完了 (8/8) |
-| **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[-]` 進行中 (3/8) |
+| **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[-]` 進行中 (4/8) |
 | **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ、`TimerManager`、RSDPとACPI PMタイマ | `11_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第12章** | キー入力 | 6 | `day12a`–`12f` | FADT、タイマ較正、USBキーボードHID、テキストボックス | `12_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
@@ -247,6 +247,7 @@ cmake --build build
 | [`9.1_Introduction_to_Layer_Compositing.ipynb`](9/9.1_Introduction_to_Layer_Compositing.ipynb) | 9.1 重ね合わせ処理（`osbook_day09a`・マウス移動時の背景破壊問題・画家アルゴリズム・オフスクリーンWindowと透過色カラーキーイング・`Vector2D<T>`・`Layer`・`LayerManager`重なり順スタックと`UpDown`・全画面再描画のボトルネック・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.1_Introduction_to_Layer_Compositing.ipynb) |
 | [`9.2_Enabling_Dynamic_Allocation_sbrk.ipynb`](9/9.2_Enabling_Dynamic_Allocation_sbrk.ipynb) | 9.2 new演算子（`osbook_day09a`・動的メモリ確保とヒープの必要性・配置new vs 通常new・Newlibシステムコールスタブ・POSIX `sbrk`とプログラムブレーク・`InitializeHeap`による128MiB一括確保・恒等マッピング下での物理アドレス直接利用・5層メモリスタック・16Bアライメントとチャンク合体・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.2_Enabling_Dynamic_Allocation_sbrk.ipynb) |
 | [`9.3_Window_Layer_and_LayerManager.ipynb`](9/9.3_Window_Layer_and_LayerManager.ipynb) | 9.3 重ね合わせ処理の原理 (含 コラム9.1: スマートポインタ)（`osbook_day09a`・Window 2Dオフスクリーンバッファと透過色カラーキーイング・内部クラスWindowWriterアダプタ・Layer座標と共有Window・LayerManager Z-orderスタックとUpDownアルゴリズム・コラム9.1 std::unique_ptr排他所有 vs std::shared_ptr制御ブロック・生ポインタ非所有参照・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.3_Window_Layer_and_LayerManager.ipynb) |
+| [`9.4_Profiling_Compositing_Performance.ipynb`](9/9.4_Profiling_Compositing_Performance.ipynb) | 9.4 重ね合わせ処理の時間計測（`osbook_day09b`・Local APIC (LAPIC) タイマ MMIO レジスタ配置 `0xFEE00000`・分周比 1:1・LVT タイママスクとワンショット計測・初期値減算数理・`volatile` 修飾子の意義・全画面再描画のボトルネックとフレーム予算 16.6ms 超過・マウス遅延とキュー滞留・$\mathcal{O}(W \cdot H)$ vs $\mathcal{O}(w \cdot h)$ 1000倍の格差と次節差分再描画への展望・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.4_Profiling_Compositing_Performance.ipynb) |
 
 
 
