@@ -34822,3 +34822,552 @@ def plot_fig9_12_compositing_performance_profiling_and_complexity_analysis(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 9.5: Optimizing Layer Compositing with FrameBuffer & Line-by-Line memcpy
+# ==============================================================================
+
+class PixelFormatSim(Enum):
+    RGB_RESV_8BIT = 0
+    BGR_RESV_8BIT = 1
+
+
+def bits_per_pixel(format_val: PixelFormatSim) -> int:
+    """Return bits per pixel for supported pixel formats."""
+    if format_val in (PixelFormatSim.RGB_RESV_8BIT, PixelFormatSim.BGR_RESV_8BIT):
+        return 32
+    return -1
+
+
+@dataclass
+class LayerFrameBufferConfigSim:
+    """Configuration structure simulating FrameBufferConfig in MikanOS Chapter 9.5."""
+    frame_buffer: Optional[bytearray] = None
+    pixels_per_scan_line: int = 0
+    horizontal_resolution: int = 0
+    vertical_resolution: int = 0
+    pixel_format: PixelFormatSim = PixelFormatSim.RGB_RESV_8BIT
+
+
+class FrameBufferSim:
+    """FrameBuffer simulation matching MikanOS kernel/frame_buffer.cpp."""
+
+    def __init__(self):
+        self.config = LayerFrameBufferConfigSim()
+        self.buffer = bytearray()
+        self.bytes_per_pixel = 0
+
+    def initialize(self, config: LayerFrameBufferConfigSim) -> bool:
+        """Initialize frame buffer, allocating offscreen memory if frame_buffer is None."""
+        self.config = LayerFrameBufferConfigSim(
+            frame_buffer=config.frame_buffer,
+            pixels_per_scan_line=config.pixels_per_scan_line,
+            horizontal_resolution=config.horizontal_resolution,
+            vertical_resolution=config.vertical_resolution,
+            pixel_format=config.pixel_format,
+        )
+        bpp = bits_per_pixel(self.config.pixel_format)
+        if bpp <= 0:
+            return False
+        self.bytes_per_pixel = (bpp + 7) // 8
+
+        if self.config.frame_buffer is not None:
+            self.buffer = self.config.frame_buffer
+        else:
+            size = self.bytes_per_pixel * self.config.horizontal_resolution * self.config.vertical_resolution
+            self.buffer = bytearray(size)
+            self.config.frame_buffer = self.buffer
+            self.config.pixels_per_scan_line = self.config.horizontal_resolution
+        return True
+
+    def write_pixel(self, x: int, y: int, r: int, g: int, b: int) -> None:
+        """Write single pixel with format packing."""
+        if 0 <= x < self.config.horizontal_resolution and 0 <= y < self.config.vertical_resolution:
+            offset = self.bytes_per_pixel * (self.config.pixels_per_scan_line * y + x)
+            if self.config.pixel_format == PixelFormatSim.RGB_RESV_8BIT:
+                self.buffer[offset + 0] = r & 0xFF
+                self.buffer[offset + 1] = g & 0xFF
+                self.buffer[offset + 2] = b & 0xFF
+                self.buffer[offset + 3] = 0
+            else:
+                self.buffer[offset + 0] = b & 0xFF
+                self.buffer[offset + 1] = g & 0xFF
+                self.buffer[offset + 2] = r & 0xFF
+                self.buffer[offset + 3] = 0
+
+    def read_pixel(self, x: int, y: int) -> tuple[int, int, int]:
+        """Read single pixel RGB values."""
+        if 0 <= x < self.config.horizontal_resolution and 0 <= y < self.config.vertical_resolution:
+            offset = self.bytes_per_pixel * (self.config.pixels_per_scan_line * y + x)
+            if self.config.pixel_format == PixelFormatSim.RGB_RESV_8BIT:
+                return (self.buffer[offset + 0], self.buffer[offset + 1], self.buffer[offset + 2])
+            else:
+                return (self.buffer[offset + 2], self.buffer[offset + 1], self.buffer[offset + 0])
+        return (0, 0, 0)
+
+    def copy(self, pos_x: int, pos_y: int, src: 'FrameBufferSim') -> dict:
+        """Copy rectangle line-by-line using memcpy semantics and clipping."""
+        if self.config.pixel_format != src.config.pixel_format:
+            raise ValueError("Pixel format mismatch between source and destination")
+
+        dst_w = self.config.horizontal_resolution
+        dst_h = self.config.vertical_resolution
+        src_w = src.config.horizontal_resolution
+        src_h = src.config.vertical_resolution
+
+        copy_start_dst_x = max(pos_x, 0)
+        copy_start_dst_y = max(pos_y, 0)
+        copy_end_dst_x = min(pos_x + src_w, dst_w)
+        copy_end_dst_y = min(pos_y + src_h, dst_h)
+
+        if copy_start_dst_x >= copy_end_dst_x or copy_start_dst_y >= copy_end_dst_y:
+            return {
+                "lines_copied": 0,
+                "bytes_copied": 0,
+                "clipped": True,
+                "rect": (copy_start_dst_x, copy_start_dst_y, 0, 0)
+            }
+
+        bpp = self.bytes_per_pixel
+        bytes_per_copy_line = bpp * (copy_end_dst_x - copy_start_dst_x)
+
+        lines_copied = 0
+        total_bytes = 0
+
+        src_start_x = copy_start_dst_x - pos_x
+        src_start_y = copy_start_dst_y - pos_y
+
+        for dy in range(copy_end_dst_y - copy_start_dst_y):
+            dst_y = copy_start_dst_y + dy
+            src_y = src_start_y + dy
+
+            dst_offset = bpp * (self.config.pixels_per_scan_line * dst_y + copy_start_dst_x)
+            src_offset = bpp * (src.config.pixels_per_scan_line * src_y + src_start_x)
+
+            self.buffer[dst_offset : dst_offset + bytes_per_copy_line] = (
+                src.buffer[src_offset : src_offset + bytes_per_copy_line]
+            )
+            lines_copied += 1
+            total_bytes += bytes_per_copy_line
+
+        is_clipped = (
+            copy_start_dst_x != pos_x or
+            copy_start_dst_y != pos_y or
+            copy_end_dst_x != pos_x + src_w or
+            copy_end_dst_y != pos_y + src_h
+        )
+
+        return {
+            "lines_copied": lines_copied,
+            "bytes_copied": total_bytes,
+            "clipped": is_clipped,
+            "rect": (copy_start_dst_x, copy_start_dst_y, copy_end_dst_x - copy_start_dst_x, copy_end_dst_y - copy_start_dst_y)
+        }
+
+
+class OptimizedWindowSim:
+    """Window class with shadow buffer and fast-path memcpy compositing."""
+
+    def __init__(self, width: int, height: int, shadow_format: PixelFormatSim = PixelFormatSim.RGB_RESV_8BIT):
+        self.width = width
+        self.height = height
+        self.shadow_format = shadow_format
+        self.transparent_color: Optional[tuple[int, int, int]] = None
+        self.data = [[(0, 0, 0) for _ in range(width)] for _ in range(height)]
+
+        cfg = LayerFrameBufferConfigSim(
+            frame_buffer=None,
+            horizontal_resolution=width,
+            vertical_resolution=height,
+            pixel_format=shadow_format
+        )
+        self.shadow_buffer = FrameBufferSim()
+        self.shadow_buffer.initialize(cfg)
+
+    def set_transparent_color(self, color: Optional[tuple[int, int, int]]) -> None:
+        self.transparent_color = color
+
+    def write(self, x: int, y: int, color: tuple[int, int, int]) -> None:
+        if 0 <= x < self.width and 0 <= y < self.height:
+            self.data[y][x] = color
+            self.shadow_buffer.write_pixel(x, y, color[0], color[1], color[2])
+
+    def draw_to(self, dst: FrameBufferSim, pos_x: int, pos_y: int) -> dict:
+        """Draw window to destination buffer: fast line-by-line copy if opaque, else pixel-by-pixel."""
+        if self.transparent_color is None:
+            stats = dst.copy(pos_x, pos_y, self.shadow_buffer)
+            stats["mode"] = "memcpy"
+            return stats
+        else:
+            pixels_written = 0
+            tc = self.transparent_color
+            for y in range(self.height):
+                for x in range(self.width):
+                    c = self.data[y][x]
+                    if c != tc:
+                        dst.write_pixel(pos_x + x, pos_y + y, c[0], c[1], c[2])
+                        pixels_written += 1
+            return {"mode": "pixel_by_pixel", "pixels_written": pixels_written, "lines_copied": 0, "bytes_copied": pixels_written * 4, "clipped": False}
+
+
+class LayerCompositingSpeedupSim:
+    """Comparative performance model analyzing pixel-by-pixel vs line-by-line memcpy compositing."""
+
+    @staticmethod
+    def estimate_cycles(width: int, height: int, has_transparency: bool) -> dict:
+        pixels = width * height
+        bytes_total = pixels * 4
+        # Pixel-by-pixel: vtable dispatch + bounds check + coordinate math + MMIO write: ~50 CPU cycles/px
+        slow_cycles = pixels * 50
+
+        if has_transparency:
+            fast_cycles = pixels * 45
+            mode = "transparent_pixel"
+        else:
+            # Line memcpy: AVX2/SSE 32 bytes/cycle -> ~0.15 cycles/byte + per-line overhead ~25 cycles
+            lines = height
+            memcpy_cycles = int(bytes_total * 0.15) + (lines * 25)
+            fast_cycles = max(memcpy_cycles, 100)
+            mode = "line_memcpy"
+
+        speedup = slow_cycles / max(fast_cycles, 1)
+        return {
+            "pixels": pixels,
+            "bytes": bytes_total,
+            "slow_cycles": slow_cycles,
+            "fast_cycles": fast_cycles,
+            "speedup": speedup,
+            "mode": mode,
+        }
+
+    @staticmethod
+    def benchmark_multi_layer(screen_w: int = 1024, screen_h: int = 768) -> dict:
+        """Benchmark compositing with Desktop (opaque) + Mouse (transparent)."""
+        desktop = LayerCompositingSpeedupSim.estimate_cycles(screen_w, screen_h, False)
+        mouse = LayerCompositingSpeedupSim.estimate_cycles(16, 24, True)
+
+        total_slow = desktop["slow_cycles"] + mouse["slow_cycles"]
+        total_fast = desktop["fast_cycles"] + mouse["fast_cycles"]
+        overall_speedup = total_slow / max(total_fast, 1)
+
+        return {
+            "desktop": desktop,
+            "mouse": mouse,
+            "total_slow_cycles": total_slow,
+            "total_fast_cycles": total_fast,
+            "overall_speedup": overall_speedup,
+        }
+
+
+def plot_fig9_13_framebuffer_shadow_buffer_architecture(
+    output_path: Path | str = "9/result/fig9_13_framebuffer_shadow_buffer_architecture.png",
+) -> Path:
+    """Figure 9.13: FrameBuffer & Shadow Buffer Architecture Diagram."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8.5))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: FrameBuffer & Window Dual Architecture
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("【A】FrameBuffer 構造体と Window::shadow_buffer_ のメモリ二重化",
+                  fontsize=11.5, fontweight="bold", color="#1565C0", pad=12)
+
+    boxes = [
+        ("LayerManager (レイヤマネージャ)\n画面描画の統括・レイヤスタック管理", 0.88, "#E3F2FD", "#1565C0"),
+        ("Layer (各表示層: 背景 / マウス / ウィンドウ)\npos_ (表示座標) + window_ (Window共有ポインタ)", 0.72, "#FFF3E0", "#E65100"),
+        ("Window クラス\ndata_ (PixelColor 2次元配列)\nshadow_buffer_ (FrameBuffer 実体)", 0.52, "#F3E5F5", "#6A1B9A"),
+        ("FrameBuffer クラス (新設)\nconfig_ (解像度・ストライド・PixelFormat)\nbuffer_ (オフスクリーン用 bytearray)\nwriter_ (FrameBufferWriter ポインタ)", 0.28, "#E8F5E9", "#2E7D32"),
+        ("VRAM / GOP Screen FrameBuffer\n物理アドレス上のハードウェア画面表示領域", 0.08, "#FFEBEE", "#C62828"),
+    ]
+
+    for title, y, face_col, edge_col in boxes:
+        rect = patches.FancyBboxPatch(
+            (0.10, y - 0.06), 0.80, 0.10,
+            boxstyle="round,pad=0.02,rounding_size=0.03",
+            facecolor=face_col, edgecolor=edge_col, linewidth=1.8
+        )
+        ax1.add_patch(rect)
+        ax1.text(0.50, y - 0.01, title, ha="center", va="center", fontsize=9.2, fontweight="bold", color="#212121")
+
+    # Connecting arrows
+    for y1, y2 in [(0.82, 0.76), (0.66, 0.58), (0.46, 0.34), (0.22, 0.14)]:
+        ax1.annotate("", xy=(0.50, y2), xytext=(0.50, y1),
+                     arrowprops=dict(arrowstyle="->", color="#37474F", lw=2.0))
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # Right: Opaque memcpy vs Transparent Pixel-by-Pixel Dual Path
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("【B】Window::DrawTo() の高速分岐ロジック (Fast Path vs Slow Path)",
+                  fontsize=11.5, fontweight="bold", color="#2E7D32", pad=12)
+
+    decision_box = patches.FancyBboxPatch(
+        (0.15, 0.75), 0.70, 0.12,
+        boxstyle="round,pad=0.02,rounding_size=0.03",
+        facecolor="#FFFDE7", edgecolor="#F57F17", linewidth=2.0
+    )
+    ax2.add_patch(decision_box)
+    ax2.text(0.50, 0.81, "transparent_color_ (透過色) は設定されているか？\nif (!transparent_color_)",
+             ha="center", va="center", fontsize=10.0, fontweight="bold", color="#E65100")
+
+    # Fast Path (No transparency: e.g. Desktop Background)
+    fast_box = patches.FancyBboxPatch(
+        (0.05, 0.35), 0.42, 0.28,
+        boxstyle="round,pad=0.02,rounding_size=0.03",
+        facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=2.0
+    )
+    ax2.add_patch(fast_box)
+    fast_text = (
+        "【高速パス (Fast Path)】\n"
+        "透過色なし (Desktop / 背景)\n\n"
+        "dst.Copy(pos, shadow_buffer_)\n"
+        "■ ライン単位の memcpy 転送\n"
+        "■ 1行 1024×4 = 4,096 Bytes\n"
+        "■ AVX2 / SIMD 命令で一括転送\n"
+        "■ 仮想関数呼出ゼロ / 爆速"
+    )
+    ax2.text(0.26, 0.49, fast_text, ha="center", va="center", fontsize=8.8, fontweight="bold", color="#1B5E20")
+
+    # Slow Path (Has transparency: e.g. Mouse Cursor)
+    slow_box = patches.FancyBboxPatch(
+        (0.53, 0.35), 0.42, 0.28,
+        boxstyle="round,pad=0.02,rounding_size=0.03",
+        facecolor="#FFF3E0", edgecolor="#E65100", linewidth=2.0
+    )
+    ax2.add_patch(slow_box)
+    slow_text = (
+        "【通常パス (Transparent)】\n"
+        "透過色あり (MouseCursor 等)\n\n"
+        "writer.Write(pos + {x,y}, c)\n"
+        "■ 1ピクセルずつ透過色判定\n"
+        "■ c != tc のピクセルのみ描画\n"
+        "■ マウスは 16×24 = 384 px\n"
+        "■ ピクセル数が僅小なため超軽量"
+    )
+    ax2.text(0.74, 0.49, slow_text, ha="center", va="center", fontsize=8.8, fontweight="bold", color="#BF360C")
+
+    # Decision branches
+    ax2.annotate("NO (透過色なし)\n最頻出パス", xy=(0.26, 0.64), xytext=(0.35, 0.75),
+                 arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=2.2),
+                 fontsize=9.2, fontweight="bold", color="#2E7D32", ha="center")
+    ax2.annotate("YES (透過色あり)\nマウスカーソル等", xy=(0.74, 0.64), xytext=(0.65, 0.75),
+                 arrowprops=dict(arrowstyle="->", color="#E65100", lw=2.2),
+                 fontsize=9.2, fontweight="bold", color="#E65100", ha="center")
+
+    # Summary box at bottom
+    summary_box = patches.FancyBboxPatch(
+        (0.08, 0.08), 0.84, 0.16,
+        boxstyle="round,pad=0.02,rounding_size=0.03",
+        facecolor="#EDE7F6", edgecolor="#512DA8", linewidth=1.8
+    )
+    ax2.add_patch(summary_box)
+    summary_text = (
+        "【高速化の設計意図 (Design Rationale)】\n"
+        "全画面の99.9%を占める背景描画を高速 memcpy に置換し、\n"
+        "透過色処理が必要なマウスカーソル（0.05%未満）のみ個別描画とすることで、全体の描画負荷を劇的に削減！"
+    )
+    ax2.text(0.50, 0.16, summary_text, ha="center", va="center", fontsize=9.2, fontweight="bold", color="#311B92")
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    plt.suptitle("Figure 9.13: FrameBuffer & Window シャドウバッファアーキテクチャと DrawTo 高速分岐設計",
+                 fontsize=12.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_14_framebuffer_copy_clipping_and_memcpy_math(
+    output_path: Path | str = "9/result/fig9_14_framebuffer_copy_clipping_and_memcpy_math.png",
+) -> Path:
+    """Figure 9.14: FrameBuffer::Copy Clipping Coordinates and Line-by-Line memcpy Math."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8.5))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: 2D Geometric Clipping Box
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("【A】FrameBuffer::Copy() における 2次元座標クリッピング計算",
+                  fontsize=11.5, fontweight="bold", color="#1565C0", pad=12)
+
+    # Destination screen boundary (0, 0) to (1024, 768)
+    screen_rect = patches.Rectangle((0, 0), 1024, 768, linewidth=2.5, edgecolor="#1565C0", facecolor="#E3F2FD", alpha=0.5, label="転送先画面 (Destination Screen)")
+    ax1.add_patch(screen_rect)
+
+    # Partially clipped source window at (-100, 200) with size (400, 300)
+    win_rect = patches.Rectangle((-100, 200), 400, 300, linewidth=2.0, edgecolor="#D32F2F", facecolor="#FFCDD2", alpha=0.4, linestyle="--", label="転送元ウィンドウ (Source Window / はみ出し)")
+    ax1.add_patch(win_rect)
+
+    # Actual clipped copy region: (0, 200) to (300, 500)
+    clip_rect = patches.Rectangle((0, 200), 300, 300, linewidth=2.5, edgecolor="#2E7D32", facecolor="#C8E6C9", alpha=0.8, label="実コピー領域 (Clipped Intersection)")
+    ax1.add_patch(clip_rect)
+
+    # Annotations of coordinate math
+    ax1.scatter([0, 300], [200, 500], color="#2E7D32", s=60, zorder=5)
+    ax1.text(10, 215, "copy_start = (max(pos.x, 0), max(pos.y, 0))\n= (0, 200)", fontsize=8.8, fontweight="bold", color="#1B5E20")
+    ax1.text(310, 485, "copy_end = (min(pos.x+w, dst_w), min(pos.y+h, dst_h))\n= (300, 500)", fontsize=8.8, fontweight="bold", color="#1B5E20")
+
+    ax1.set_xlim(-200, 1150)
+    ax1.set_ylim(-50, 850)
+    ax1.set_xlabel("X座標 (Pixels)", fontsize=10, fontweight="bold")
+    ax1.set_ylabel("Y座標 (Pixels)", fontsize=10, fontweight="bold")
+    ax1.legend(loc="upper right", framealpha=0.9)
+    ax1.grid(True, linestyle=":", alpha=0.6)
+
+    # Right: Scanline Memory Layout & memcpy Math
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("【B】スキャンラインメモリ配置とライン一括 memcpy のポインタ演算",
+                  fontsize=11.5, fontweight="bold", color="#2E7D32", pad=12)
+
+    # Diagram showing scanlines
+    lines_info = [
+        ("Line 0 (dy = 0)", 0.80, "dst_buf = base + bpp * (stride * dst_y + start_x)", "src_buf = src_base + bpp * (src_stride * src_y + src_x)"),
+        ("Line 1 (dy = 1)", 0.65, "dst_buf += bpp * dst_stride", "src_buf += bpp * src_stride"),
+        ("Line 2 (dy = 2)", 0.50, "dst_buf += bpp * dst_stride", "src_buf += bpp * src_stride"),
+        ("Line ... (dy = k)", 0.35, "...", "..."),
+        ("Line N-1 (Last)", 0.20, "memcpy(dst_buf, src_buf, bytes_per_copy_line)", "1行あたり一括連続メモリ転送"),
+    ]
+
+    for line_name, y, dst_text, src_text in lines_info:
+        bar_dst = patches.FancyBboxPatch((0.05, y - 0.04), 0.42, 0.08, boxstyle="round,pad=0.01", facecolor="#E3F2FD", edgecolor="#1565C0", linewidth=1.5)
+        bar_src = patches.FancyBboxPatch((0.53, y - 0.04), 0.42, 0.08, boxstyle="round,pad=0.01", facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.5)
+        ax2.add_patch(bar_dst)
+        ax2.add_patch(bar_src)
+        ax2.text(0.26, y, f"{line_name} (Dst VRAM)\n{dst_text}", ha="center", va="center", fontsize=8.0, fontweight="bold", color="#0D47A1")
+        ax2.text(0.74, y, f"{line_name} (Src Buffer)\n{src_text}", ha="center", va="center", fontsize=8.0, fontweight="bold", color="#1B5E20")
+
+        # Arrow indicating memcpy
+        ax2.annotate("", xy=(0.48, y), xytext=(0.53, y),
+                     arrowprops=dict(arrowstyle="<-", color="#D32F2F", lw=1.8))
+
+    # Formula explanation at bottom
+    math_box = patches.FancyBboxPatch(
+        (0.05, 0.03), 0.90, 0.11,
+        boxstyle="round,pad=0.02,rounding_size=0.02",
+        facecolor="#FFF9C4", edgecolor="#FBC02D", linewidth=1.6
+    )
+    ax2.add_patch(math_box)
+    math_text = (
+        "bytes_per_copy_line = bytes_per_pixel × (copy_end_dst_x - copy_start_dst_x)\n"
+        "dst_offset = bytes_per_pixel × (pixels_per_scan_line × dst_y + copy_start_dst_x)"
+    )
+    ax2.text(0.50, 0.085, math_text, ha="center", va="center", fontsize=8.8, fontweight="bold", color="#7F0000")
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    plt.suptitle("Figure 9.14: FrameBuffer::Copy() のクリッピング幾何数理とライン一括 memcpy のポインタ導出",
+                 fontsize=12.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_15_compositing_speedup_benchmark_comparison(
+    output_path: Path | str = "9/result/fig9_15_compositing_speedup_benchmark_comparison.png",
+) -> Path:
+    """Figure 9.15: Compositing Speedup Benchmark Comparison (Pixel-by-Pixel vs memcpy)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8.5))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: Cycles Comparison (Log Scale)
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("【A】描画方式別の消費 CPU サイクル数比較 (対数スケール)",
+                  fontsize=11.5, fontweight="bold", color="#1565C0", pad=12)
+
+    targets = [
+        ("全画面背景\n(1024x768)\n3.14 MB", 1024, 768, False),
+        ("中型ウィンドウ\n(400x300)\n480 KB", 400, 300, False),
+        ("コンソール\n(640x400)\n1.02 MB", 640, 400, False),
+    ]
+
+    names = [t[0] for t in targets]
+    slow_cycles = []
+    fast_cycles = []
+    speedups = []
+
+    for name, w, h, trans in targets:
+        est = LayerCompositingSpeedupSim.estimate_cycles(w, h, trans)
+        slow_cycles.append(est["slow_cycles"])
+        fast_cycles.append(est["fast_cycles"])
+        speedups.append(est["speedup"])
+
+    x = np.arange(len(names))
+    width = 0.35
+
+    b1 = ax1.bar(x - width / 2, slow_cycles, width, label="PixelWriter 個別描画 (9.4節)", color="#EF5350", edgecolor="#C62828")
+    b2 = ax1.bar(x + width / 2, fast_cycles, width, label="FrameBuffer::Copy memcpy (9.5節)", color="#66BB6A", edgecolor="#2E7D32")
+
+    ax1.set_yscale("log")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(names, fontsize=9.2)
+    ax1.set_ylabel("消費 CPU サイクル数 (Cycles / Log Scale)", fontsize=10, fontweight="bold")
+    ax1.legend(loc="upper right", framealpha=0.9)
+
+    for i, bar in enumerate(b1):
+        y = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width() / 2, y * 1.2, f"{y:,.0f}", ha="center", fontsize=8.0, fontweight="bold", color="#C62828")
+    for i, bar in enumerate(b2):
+        y = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width() / 2, y * 1.2, f"{y:,.0f}\n({speedups[i]:.0f}x 高速)", ha="center", fontsize=8.0, fontweight="bold", color="#2E7D32")
+
+    # Right: Compositing Time & Frame Latency Breakdown
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("【B】マウス操作時の再描画所要時間 (ms) と最大フレームレート (FPS)",
+                  fontsize=11.5, fontweight="bold", color="#2E7D32", pad=12)
+
+    # Assume 2.5 GHz CPU -> 2,500,000 cycles = 1 ms
+    freq_khz = 2_500_000
+    multi_res = LayerCompositingSpeedupSim.benchmark_multi_layer(1024, 768)
+
+    slow_time_ms = multi_res["total_slow_cycles"] / freq_khz
+    fast_time_ms = multi_res["total_fast_cycles"] / freq_khz
+
+    slow_fps = min(1000.0 / max(slow_time_ms, 0.001), 10000.0)
+    fast_fps = min(1000.0 / max(fast_time_ms, 0.001), 10000.0)
+
+    cats = ["9.4節 個別描画方式\n(Pixel-by-Pixel)", "9.5節 memcpy高速化\n(Line-by-Line Copy)"]
+    times = [slow_time_ms, fast_time_ms]
+    bar_cols = ["#EF5350", "#42A5F5"]
+    bar_edges = ["#C62828", "#1565C0"]
+
+    bars = ax2.bar(cats, times, color=bar_cols, edgecolor=bar_edges, width=0.45)
+    ax2.set_ylabel("描画所要時間 (ミリ秒 / ms)", fontsize=10, fontweight="bold")
+    ax2.set_ylim(0, max(times) * 1.25)
+
+    ax2.axhline(16.6, color="#F57F17", linestyle="--", linewidth=1.8, label="60 FPS 許容限界 (16.6 ms)")
+    ax2.legend(loc="upper right", framealpha=0.9)
+
+    ax2.text(0, times[0] + 0.5, f"{times[0]:.2f} ms\n(~{slow_fps:.1f} FPS)\n※カクつき・遅延発生", ha="center", fontsize=9.2, fontweight="bold", color="#C62828")
+    ax2.text(1, times[1] + 0.5, f"{times[1]:.3f} ms\n(~{fast_fps:,.0f} FPS)\n※極限の滑らかさ", ha="center", fontsize=9.2, fontweight="bold", color="#0D47A1")
+
+    ax2.annotate(f"約 {multi_res['overall_speedup']:.0f} 倍の描画高速化！\nマウス追従ラグ完全解消",
+                 xy=(1, times[1] + 0.2), xytext=(0.45, times[0] * 0.6),
+                 arrowprops=dict(arrowstyle="->", color="#0D47A1", lw=2.2),
+                 fontsize=10.0, fontweight="bold", color="#0D47A1",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#E3F2FD", edgecolor="#1565C0"))
+
+    plt.suptitle("Figure 9.15: 重ね合わせ処理高速化ベンチマーク（個別描画 vs ライン一括 memcpy）と性能改善効果",
+                 fontsize=12.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

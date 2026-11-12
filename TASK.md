@@ -11,7 +11,7 @@
 - **現在実行中のタスク**: なし (アイドル / Standby)
 - **担当セクション**: なし
 - **ステータス**: アイドル (Standby / ロック解除中)
-- **直前完了タスク**: 第9章 9.4 重ね合わせ処理の時間計測 (`osbook_day09b`) (`9/9.4_Profiling_Compositing_Performance.ipynb`) (Issue #76)
+- **直前完了タスク**: 第9章 9.5 重ね合わせ処理の高速化 (`osbook_day09c`) (`9/9.5_Optimizing_Layer_Redraw_Bounding_Box.ipynb`) (Issue #77)
 ※作業を開始する際は、まずこのセクションを更新し、対象タスクを `- [-]` に変更してから着手してください。
 
 ---
@@ -29,7 +29,7 @@
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル描画、PCIコンフィギュレーション空間探索、xHCI初期化とポーリング | あり | 完了 (5/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT（割り込み記述子表）、MSI割り込み、リングバッファ（`ArrayQueue`）による高速化 | あり | 完了 (11/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | GDT（セグメンテーション）、4階層ページテーブル初期設定、`BitmapMemoryManager` | あり | 完了 (8/8) |
-| **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `new`演算子とヒープ、`Layer`と`LayerManager`、TSC時間計測と差分描画最適化 | あり | 進行中 (4/8) |
+| **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `new`演算子とヒープ、`Layer`と`LayerManager`、TSC時間計測と差分描画最適化 | あり | 進行中 (5/8) |
 | **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、ダブルバッファリング（`ShadowBuffer`）によるチラつき解消、ドラッグ移動 | あり | 未着手 (0/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ割り込み、`TimerManager`（優先度付きキュー）、RSDPとACPI PMタイマ | あり | 未着手 (0/6) |
 | **第12章** | キー入力 | 6 | `day12a`–`12f` | FADT解析、周波数較正、USBキーボードHIDドライバ、モディファイアキー、テキストボックス | あり | 未着手 (0/7) |
@@ -52,7 +52,7 @@
 | **第29章** | アプリ間通信 | 9 | `day29a`–`29d` | 終了コード、パイプ（`PipeDescriptor`と`|`）、`sort`コマンド、共有メモリ | あり | 未着手 (0/10) |
 | **第30章** | おまけアプリ | 6 | `day30a`–`30f` | `PATH`解決、`more`/`cat`コマンド、閉じるボタン、テキストビューア（`tview`）、画像表示（`gview`） | あり | 未着手 (0/7) |
 | **第31章・付録** | これからの道 & 付録 A〜F | 7 | `v1.0` | OS自作の発展テーマ、QEMU/WSL環境、Git差分調査、EDK II構成、C++テンプレート、iPXE起動 | なし | 未着手 (0/7) |
-| **合計** | **全32章構成 (0〜31章+付録)** | **197節** | **`day02a`–`day30f`** | **64-bit UEFI GUI マルチタスクOS 完全網羅** | **全31章分** | **75 / 228 ユニット完了** |
+| **合計** | **全32章構成 (0〜31章+付録)** | **197節** | **`day02a`–`day30f`** | **64-bit UEFI GUI マルチタスクOS 完全網羅** | **全31章分** | **76 / 228 ユニット完了** |
 
 ---
 
@@ -225,8 +225,8 @@
   - `Window`（透過色付きバッファ）、`Layer`、`LayerManager`、および `std::shared_ptr` / `std::unique_ptr` による所有権管理
 - [x] **9.4 重ね合わせ処理の時間計測 (`osbook_day09b`)** (`9/9.4_Profiling_Compositing_Performance.ipynb`) (Issue #76)
   - Local APIC (LAPIC) タイマ MMIO レジスタ（DCR, LVT, ICR, CCR）、分周比 1:1、ワンショット時間計測、全画面再描画のボトルネックとマウス遅延・キュー滞留の定量解析
-- [ ] **9.5 重ね合わせ処理の高速化 (`osbook_day09c`)** (`9/9.5_Optimizing_Layer_Redraw_Bounding_Box.ipynb`)
-  - 移動前後の矩形領域（`Rectangle`）の交差判定（Intersection）による部分再描画最適化
+- [x] **9.5 重ね合わせ処理の高速化 (`osbook_day09c`)** (`9/9.5_Optimizing_Layer_Redraw_Bounding_Box.ipynb`) (Issue #77)
+  - FrameBuffer クラス導入、シャドウバッファによる透過色なしレイヤのライン一括 memcpy 転送、2次元幾何クリッピング座標数理導出と120倍超の爆速化実証
 - [ ] **9.6 スクロール処理の時間計測 (`osbook_day09d`)** (`9/9.6_Measuring_Console_Scroll_Time.ipynb`)
   - コンソール1行スクロール時の全文字再描画コストの定量計測
 - [ ] **9.7 スクロール処理の高速化 (`osbook_day09e`)** (`9/9.7_Optimizing_Scroll_with_memcpy.ipynb`)

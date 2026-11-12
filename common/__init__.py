@@ -521,6 +521,15 @@ from common.os_sim import (
     plot_fig9_10_lapic_timer_architecture_and_mmio_registers,
     plot_fig9_11_full_redraw_overhead_and_mouse_latency_timeline,
     plot_fig9_12_compositing_performance_profiling_and_complexity_analysis,
+    PixelFormatSim,
+    bits_per_pixel,
+    LayerFrameBufferConfigSim,
+    FrameBufferSim,
+    OptimizedWindowSim,
+    LayerCompositingSpeedupSim,
+    plot_fig9_13_framebuffer_shadow_buffer_architecture,
+    plot_fig9_14_framebuffer_copy_clipping_and_memcpy_math,
+    plot_fig9_15_compositing_speedup_benchmark_comparison,
 )
 
 __all__ = [
@@ -1044,4 +1053,13 @@ __all__ = [
     "plot_fig9_10_lapic_timer_architecture_and_mmio_registers",
     "plot_fig9_11_full_redraw_overhead_and_mouse_latency_timeline",
     "plot_fig9_12_compositing_performance_profiling_and_complexity_analysis",
+    "PixelFormatSim",
+    "bits_per_pixel",
+    "LayerFrameBufferConfigSim",
+    "FrameBufferSim",
+    "OptimizedWindowSim",
+    "LayerCompositingSpeedupSim",
+    "plot_fig9_13_framebuffer_shadow_buffer_architecture",
+    "plot_fig9_14_framebuffer_copy_clipping_and_memcpy_math",
+    "plot_fig9_15_compositing_speedup_benchmark_comparison",
 ]

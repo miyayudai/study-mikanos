@@ -240,6 +240,9 @@ add_test(NAME test_ch09_window_layer COMMAND ch09_window_layer)
 add_executable(ch09_profiling_compositing src/ch09/os_chapter9_profiling_compositing.cpp)
 add_test(NAME test_ch09_profiling_compositing COMMAND ch09_profiling_compositing)
 
+add_executable(ch09_optimizing_layer_redraw src/ch09/os_chapter9_optimizing_layer_redraw.cpp)
+add_test(NAME test_ch09_optimizing_layer_redraw COMMAND ch09_optimizing_layer_redraw)
+
 
 
 
