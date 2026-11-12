@@ -506,6 +506,15 @@ from common.os_sim import (
     plot_fig9_04_traditional_unix_heap_vs_mikanos_heap,
     plot_fig9_05_dynamic_allocation_pipeline_new_to_sbrk,
     plot_fig9_06_sbrk_program_break_transition_and_fragmentation,
+    SmartPointerType,
+    ControlBlockSim,
+    SharedPtrSim,
+    UniquePtrSim,
+    LayerStackTransitionLogger,
+    MikanLayerArchitectureSim,
+    plot_fig9_07_window_layer_layermanager_architecture,
+    plot_fig9_08_smart_pointer_ownership_and_control_block,
+    plot_fig9_09_layer_updown_stack_manipulation_and_compositing,
 )
 
 __all__ = [
@@ -1014,4 +1023,13 @@ __all__ = [
     "plot_fig9_04_traditional_unix_heap_vs_mikanos_heap",
     "plot_fig9_05_dynamic_allocation_pipeline_new_to_sbrk",
     "plot_fig9_06_sbrk_program_break_transition_and_fragmentation",
+    "SmartPointerType",
+    "ControlBlockSim",
+    "SharedPtrSim",
+    "UniquePtrSim",
+    "LayerStackTransitionLogger",
+    "MikanLayerArchitectureSim",
+    "plot_fig9_07_window_layer_layermanager_architecture",
+    "plot_fig9_08_smart_pointer_ownership_and_control_block",
+    "plot_fig9_09_layer_updown_stack_manipulation_and_compositing",
 ]

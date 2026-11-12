@@ -234,6 +234,9 @@ add_test(NAME test_ch09_layer_intro COMMAND ch09_layer_intro --test)
 add_executable(ch09_heap_sbrk src/ch09/os_chapter9_heap_sbrk.cpp)
 add_test(NAME test_ch09_heap_sbrk COMMAND ch09_heap_sbrk --test)
 
+add_executable(ch09_window_layer src/ch09/os_chapter9_window_layer.cpp)
+add_test(NAME test_ch09_window_layer COMMAND ch09_window_layer)
+
 
 
 

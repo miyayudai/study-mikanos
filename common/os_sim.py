@@ -33798,3 +33798,575 @@ def plot_fig9_06_sbrk_program_break_transition_and_fragmentation(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 9.3: Window, Layer, LayerManager & Smart Pointer Ownership Simulation
+# ==============================================================================
+
+class SmartPointerType(Enum):
+    """C++ Smart pointer ownership categorization."""
+    UNIQUE_PTR = "std::unique_ptr<T>"
+    SHARED_PTR = "std::shared_ptr<T>"
+    RAW_POINTER = "T* (Non-owning reference)"
+
+
+class ControlBlockSim:
+    """Simulation of std::shared_ptr Control Block in C++ standard library.
+
+    A control block holds:
+    - strong_count (use_count): Number of std::shared_ptr pointing to the managed object.
+    - weak_count: Number of std::weak_ptr observing the managed object plus 1 if strong_count > 0.
+    - managed_id: Identifier of the managed object.
+    - custom_deleter: Flag indicating if a custom deleter was provided.
+    - is_alive: Whether the managed object has been destroyed.
+    """
+
+    def __init__(self, managed_id: str, custom_deleter: bool = False) -> None:
+        self.managed_id = managed_id
+        self.strong_count = 1
+        self.weak_count = 0
+        self.custom_deleter = custom_deleter
+        self.is_alive = True
+        self.history: list[dict[str, Any]] = [
+            {"action": "create", "strong": 1, "weak": 0, "alive": True}
+        ]
+
+    def increment_strong(self) -> int:
+        if not self.is_alive:
+            raise RuntimeError(f"Cannot increment strong count on dead object {self.managed_id}")
+        self.strong_count += 1
+        self.history.append({"action": "increment_strong", "strong": self.strong_count, "weak": self.weak_count, "alive": self.is_alive})
+        return self.strong_count
+
+    def decrement_strong(self) -> int:
+        if self.strong_count <= 0:
+            raise RuntimeError(f"Double decrement on object {self.managed_id}")
+        self.strong_count -= 1
+        if self.strong_count == 0:
+            self.is_alive = False
+        self.history.append({"action": "decrement_strong", "strong": self.strong_count, "weak": self.weak_count, "alive": self.is_alive})
+        return self.strong_count
+
+    def increment_weak(self) -> int:
+        self.weak_count += 1
+        self.history.append({"action": "increment_weak", "strong": self.strong_count, "weak": self.weak_count, "alive": self.is_alive})
+        return self.weak_count
+
+    def decrement_weak(self) -> int:
+        if self.weak_count <= 0:
+            raise RuntimeError(f"Weak count underflow on object {self.managed_id}")
+        self.weak_count -= 1
+        self.history.append({"action": "decrement_weak", "strong": self.strong_count, "weak": self.weak_count, "alive": self.is_alive})
+        return self.weak_count
+
+
+class SharedPtrSim:
+    """Simulation of std::shared_ptr<T> ownership and reference counting."""
+
+    def __init__(self, target: Any, control_block: Optional[ControlBlockSim] = None, name: str = "") -> None:
+        self.name = name
+        self.target = target
+        if target is not None:
+            if control_block is None:
+                self.cb: Optional[ControlBlockSim] = ControlBlockSim(managed_id=f"Obj@{id(target):x}")
+            else:
+                self.cb = control_block
+        else:
+            self.cb = None
+
+    def use_count(self) -> int:
+        return self.cb.strong_count if self.cb else 0
+
+    def get(self) -> Optional[Any]:
+        if self.cb and self.cb.is_alive:
+            return self.target
+        return None
+
+    def is_valid(self) -> bool:
+        return self.cb is not None and self.cb.is_alive
+
+    def clone(self, new_name: str = "") -> "SharedPtrSim":
+        """Simulate copy constructor: shared_ptr(const shared_ptr&)."""
+        if self.cb is not None and self.cb.is_alive:
+            self.cb.increment_strong()
+            return SharedPtrSim(self.target, self.cb, name=new_name)
+        return SharedPtrSim(None, None, name=new_name)
+
+    def reset(self) -> None:
+        """Simulate reset(): decrement reference count and detach."""
+        if self.cb is not None:
+            self.cb.decrement_strong()
+            self.cb = None
+            self.target = None
+
+
+class UniquePtrSim:
+    """Simulation of std::unique_ptr<T> exclusive ownership."""
+
+    def __init__(self, target: Any, name: str = "") -> None:
+        self.name = name
+        self.target = target
+        self.is_moved = False
+
+    def get(self) -> Optional[Any]:
+        if self.is_moved:
+            return None
+        return self.target
+
+    def is_valid(self) -> bool:
+        return not self.is_moved and self.target is not None
+
+    def move_to(self, new_name: str = "") -> "UniquePtrSim":
+        """Simulate std::move(unique_ptr): transfer exclusive ownership."""
+        if self.is_moved or self.target is None:
+            raise RuntimeError(f"Cannot move from moved/empty unique_ptr '{self.name}'")
+        new_ptr = UniquePtrSim(self.target, name=new_name)
+        self.target = None
+        self.is_moved = True
+        return new_ptr
+
+    def reset(self, new_target: Any = None) -> None:
+        self.target = new_target
+        self.is_moved = False
+
+
+class LayerStackTransitionLogger:
+    """Logs detailed step-by-step transition of LayerManager UpDown operations."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    def log(
+        self,
+        action: str,
+        layer_id: int,
+        requested_height: int,
+        clamped_height: int,
+        old_index: Optional[int],
+        new_index: Optional[int],
+        stack_before: list[int],
+        stack_after: list[int],
+    ) -> None:
+        self.events.append({
+            "action": action,
+            "layer_id": layer_id,
+            "requested_height": requested_height,
+            "clamped_height": clamped_height,
+            "old_index": old_index,
+            "new_index": new_index,
+            "stack_before": list(stack_before),
+            "stack_after": list(stack_after),
+        })
+
+
+class MikanLayerArchitectureSim:
+    """High-level architectural simulator for Section 9.3.
+
+    Demonstrates:
+    1. Window abstraction:
+       - Pixel buffer storage (data_[height][width])
+       - WindowWriter (inner class implementing PixelWriter interface)
+       - Transparent color (optional<PixelColor> color keying)
+    2. Layer abstraction:
+       - Layer ID, 2D coordinates (pos_), shared Window reference (std::shared_ptr<Window>)
+       - Separation of coordinates and redraw (Move vs Draw)
+    3. LayerManager:
+       - Exclusive ownership of Layer instances (std::vector<std::unique_ptr<Layer>>)
+       - Z-order rendering stack of non-owning references (std::vector<Layer*>)
+       - UpDown() height management with clipping and negative Hide()
+       - Full screen compositing via Painter's algorithm
+    """
+
+    def __init__(self, screen_w: int = 80, screen_h: int = 50, bg_color: PixelColorSim = PixelColorSim(45, 118, 237)) -> None:
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        self.bg_color = bg_color
+        self.manager = LayerManagerSim(screen_w, screen_h, bg_color)
+        self.logger = LayerStackTransitionLogger()
+        self.shared_windows: dict[str, SharedPtrSim] = {}
+        self.unique_layers: dict[int, UniquePtrSim] = {}
+
+    def create_desktop_environment(self) -> dict[str, Any]:
+        """Set up standard MikanOS desktop environment with background and cursor."""
+        # 1. Background Window & Layer
+        bg_win = WindowSim(self.screen_w, self.screen_h, self.bg_color)
+        # Draw a simulated taskbar at bottom
+        for y in range(self.screen_h - 10, self.screen_h):
+            for x in range(self.screen_w):
+                bg_win.write(x, y, PixelColorSim(1, 8, 17))
+        # Draw a simulated start button
+        for y in range(self.screen_h - 8, self.screen_h - 2):
+            for x in range(2, 14):
+                bg_win.write(x, y, PixelColorSim(80, 80, 80))
+
+        bg_shared = SharedPtrSim(bg_win, name="bgwindow_shared")
+        self.shared_windows["background"] = bg_shared
+
+        bg_layer = self.manager.new_layer()
+        bg_layer.set_window(bg_win).move(Vector2DSim(0, 0))
+        self.unique_layers[bg_layer.id] = UniquePtrSim(bg_layer, name=f"Layer_{bg_layer.id}")
+
+        # 2. Mouse Cursor Window & Layer with transparency
+        cursor_trans = PixelColorSim(99, 99, 99)
+        cursor_fg = PixelColorSim(0, 0, 0)
+        cursor_border = PixelColorSim(255, 255, 255)
+        cursor_win = WindowSim(8, 8, fill_color=cursor_trans)
+        cursor_win.set_transparent_color(cursor_trans)
+
+        # Draw a small 8x8 mouse cursor arrow
+        for y in range(8):
+            for x in range(y + 1):
+                if x == 0 or x == y or y == 7:
+                    cursor_win.write(x, y, cursor_border)
+                else:
+                    cursor_win.write(x, y, cursor_fg)
+
+        cur_shared = SharedPtrSim(cursor_win, name="mouse_window_shared")
+        self.shared_windows["cursor"] = cur_shared
+
+        cur_layer = self.manager.new_layer()
+        cur_layer.set_window(cursor_win).move(Vector2DSim(20, 15))
+        self.unique_layers[cur_layer.id] = UniquePtrSim(cur_layer, name=f"Layer_{cur_layer.id}")
+
+        # Initial UpDown
+        stack_before = list(self.manager.layer_stack)
+        self.manager.up_down(bg_layer.id, 0)
+        self.logger.log("initial_bg", bg_layer.id, 0, 0, None, 0, stack_before, self.manager.layer_stack)
+
+        stack_before = list(self.manager.layer_stack)
+        self.manager.up_down(cur_layer.id, 1)
+        self.logger.log("initial_cursor", cur_layer.id, 1, 1, None, 1, stack_before, self.manager.layer_stack)
+
+        self.manager.draw()
+
+        return {
+            "bg_layer_id": bg_layer.id,
+            "cursor_layer_id": cur_layer.id,
+            "stack": list(self.manager.layer_stack),
+            "layers_count": len(self.manager.layers),
+        }
+
+    def add_app_window(self, width: int, height: int, pos: Vector2DSim, title_color: PixelColorSim = PixelColorSim(200, 200, 200)) -> int:
+        """Create and add a mock application window layer."""
+        win = WindowSim(width, height, fill_color=PixelColorSim(240, 240, 240))
+        # Draw simulated title bar
+        for y in range(min(5, height)):
+            for x in range(width):
+                win.write(x, y, title_color)
+
+        shared = SharedPtrSim(win, name=f"app_window_{len(self.shared_windows)}")
+        self.shared_windows[f"app_{len(self.shared_windows)}"] = shared
+
+        layer = self.manager.new_layer()
+        layer.set_window(win).move(pos)
+        self.unique_layers[layer.id] = UniquePtrSim(layer, name=f"Layer_{layer.id}")
+
+        # Place right below cursor (top-most app)
+        target_height = len(self.manager.layer_stack) - 1
+        if target_height < 0:
+            target_height = 0
+
+        stack_before = list(self.manager.layer_stack)
+        self.manager.up_down(layer.id, target_height)
+        self.logger.log("add_app_window", layer.id, target_height, target_height, None, target_height, stack_before, self.manager.layer_stack)
+
+        self.manager.draw()
+        return layer.id
+
+
+def plot_fig9_07_window_layer_layermanager_architecture(
+    output_path: Path | str = "9/result/fig9_07_window_layer_layermanager_architecture.png",
+) -> Path:
+    """Figure 9.07: Three-Tier Architecture of Window, Layer, and LayerManager with C++ Ownership Semantics."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, ax = plt.subplots(figsize=(14, 8.5))
+    fig.patch.set_facecolor("#FAFAFA")
+    ax.set_facecolor("#FFFFFF")
+
+    # Draw Architecture Tiers:
+    # 1. LayerManager (Top Controller)
+    # 2. Layer (Z-coordinate and Position Wrapper)
+    # 3. Window (Pixel Buffer & Color Keying)
+    # 4. PixelWriter Interface & Hardware VRAM
+
+    # Tier 1: LayerManager Box
+    lm_box = FancyBboxPatch((0.05, 0.68), 0.90, 0.27, boxstyle="round,pad=0.02,rounding_size=0.03",
+                            facecolor="#E3F2FD", edgecolor="#1565C0", linewidth=2.0)
+    ax.add_patch(lm_box)
+    ax.text(0.08, 0.91, "LayerManager (全レイヤ統合制御・Z軸合成マネージャ)",
+            fontsize=12, fontweight="bold", color="#0D47A1")
+    ax.text(0.08, 0.85,
+            "・std::vector<std::unique_ptr<Layer>> layers_ : 全レイヤ実体の【排他的所有権 (Exclusive Ownership)】を保持\n"
+            "・std::vector<Layer*> layer_stack_ : 重なり順 (Z-order) の【非所有参照 (Non-owning Observer)】リスト\n"
+            "・NewLayer() : 新規レイヤID発行と所有権コンテナ登録 (emplace_back)\n"
+            "・UpDown(id, new_height) : layer_stack_ の並び替え・クリッピング・非表示 (Hide)\n"
+            "・Draw() : layer_stack_ を奥から手前へ巡回し、全レイヤを最終描画先へ合成",
+            fontsize=9.2, color="#1A237E", linespacing=1.4)
+
+    # Tier 2: Layer Boxes
+    colors_layer = [("#E8F5E9", "#2E7D32"), ("#FFF8E1", "#F57F17"), ("#FCE4EC", "#C2185B")]
+    layer_names = [
+        ("Layer 1 (Desktop Background)", "id_ = 1\npos_ = (0, 0)\nwindow_ -> bgwindow"),
+        ("Layer 2 (Terminal Window)", "id_ = 2\npos_ = (50, 40)\nwindow_ -> term_window"),
+        ("Layer 3 (Mouse Cursor)", "id_ = 3\npos_ = (200, 150)\nwindow_ -> mouse_window"),
+    ]
+    for i, ((name, desc), (bgc, fgc)) in enumerate(zip(layer_names, colors_layer)):
+        x_pos = 0.05 + i * 0.31
+        l_box = FancyBboxPatch((x_pos, 0.38), 0.28, 0.23, boxstyle="round,pad=0.02,rounding_size=0.02",
+                               facecolor=bgc, edgecolor=fgc, linewidth=1.8)
+        ax.add_patch(l_box)
+        ax.text(x_pos + 0.02, 0.57, name, fontsize=10, fontweight="bold", color=fgc)
+        ax.text(x_pos + 0.02, 0.44, desc, fontsize=8.8, color="#212121", linespacing=1.3)
+
+        # Arrow from LayerManager layers_ (unique_ptr)
+        ax.annotate("", xy=(x_pos + 0.14, 0.61), xytext=(x_pos + 0.14, 0.68),
+                    arrowprops=dict(arrowstyle="-|>", color="#1565C0", lw=2, linestyle="-"))
+        ax.text(x_pos + 0.15, 0.64, "unique_ptr", fontsize=7.8, color="#0D47A1", fontweight="bold")
+
+    # Tier 3: Window Boxes
+    colors_win = [("#C8E6C9", "#1B5E20"), ("#FFE082", "#E65100"), ("#F8BBD0", "#880E4F")]
+    win_names = [
+        ("Window (Desktop VRAM Buffer)", "data_[500][800]\ntransparent_color_ = nullopt\nWriter() -> WindowWriter"),
+        ("Window (Terminal Off-screen)", "data_[300][400]\ntransparent_color_ = nullopt\nWriter() -> WindowWriter"),
+        ("Window (Mouse Cursor Sprite)", "data_[16][16]\ntransparent_color_ = 0x999999\n(カラーキーイング透過)"),
+    ]
+    for i, ((name, desc), (bgc, fgc)) in enumerate(zip(win_names, colors_win)):
+        x_pos = 0.05 + i * 0.31
+        w_box = FancyBboxPatch((x_pos, 0.08), 0.28, 0.23, boxstyle="round,pad=0.02,rounding_size=0.02",
+                               facecolor=bgc, edgecolor=fgc, linewidth=1.8)
+        ax.add_patch(w_box)
+        ax.text(x_pos + 0.02, 0.27, name, fontsize=10, fontweight="bold", color=fgc)
+        ax.text(x_pos + 0.02, 0.14, desc, fontsize=8.5, color="#212121", linespacing=1.3)
+
+        # Arrow from Layer to Window (shared_ptr)
+        ax.annotate("", xy=(x_pos + 0.14, 0.31), xytext=(x_pos + 0.14, 0.38),
+                    arrowprops=dict(arrowstyle="-|>", color="#E65100", lw=2, linestyle="-"))
+        ax.text(x_pos + 0.15, 0.34, "shared_ptr", fontsize=7.8, color="#E65100", fontweight="bold")
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0, 1.0)
+    ax.axis("off")
+
+    plt.suptitle("Figure 9.07: MikanOS 第9章 重ね合わせ処理の3層アーキテクチャ (Window - Layer - LayerManager) と所有権モデル",
+                 fontsize=12, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_08_smart_pointer_ownership_and_control_block(
+    output_path: Path | str = "9/result/fig9_08_smart_pointer_ownership_and_control_block.png",
+) -> Path:
+    """Figure 9.08: Smart Pointer Ownership Semantics: std::unique_ptr vs std::shared_ptr Control Block."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7.5))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: std::unique_ptr (Exclusive Ownership)
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("【A】std::unique_ptr<Layer> : 排他的所有権 (Exclusive Ownership)",
+                  fontsize=11.5, fontweight="bold", color="#1565C0", pad=12)
+
+    # Box for unique_ptr variable
+    u_box = FancyBboxPatch((0.08, 0.65), 0.35, 0.22, boxstyle="round,pad=0.02,rounding_size=0.02",
+                           facecolor="#E3F2FD", edgecolor="#1565C0", linewidth=1.8)
+    ax1.add_patch(u_box)
+    ax1.text(0.12, 0.81, "std::unique_ptr<Layer>", fontsize=10.5, fontweight="bold", color="#0D47A1")
+    ax1.text(0.12, 0.71, "sizeof = 8 bytes\nポインタ1個のみ保持\nオーバーヘッド: 0 bytes", fontsize=9, color="#1A237E")
+
+    # Box for Managed Layer Object
+    obj_box = FancyBboxPatch((0.55, 0.65), 0.38, 0.22, boxstyle="round,pad=0.02,rounding_size=0.02",
+                            facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.8)
+    ax1.add_patch(obj_box)
+    ax1.text(0.58, 0.81, "Layer インスタンス (Heap)", fontsize=10.5, fontweight="bold", color="#1B5E20")
+    ax1.text(0.58, 0.71, "id_ = 1\npos_ = (x, y)\nwindow_ (shared_ptr)", fontsize=9, color="#2E7D32")
+
+    # Arrow
+    ax1.annotate("", xy=(0.55, 0.76), xytext=(0.43, 0.76),
+                 arrowprops=dict(arrowstyle="-|>", color="#1565C0", lw=2.5))
+    ax1.text(0.44, 0.80, "所有 (1対1)", fontsize=8.5, fontweight="bold", color="#1565C0")
+
+    # Rules explanation
+    rules_text = (
+        "【排他的所有権の特性と設計理由】\n"
+        "1. コピー不可 (delete コピーコンストラクタ・代入演算子)\n"
+        "   - レイヤ実体の二重解放 (Double Free) をコンパイル時に完全排除。\n"
+        "2. ムーブのみ許可 (std::move による所有権移譲)\n"
+        "   - LayerManager::NewLayer() 内で emplace_back(new Layer{id})\n"
+        "3. ゼロオーバーヘッド原則 (Zero-overhead Principle)\n"
+        "   - 生ポインタと完全に同等な 64ビット (8バイト) サイズ。\n"
+        "   - デストラクタで自動的に delete が実行され、リソースリーク皆無。"
+    )
+    r_box = FancyBboxPatch((0.08, 0.12), 0.85, 0.45, boxstyle="square,pad=0.02",
+                           facecolor="#F5F5F5", edgecolor="#BDBDBD", linewidth=1.2)
+    ax1.add_patch(r_box)
+    ax1.text(0.11, 0.51, rules_text, fontsize=9.2, color="#212121", linespacing=1.45)
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # Right: std::shared_ptr (Shared Ownership & Control Block)
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("【B】std::shared_ptr<Window> : 共有所有権と制御ブロック (Control Block)",
+                  fontsize=11.5, fontweight="bold", color="#E65100", pad=12)
+
+    # 2 shared_ptr boxes pointing to same control block
+    sp1_box = FancyBboxPatch((0.05, 0.72), 0.28, 0.18, boxstyle="round,pad=0.02,rounding_size=0.02",
+                            facecolor="#FFF3E0", edgecolor="#E65100", linewidth=1.5)
+    ax2.add_patch(sp1_box)
+    ax2.text(0.08, 0.84, "Layer::window_", fontsize=9.5, fontweight="bold", color="#BF360C")
+    ax2.text(0.08, 0.76, "shared_ptr 1\n(ptr + cb_ptr)", fontsize=8.5, color="#795548")
+
+    sp2_box = FancyBboxPatch((0.05, 0.48), 0.28, 0.18, boxstyle="round,pad=0.02,rounding_size=0.02",
+                            facecolor="#FFF3E0", edgecolor="#E65100", linewidth=1.5)
+    ax2.add_patch(sp2_box)
+    ax2.text(0.08, 0.60, "main::bgwindow", fontsize=9.5, fontweight="bold", color="#BF360C")
+    ax2.text(0.08, 0.52, "shared_ptr 2\n(ptr + cb_ptr)", fontsize=8.5, color="#795548")
+
+    # Control Block Box
+    cb_box = FancyBboxPatch((0.42, 0.48), 0.26, 0.42, boxstyle="round,pad=0.02,rounding_size=0.02",
+                           facecolor="#FBE9E7", edgecolor="#D84315", linewidth=2.0)
+    ax2.add_patch(cb_box)
+    ax2.text(0.44, 0.84, "制御ブロック\n(Control Block)", fontsize=9.5, fontweight="bold", color="#BF360C")
+    ax2.text(0.44, 0.52,
+             "強参照数 (strong):\n   use_count = 2\n"
+             "弱参照数 (weak):\n   weak_count = 0\n"
+             "アロケータ・デリータ",
+             fontsize=8.5, color="#D84315", linespacing=1.35)
+
+    # Managed Window Box
+    win_obj = FancyBboxPatch((0.74, 0.48), 0.22, 0.42, boxstyle="round,pad=0.02,rounding_size=0.02",
+                            facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=2.0)
+    ax2.add_patch(win_obj)
+    ax2.text(0.76, 0.84, "Window 実体", fontsize=10, fontweight="bold", color="#1B5E20")
+    ax2.text(0.76, 0.60, "data_\nwidth_\nheight_\nWindowWriter", fontsize=8.5, color="#2E7D32", linespacing=1.3)
+
+    # Arrows
+    ax2.annotate("", xy=(0.42, 0.81), xytext=(0.33, 0.81),
+                 arrowprops=dict(arrowstyle="-|>", color="#E65100", lw=2))
+    ax2.annotate("", xy=(0.42, 0.57), xytext=(0.33, 0.57),
+                 arrowprops=dict(arrowstyle="-|>", color="#E65100", lw=2))
+    ax2.annotate("", xy=(0.74, 0.69), xytext=(0.68, 0.69),
+                 arrowprops=dict(arrowstyle="-|>", color="#2E7D32", lw=2))
+
+    # Explanation text
+    sp_rules = (
+        "【共有所有権のライフサイクル】\n"
+        "1. std::make_shared による連続メモリ確保 (制御ブロックと実体を1回の割り当てで確保)\n"
+        "2. コピー時に strong_count がアトミックにインクリメント (+1)\n"
+        "3. スコープ離脱で strong_count がデクリメント (-1)。0 到達時に Window 自動破棄\n"
+        "4. MikanOS ではデスクトップ背景 Window を Layer と Console が共有参照"
+    )
+    cb_rules_box = FancyBboxPatch((0.05, 0.08), 0.91, 0.34, boxstyle="square,pad=0.02",
+                                  facecolor="#F5F5F5", edgecolor="#BDBDBD", linewidth=1.2)
+    ax2.add_patch(cb_rules_box)
+    ax2.text(0.08, 0.37, sp_rules, fontsize=9.0, color="#212121", linespacing=1.4)
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    plt.suptitle("Figure 9.08: C++ スマートポインタの所有権セマンティクス (std::unique_ptr vs std::shared_ptr 制御ブロック構造)",
+                 fontsize=12, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_09_layer_updown_stack_manipulation_and_compositing(
+    output_path: Path | str = "9/result/fig9_09_layer_updown_stack_manipulation_and_compositing.png",
+) -> Path:
+    """Figure 9.09: LayerManager::UpDown Stack Reordering Algorithm and Compositing Sequence."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8.0))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: UpDown Algorithm Flowchart
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("【A】LayerManager::UpDown(id, new_height) の制御フロー",
+                  fontsize=11.5, fontweight="bold", color="#0D47A1", pad=12)
+
+    steps = [
+        ("1. new_height < 0 の判定", "Yes -> Hide(id) 呼び出し (layer_stack_ から削除して即座に return)", "#FFEBEE", "#C62828"),
+        ("2. 上限クリッピング", "new_height > stack.size() なら new_height = stack.size() (最前面へ)", "#FFF8E1", "#F57F17"),
+        ("3. 現位置 old_pos の線形探索", "std::find(stack.begin(), stack.end(), layer) で現在の Z 軸高さを特定", "#E3F2FD", "#1565C0"),
+        ("4. 新規レイヤ (スタック未登録)", "old_pos == stack.end() なら stack.insert(new_pos, layer) で終了", "#E8F5E9", "#2E7D32"),
+        ("5. 既存レイヤの並び替え", "new_pos == stack.end() なら --new_pos;\nstack.erase(old_pos); stack.insert(new_pos, layer);", "#EDE7F6", "#512DA8"),
+    ]
+
+    for i, (title, desc, bgc, fgc) in enumerate(steps):
+        y_top = 0.82 - i * 0.17
+        box = FancyBboxPatch((0.08, y_top), 0.84, 0.13, boxstyle="round,pad=0.02,rounding_size=0.02",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.5)
+        ax1.add_patch(box)
+        ax1.text(0.12, y_top + 0.085, title, fontsize=9.8, fontweight="bold", color=fgc)
+        ax1.text(0.12, y_top + 0.03, desc, fontsize=8.5, color="#212121")
+        if i < len(steps) - 1:
+            ax1.annotate("", xy=(0.50, y_top - 0.035), xytext=(0.50, y_top),
+                         arrowprops=dict(arrowstyle="-|>", color="#757575", lw=1.8))
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # Right: Z-order Stack State Transition & Compositing
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("【B】スタック遷移例と画家アルゴリズムによる合成順序",
+                  fontsize=11.5, fontweight="bold", color="#2E7D32", pad=12)
+
+    # Transitions
+    transitions = [
+        ("初期状態: [Layer 1 (BG)]", ["Layer 1 (BG, Z=0)"], 0.76),
+        ("カーソル追加 UpDown(2, 1):", ["Layer 1 (BG, Z=0)", "Layer 2 (Cursor, Z=1)"], 0.53),
+        ("ウィンドウ起動 UpDown(3, 1):", ["Layer 1 (BG, Z=0)", "Layer 3 (Win, Z=1)", "Layer 2 (Cursor, Z=2)"], 0.28),
+    ]
+
+    colors_map = {
+        "Layer 1 (BG, Z=0)": ("#BBDEFB", "#0D47A1"),
+        "Layer 2 (Cursor, Z=1)": ("#FFE0B2", "#E65100"),
+        "Layer 2 (Cursor, Z=2)": ("#FFE0B2", "#E65100"),
+        "Layer 3 (Win, Z=1)": ("#C8E6C9", "#1B5E20"),
+    }
+
+    for state_title, items, y_base in transitions:
+        ax2.text(0.08, y_base + 0.12, state_title, fontsize=10, fontweight="bold", color="#37474F")
+        for idx, item in enumerate(items):
+            bgc, fgc = colors_map.get(item, ("#F5F5F5", "#212121"))
+            ibox = FancyBboxPatch((0.08 + idx * 0.28, y_base), 0.26, 0.09, boxstyle="square,pad=0.01",
+                                  facecolor=bgc, edgecolor=fgc, linewidth=1.5)
+            ax2.add_patch(ibox)
+            ax2.text(0.08 + idx * 0.28 + 0.13, y_base + 0.045, item,
+                     ha="center", va="center", fontsize=8.2, fontweight="bold", color=fgc)
+
+    # Compositing flow
+    comp_box = FancyBboxPatch((0.08, 0.04), 0.84, 0.16, boxstyle="round,pad=0.02,rounding_size=0.02",
+                             facecolor="#E0F2F1", edgecolor="#00695C", linewidth=1.8)
+    ax2.add_patch(comp_box)
+    ax2.text(0.12, 0.15, "レンダリングループ: LayerManager::Draw()", fontsize=10, fontweight="bold", color="#004D40")
+    ax2.text(0.12, 0.07,
+             "for (auto layer : layer_stack_) {\n"
+             "    layer->DrawTo(*writer_);  // Compositing from back (Z=0) to front (Z=N-1)\n"
+             "}", fontsize=8.8, fontfamily="monospace", color="#00695C")
+
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 1.0)
+    ax2.axis("off")
+
+    plt.suptitle("Figure 9.09: LayerManager::UpDown() による重なり順スタックの並び替え・クリッピングとレンダリング順序",
+                 fontsize=12, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
