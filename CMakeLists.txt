@@ -231,6 +231,9 @@ add_test(NAME test_ch07_os_chapter7_exercises COMMAND ch07_os_chapter7_exercises
 add_executable(ch09_layer_intro src/ch09/os_chapter9_layer_intro.cpp)
 add_test(NAME test_ch09_layer_intro COMMAND ch09_layer_intro --test)
 
+add_executable(ch09_heap_sbrk src/ch09/os_chapter9_heap_sbrk.cpp)
+add_test(NAME test_ch09_heap_sbrk COMMAND ch09_heap_sbrk --test)
+
 
 
 

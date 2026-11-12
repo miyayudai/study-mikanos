@@ -33378,3 +33378,423 @@ def plot_fig9_03_layer_stack_updown_and_compositing_order(output_path: Path | st
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+
+# ==============================================================================
+# Chapter 9.2: Dynamic Memory Allocation, sbrk(), and MikanOS Heap Architecture
+# ==============================================================================
+
+class SbrkHeapSimulator:
+    """Simulation of MikanOS Heap and POSIX sbrk() dynamic memory allocation (osbook_day09a / Section 9.2).
+
+    Models:
+    - Kernel heap initialization via BitmapMemoryManager (Allocate(kHeapFrames))
+    - Default kHeapFrames = 64 * 512 = 32,768 frames (128 MiB)
+    - program_break and program_break_end pointers
+    - sbrk(incr) behavior matching MikanOS kernel/newlib_support.c:
+      - incr > 0: advances program_break by incr, returns previous program_break
+      - incr == 0: queries current program_break without changing it
+      - Boundary check: if program_break + incr > program_break_end or program_break == 0:
+        sets errno = 12 (ENOMEM), returns -1 (caddr_t -1)
+    - High-level chunk allocation simulation (mini-malloc / mini-free)
+      - 16-byte chunk header: {size: uint32, is_allocated: bool, next_chunk: offset}
+      - 16-byte payload alignment (System V AMD64 ABI compliant)
+      - Free list and coalescing of adjacent free chunks
+    - Dynamic allocation statistics: total_heap_bytes, used_bytes, free_bytes,
+      allocation_count, sbrk_call_count, fragmentation_ratio
+    """
+
+    ENOMEM: int = 12  # POSIX errno Out of Memory
+    DEFAULT_HEAP_FRAMES: int = 64 * 512  # 32,768 frames = 128 MiB
+    BYTES_PER_FRAME: int = 4096
+    ALIGNMENT: int = 16  # 16-byte alignment
+
+    def __init__(
+        self,
+        memory_manager: Optional[Any] = None,
+        heap_frames: int = DEFAULT_HEAP_FRAMES,
+        base_address: int = 0x0120_0000,
+    ) -> None:
+        self.memory_manager = memory_manager
+        self.heap_frames = heap_frames
+        self.base_address = base_address
+        self.program_break: int = 0
+        self.program_break_end: int = 0
+        self.heap_start: int = 0
+        self.errno: int = 0
+        self.sbrk_calls: int = 0
+        self.chunks: list[dict[str, Any]] = []
+        self.allocated_blocks: dict[int, dict[str, Any]] = {}
+
+    def initialize_heap(self) -> dict[str, Any]:
+        """Initialize heap via BitmapMemoryManager frame allocation."""
+        if self.memory_manager is not None:
+            # Allocate from simulated BitmapMemoryManager
+            res = self.memory_manager.allocate(self.heap_frames)
+            if hasattr(res, "error") and res.error:
+                raise RuntimeError(f"BitmapMemoryManager allocation failed: {res.error}")
+            if hasattr(res, "value"):
+                start_frame_id = res.value.id
+            else:
+                start_frame_id = res if isinstance(res, int) else 256
+            self.heap_start = start_frame_id * self.BYTES_PER_FRAME
+        else:
+            self.heap_start = self.base_address
+
+        self.program_break = self.heap_start
+        self.program_break_end = self.heap_start + self.heap_frames * self.BYTES_PER_FRAME
+        self.errno = 0
+        return {
+            "heap_start": self.heap_start,
+            "heap_end": self.program_break_end,
+            "total_bytes": self.heap_frames * self.BYTES_PER_FRAME,
+            "total_mib": (self.heap_frames * self.BYTES_PER_FRAME) // (1024 * 1024),
+            "heap_frames": self.heap_frames,
+        }
+
+    def sbrk(self, incr: int) -> int:
+        """POSIX sbrk(incr) implementation matching MikanOS newlib_support.c."""
+        self.sbrk_calls += 1
+        if (
+            self.program_break == 0
+            or (self.program_break + incr > self.program_break_end)
+            or (self.program_break + incr < self.heap_start)
+        ):
+            self.errno = self.ENOMEM
+            return -1
+
+        prev_break = self.program_break
+        self.program_break += incr
+        return prev_break
+
+    @property
+    def current_break(self) -> int:
+        return self.program_break
+
+    @property
+    def used_bytes(self) -> int:
+        return self.program_break - self.heap_start if self.program_break > 0 else 0
+
+    @property
+    def remaining_bytes(self) -> int:
+        return self.program_break_end - self.program_break if self.program_break > 0 else 0
+
+    def malloc_sim(self, size: int) -> int:
+        """Simulate dynamic heap chunk allocation with 16-byte alignment and sbrk fallback."""
+        if self.program_break == 0:
+            self.initialize_heap()
+
+        if size <= 0:
+            return 0
+
+        aligned_payload = (size + (self.ALIGNMENT - 1)) & ~(self.ALIGNMENT - 1)
+        header_size = self.ALIGNMENT
+        total_chunk_size = header_size + aligned_payload
+
+        # 1. Search existing free chunks (First-Fit)
+        for chunk in self.chunks:
+            if not chunk["allocated"] and chunk["size"] >= total_chunk_size:
+                if chunk["size"] >= total_chunk_size + 32:
+                    remaining_size = chunk["size"] - total_chunk_size
+                    new_chunk = {
+                        "ptr": chunk["ptr"] + total_chunk_size,
+                        "size": remaining_size,
+                        "allocated": False,
+                        "payload_ptr": chunk["ptr"] + total_chunk_size + header_size,
+                        "user_size": 0,
+                    }
+                    chunk["size"] = total_chunk_size
+                    idx = self.chunks.index(chunk)
+                    self.chunks.insert(idx + 1, new_chunk)
+
+                chunk["allocated"] = True
+                chunk["user_size"] = size
+                self.allocated_blocks[chunk["payload_ptr"]] = chunk
+                return chunk["payload_ptr"]
+
+        # 2. No free chunk fits -> call sbrk
+        sbrk_request = max(total_chunk_size, 65536)
+        chunk_ptr = self.sbrk(sbrk_request)
+        if chunk_ptr == -1:
+            return 0
+
+        chunk = {
+            "ptr": chunk_ptr,
+            "size": total_chunk_size,
+            "allocated": True,
+            "payload_ptr": chunk_ptr + header_size,
+            "user_size": size,
+        }
+        self.chunks.append(chunk)
+        self.allocated_blocks[chunk["payload_ptr"]] = chunk
+
+        if sbrk_request > total_chunk_size:
+            excess = {
+                "ptr": chunk_ptr + total_chunk_size,
+                "size": sbrk_request - total_chunk_size,
+                "allocated": False,
+                "payload_ptr": chunk_ptr + total_chunk_size + header_size,
+                "user_size": 0,
+            }
+            self.chunks.append(excess)
+
+        return chunk["payload_ptr"]
+
+    def free_sim(self, payload_ptr: int) -> bool:
+        """Simulate free(ptr) and coalescing of adjacent free chunks."""
+        if payload_ptr not in self.allocated_blocks:
+            return False
+
+        chunk = self.allocated_blocks.pop(payload_ptr)
+        chunk["allocated"] = False
+        chunk["user_size"] = 0
+
+        i = 0
+        while i < len(self.chunks) - 1:
+            curr = self.chunks[i]
+            nxt = self.chunks[i + 1]
+            if (
+                not curr["allocated"]
+                and not nxt["allocated"]
+                and (curr["ptr"] + curr["size"] == nxt["ptr"])
+            ):
+                curr["size"] += nxt["size"]
+                self.chunks.pop(i + 1)
+            else:
+                i += 1
+
+        return True
+
+    def get_stats(self) -> dict[str, Any]:
+        """Compute heap statistics."""
+        allocated_user_bytes = sum(c["user_size"] for c in self.chunks if c["allocated"])
+        free_chunk_bytes = sum(c["size"] for c in self.chunks if not c["allocated"])
+        free_chunks_count = sum(1 for c in self.chunks if not c["allocated"])
+        alloc_chunks_count = sum(1 for c in self.chunks if c["allocated"])
+
+        return {
+            "heap_start": self.heap_start,
+            "program_break": self.program_break,
+            "program_break_end": self.program_break_end,
+            "total_capacity_bytes": self.heap_frames * self.BYTES_PER_FRAME,
+            "total_allocated_from_os": self.used_bytes,
+            "remaining_unallocated_os": self.remaining_bytes,
+            "user_payload_bytes": allocated_user_bytes,
+            "active_allocated_chunks": alloc_chunks_count,
+            "free_chunks_count": free_chunks_count,
+            "free_chunk_bytes": free_chunk_bytes,
+            "sbrk_call_count": self.sbrk_calls,
+        }
+
+
+def plot_fig9_04_traditional_unix_heap_vs_mikanos_heap(
+    output_path: str = "9/result/fig9_04_traditional_unix_heap_vs_mikanos_heap.png",
+) -> str:
+    """Generate Figure 9.04: Traditional UNIX Virtual Memory Heap vs MikanOS Physical Identity Paging Heap."""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(15, 8.5))
+
+    # --- Subplot 1: Traditional UNIX Virtual Address Space ---
+    ax0 = axes[0]
+    ax0.set_facecolor("#FAFAFA")
+    ax0.set_title("Traditional UNIX Virtual Address Space\n(プロセス独立の仮想アドレス空間とbrk/sbrk)", fontsize=11.5, fontweight="bold", color="#1565C0", pad=12)
+
+    unix_segments = [
+        ("Kernel Space (Top Half)", 0.85, 0.12, "#E0E0E0", "#616161", "特権 Ring 0 / ページテーブル保護"),
+        ("User Stack (下向き伸長 ↓)", 0.70, 0.11, "#FFCDD2", "#C62828", "%rsp (ローカル変数・関数フレーム)"),
+        ("Memory Mappings / mmap / DSOs", 0.55, 0.09, "#D1C4E9", "#4527A0", "共有ライブラリ (libc.so)"),
+        ("Heap (上向き伸長 ↑ / sbrk)", 0.36, 0.14, "#C8E6C9", "#2E7D32", "program_break が上向きに移動"),
+        ("BSS (.bss / ゼロ初期化データ)", 0.26, 0.07, "#FFF9C4", "#F57F17", "未初期化グローバル変数"),
+        ("Data (.data / 初期化済みデータ)", 0.17, 0.07, "#FFE0B2", "#E65100", "初期化済み静的変数"),
+        ("Text (.text / 実行コード R-X)", 0.07, 0.08, "#B3E5FC", "#0277BD", "機械語命令バイナリ"),
+    ]
+
+    for name, y, h, bgc, fgc, desc in unix_segments:
+        box = FancyBboxPatch((0.15, y), 0.70, h, boxstyle="round,pad=0.015,rounding_size=0.02",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.5)
+        ax0.add_patch(box)
+        ax0.text(0.50, y + h * 0.62, name, ha="center", va="center", fontsize=9.5, fontweight="bold", color=fgc)
+        ax0.text(0.50, y + h * 0.25, desc, ha="center", va="center", fontsize=7.8, color="#37474F")
+
+    # Add program break arrow
+    ax0.annotate("program_break\n(brk/sbrk で拡張)", xy=(0.87, 0.50), xytext=(0.92, 0.50),
+                 arrowprops=dict(arrowstyle="->", color="#D32F2F", lw=2),
+                 fontsize=8.5, fontweight="bold", color="#D32F2F", va="center")
+    ax0.text(0.04, 0.95, "High Address\n(0x7FFF_FFFF_FFFF)", fontsize=7.5, color="#616161")
+    ax0.text(0.04, 0.05, "Low Address\n(0x0000_0000_0000)", fontsize=7.5, color="#616161")
+    ax0.set_xlim(0, 1.15)
+    ax0.set_ylim(0, 1.0)
+    ax0.axis("off")
+
+    # --- Subplot 2: MikanOS Physical Identity Paging & 128MiB Heap ---
+    ax1 = axes[1]
+    ax1.set_facecolor("#FAFAFA")
+    ax1.set_title("MikanOS Physical Identity Paging Memory Layout\n(64GiB 恒等マッピングと BitmapMemoryManager による128MiBヒープ)", fontsize=11.5, fontweight="bold", color="#E65100", pad=12)
+
+    mikan_segments = [
+        ("VRAM FrameBuffer (MMIO)", 0.85, 0.10, "#E1BEE7", "#4A148C", "0xE000_0000 (GOP 描画ピクセル領域)"),
+        ("MikanOS Heap (128 MiB)", 0.62, 0.18, "#C8E6C9", "#1B5E20", "32,768 フレーム (InitializeHeap で一括確保)"),
+        ("Page Tables (PML4 / PDP / PD)", 0.51, 0.08, "#B2DFDB", "#004D40", "2MiB Huge Page 恒等マッピング (Section 8.6)"),
+        ("Kernel Stack (1 MiB in .bss)", 0.40, 0.08, "#FFCDD2", "#B71C1C", "%rsp 切り替え済み独自スタック (Section 8.4)"),
+        ("Kernel Binary (.text, .data, .bss)", 0.28, 0.09, "#FFE082", "#E65100", "ELF PT_LOAD (0x0010_0000 展開)"),
+        ("Available Physical Frames (Bitmap)", 0.14, 0.11, "#BBDEFB", "#0D47A1", "BitmapMemoryManager (First-Fit 4KiB管理)"),
+        ("UEFI Reserved / Firmware Memory", 0.03, 0.08, "#CFD8DC", "#37474F", "0x0000_0000 〜 0x0010_0000 (IVT, BDA, ACPI)"),
+    ]
+
+    for name, y, h, bgc, fgc, desc in mikan_segments:
+        box = FancyBboxPatch((0.15, y), 0.70, h, boxstyle="round,pad=0.015,rounding_size=0.02",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.5)
+        ax1.add_patch(box)
+        ax1.text(0.50, y + h * 0.62, name, ha="center", va="center", fontsize=9.5, fontweight="bold", color=fgc)
+        ax1.text(0.50, y + h * 0.25, desc, ha="center", va="center", fontsize=7.8, color="#37474F")
+
+    # MikanOS heap boundary pointers
+    ax1.annotate("program_break_end\n(heap_start + 128MiB)", xy=(0.86, 0.80), xytext=(0.89, 0.80),
+                 arrowprops=dict(arrowstyle="->", color="#C2185B", lw=1.8),
+                 fontsize=8.0, fontweight="bold", color="#C2185B", va="center")
+    ax1.annotate("program_break\n(sbrk で拡張)", xy=(0.86, 0.71), xytext=(0.89, 0.71),
+                 arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=1.8),
+                 fontsize=8.0, fontweight="bold", color="#2E7D32", va="center")
+    ax1.annotate("heap_start\n(0x0120_0000 付近)", xy=(0.86, 0.62), xytext=(0.89, 0.62),
+                 arrowprops=dict(arrowstyle="->", color="#1565C0", lw=1.8),
+                 fontsize=8.0, fontweight="bold", color="#1565C0", va="center")
+
+    ax1.text(0.04, 0.95, "64 GiB / MMIO\n(Physical Addr)", fontsize=7.5, color="#616161")
+    ax1.text(0.04, 0.05, "0x0000_0000\n(Physical Base)", fontsize=7.5, color="#616161")
+    ax1.set_xlim(0, 1.25)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    plt.suptitle("Figure 9.04: Traditional UNIX Virtual Memory Heap vs MikanOS Physical Identity Paging 128MiB Heap",
+                 fontsize=12.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_05_dynamic_allocation_pipeline_new_to_sbrk(
+    output_path: str = "9/result/fig9_05_dynamic_allocation_pipeline_new_to_sbrk.png",
+) -> str:
+    """Generate Figure 9.05: 5-Tier Dynamic Memory Allocation Architecture: from new to BitmapMemoryManager."""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig, ax = plt.subplots(figsize=(14, 8.5))
+    ax.set_facecolor("#FAFAFA")
+
+    tiers = [
+        ("Tier 1: C++ Application & Kernel Code",
+         "auto win = std::make_shared<Window>(w, h);  /  layer_manager = new LayerManager;\n"
+         "・型安全なオブジェクト生成、コンストラクタ自動実行、所有権管理 (std::shared_ptr, std::vector)",
+         0.80, "#E8EAF6", "#283593"),
+        ("Tier 2: C++ Runtime Operator (new / delete)",
+         "void* ::operator new(std::size_t count);  /  void ::operator delete(void* ptr);\n"
+         "・バイト単位のメモリ要求、内部で malloc(count) を呼び出し、戻り値アドレスに配置newでコンストラクタ実行",
+         0.61, "#E1F5FE", "#0277BD"),
+        ("Tier 3: Standard C Library (Newlib libc.a)",
+         "void* malloc(size_t size);  /  void free(void* ptr);\n"
+         "・細粒度チャンク管理 (16Bアライメント、サイズヘッダ、フリーリスト管理、隣接空きブロック合体)\n"
+         "・手持ちの空き領域が枯渇した際、OSの sbrk(increment) を呼び出して大枠領域 (64KiB等) を拡張",
+         0.41, "#E8F5E9", "#2E7D32"),
+        ("Tier 4: OS Kernel System Call Stub (newlib_support.c)",
+         "caddr_t sbrk(int incr) {\n"
+         "  if (program_break + incr >= program_break_end) return -1; (errno = ENOMEM)\n"
+         "  caddr_t prev = program_break; program_break += incr; return prev;\n"
+         "}\n"
+         "・プログラムブレークの境界チェックと進退、未初期化/超過時の ENOMEM 返却",
+         0.20, "#FFF3E0", "#E65100"),
+        ("Tier 5: Physical Frame Allocator (BitmapMemoryManager)",
+         "InitializeHeap(BitmapMemoryManager& mem_mgr):  mem_mgr.Allocate(32,768 frames)  = 128 MiB\n"
+         "・4KiB ページフレーム単位の物理メモリ管理、First-Fit ビットマップ走査、起動時に 128MiB 連続領域を一括確保",
+         0.01, "#FCE4EC", "#C2185B"),
+    ]
+
+    for title, code_desc, y, bgc, fgc in tiers:
+        box = FancyBboxPatch((0.08, y), 0.84, 0.16, boxstyle="round,pad=0.015,rounding_size=0.02",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.8)
+        ax.add_patch(box)
+        ax.text(0.11, y + 0.125, title, fontsize=10.2, fontweight="bold", color=fgc)
+        ax.text(0.11, y + 0.045, code_desc, fontsize=8.0, color="#212121", fontfamily="monospace")
+
+    # Connect tiers with arrows
+    for y_arrow in [0.78, 0.59, 0.39, 0.18]:
+        ax.annotate("", xy=(0.50, y_arrow - 0.02), xytext=(0.50, y_arrow + 0.02),
+                    arrowprops=dict(arrowstyle="->", color="#37474F", lw=2.2))
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(-0.02, 1.0)
+    ax.axis("off")
+
+    plt.suptitle("Figure 9.05: MikanOS における 5層 動的メモリ割り当てスタックアーキテクチャ (new → sbrk → Bitmap)",
+                 fontsize=12.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_06_sbrk_program_break_transition_and_fragmentation(
+    output_path: str = "9/result/fig9_06_sbrk_program_break_transition_and_fragmentation.png",
+) -> str:
+    """Generate Figure 9.06: sbrk() Program Break Advancement, Newlib Chunks, and Free Coalescing."""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig, axes = plt.subplots(4, 1, figsize=(14, 9.5))
+
+    stages = [
+        ("Step 1: 初期状態 (InitializeHeap 直後)",
+         "program_break == heap_start (0x0120_0000), 128 MiB (32,768 frames) 全域が未割り当て (program_break_end = 0x0920_0000)",
+         [("Unallocated Heap Space (128 MiB Available to sbrk)", 0.0, 1.0, "#EEEEEE", "#9E9E9E", False)],
+         0.0),
+        ("Step 2: 最初のオブジェクト生成 (Window / Layer 確保)",
+         "Newlib が sbrk(64KiB) を要求。program_break が進み、Chunk A (Window) と Chunk B (Layer) が確保される",
+         [("Chunk A: Window (16KB)", 0.0, 0.25, "#C8E6C9", "#2E7D32", True),
+          ("Chunk B: Layer (32B)", 0.25, 0.10, "#BBDEFB", "#1565C0", True),
+          ("Newlib Free Cache (48KB)", 0.35, 0.15, "#FFF9C4", "#F57F17", False),
+          ("Unallocated Space (127.9 MiB)", 0.50, 0.50, "#EEEEEE", "#9E9E9E", False)],
+         0.50),
+        ("Step 3: 一時オブジェクトの解放 (free / delete)",
+         "Chunk A (Window) が解放され Free Chunk となる。隣接領域が未合体の場合、外部断片化の穴 (Hole) が発生",
+         [("Free Chunk A (Hole: 16KB)", 0.0, 0.25, "#FFCDD2", "#C62828", False),
+          ("Chunk B: Layer (32B / 存続)", 0.25, 0.10, "#BBDEFB", "#1565C0", True),
+          ("Chunk C: Vector (64KB / 新規sbrk)", 0.35, 0.30, "#E1BEE7", "#6A1B9A", True),
+          ("Unallocated Space (127.8 MiB)", 0.65, 0.35, "#EEEEEE", "#9E9E9E", False)],
+         0.65),
+        ("Step 4: 隣接空き領域の合体 (Coalescing) と限界チェック (ENOMEM)",
+         "Chunk B も解放されると Free Chunk A と合体して大きな空き領域を形成。上限 program_break_end 超過時は ENOMEM を返却",
+         [("Coalesced Free Block (16.03 KB)", 0.0, 0.35, "#C8E6C9", "#388E3C", False),
+          ("Chunk C: Vector (64KB)", 0.35, 0.30, "#E1BEE7", "#6A1B9A", True),
+          ("Unallocated Space (127.8 MiB)", 0.65, 0.35, "#EEEEEE", "#9E9E9E", False)],
+         0.65),
+    ]
+
+    for i, (stage_title, desc, chunks, pb_pos) in enumerate(stages):
+        ax = axes[i]
+        ax.set_facecolor("#FAFAFA")
+        ax.set_title(f"{stage_title}: {desc}", fontsize=9.2, fontweight="bold", color="#37474F", loc="left", pad=5)
+
+        # Draw chunks
+        for name, start_x, width_x, bgc, fgc, is_alloc in chunks:
+            box = FancyBboxPatch((start_x, 0.25), width_x, 0.50, boxstyle="square,pad=0",
+                                 facecolor=bgc, edgecolor=fgc, linewidth=1.5,
+                                 linestyle="-" if is_alloc else "--")
+            ax.add_patch(box)
+            if width_x > 0.08:
+                ax.text(start_x + width_x / 2.0, 0.50, name, ha="center", va="center",
+                        fontsize=7.8, fontweight="bold", color=fgc)
+
+        # Mark program_break
+        if pb_pos > 0.0:
+            ax.annotate(f"program_break: {pb_pos * 100:.1f}%", xy=(pb_pos, 0.75), xytext=(pb_pos, 0.88),
+                        arrowprops=dict(arrowstyle="->", color="#D32F2F", lw=1.8),
+                        fontsize=7.8, fontweight="bold", color="#D32F2F", ha="center")
+
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(0.1, 1.0)
+        ax.axis("off")
+
+    plt.suptitle("Figure 9.06: sbrk() による program_break の進退、Newlib チャンク管理と断片化・合体シーケンス",
+                 fontsize=12, fontweight="bold", color="#0D47A1", y=0.99)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

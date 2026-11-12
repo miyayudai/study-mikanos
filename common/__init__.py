@@ -502,6 +502,10 @@ from common.os_sim import (
     plot_fig9_01_background_destruction_vs_layer_compositing,
     plot_fig9_02_layer_compositing_architecture,
     plot_fig9_03_layer_stack_updown_and_compositing_order,
+    SbrkHeapSimulator,
+    plot_fig9_04_traditional_unix_heap_vs_mikanos_heap,
+    plot_fig9_05_dynamic_allocation_pipeline_new_to_sbrk,
+    plot_fig9_06_sbrk_program_break_transition_and_fragmentation,
 )
 
 __all__ = [
@@ -1006,4 +1010,8 @@ __all__ = [
     "plot_fig9_01_background_destruction_vs_layer_compositing",
     "plot_fig9_02_layer_compositing_architecture",
     "plot_fig9_03_layer_stack_updown_and_compositing_order",
+    "SbrkHeapSimulator",
+    "plot_fig9_04_traditional_unix_heap_vs_mikanos_heap",
+    "plot_fig9_05_dynamic_allocation_pipeline_new_to_sbrk",
+    "plot_fig9_06_sbrk_program_break_transition_and_fragmentation",
 ]
