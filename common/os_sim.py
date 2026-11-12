@@ -32410,3 +32410,521 @@ def plot_fig8_21_uefi_memmap_to_bitmap_initialization(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return output_path
+
+
+# ==============================================================================
+# Chapter 8 Comprehensive Exercises: Theory, Quiz, Simulation & Radar Chart
+# ==============================================================================
+
+class Chapter8Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 8.1 to 8.7."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="8.1",
+                topic="物理メモリ管理 (PMM) と仮想メモリ管理 (VMM) の役割分担",
+                question="OS におけるメモリ管理において、物理メモリ管理（Physical Memory Management: PMM）と仮想メモリ管理（Virtual Memory Management: VMM）の役割分担および 4KiB ページ単位管理の利点として正しいものはどれか？",
+                options=[
+                    "PMM は 4KiB などの固定長ブロック単位で実メモリ（RAM）の空き・割り当てを追跡し、VMM は MMU とページテーブルを用いてプロセスごとの独立した仮想アドレス空間を構築・保護する",
+                    "PMM は 1 バイト単位で変数ごとに動的確保を行い、VMM はスタック領域のみを管理する",
+                    "4KiB 単位管理は内部断片化（Internal Fragmentation）を完全にゼロにする唯一の手段である",
+                    "64ビット OS では仮想アドレス空間が 128TiB 以上あるため、物理メモリを管理・回収する必要はない",
+                ],
+                correct_index=0,
+                explanation="PMM はハードウェア RAM のページフレーム（通常 4KiB）の空き状況をビットマップ等で管理し、VMM はページテーブルを用いて仮想アドレスを物理アドレスに変換・保護します。ページングにより外部断片化を防ぎつつ、ハードウェア MMU と協調して空間分離を実現します。",
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="8.2",
+                topic="UEFI メモリマップ走査における descriptor_size (48B) オフセット数理",
+                question="カーネル内で UEFI メモリマップを走査する際、ポインタのインクリメントに `desc++`（通常の C/C++ 構造体ポインタ加算）ではなく `reinterpret_cast<uintptr_t>(desc) + descriptor_size`（48バイト）を用いなければならない決定的な理由として正しいものはどれか？",
+                options=[
+                    "UEFI 仕様により各ディスクリプタ末尾に将来の拡張用フィールドやファームウェア固有のパディングが存在し、ファームウェアが報告する `descriptor_size` (48B) が C++ 構造体宣言サイズ `sizeof(MemoryDescriptor)` (40B) より大きいため、`desc++` では 8 バイトずつズレてデータが破壊される",
+                    "`MemoryDescriptor` 構造体が 64 バイト境界にアライメントされていないと x86-64 CPU が必ず未定義命令例外を発生させるため",
+                    "C++ のポインタ加算演算子 `++` は UEFI 互換環境では未定義動作になるため",
+                    "`descriptor_size` は常に 0 であり、固定長配列としてインデックス参照しなければならないため",
+                ],
+                correct_index=0,
+                explanation="EDK II / UEFI 実装における `MemoryDescriptor` は 40 バイトのメンバを持ちますが、ファームウェアが返す `descriptor_size` はパディングや将来拡張により 48 バイトになります。`desc++` は 40 バイト進むため、2 つ目以降のエントリ参照が 8 バイトずつ手前にズレて不正な値を読み取ってしまいます（Off-by-8 バグ）。",
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="8.2",
+                topic="ExitBootServices 後にカーネルが安全に再利用できる UEFI メモリタイプ",
+                question="UEFI ブートローダが `ExitBootServices` を呼び出した後、OS カーネルが独自のページフレーム・動的ヒープ領域として安全に回収・再利用できる UEFI メモリタイプ（IsAvailable）の組み合わせとして正しいものはどれか？",
+                options=[
+                    "`EfiConventionalMemory`, `EfiBootServicesCode`, `EfiBootServicesData`",
+                    "`EfiReservedMemoryType`, `EfiRuntimeServicesCode`, `EfiRuntimeServicesData`",
+                    "`EfiMemoryMappedIO`, `EfiMemoryMappedIOPortSpace`, `EfiPalCode`",
+                    "`EfiLoaderCode`, `EfiLoaderData`, `EfiACPIReclaimMemory`",
+                ],
+                correct_index=0,
+                explanation="`ExitBootServices` が成功した瞬間、UEFI のブートサービス用コード（`EfiBootServicesCode`）およびデータ（`EfiBootServicesData`）は不要となるため、未割り当ての通常メモリ（`EfiConventionalMemory`）と合わせてカーネルが自由に使用できます。一方、`RuntimeServices` や `ACPI`、`MMIO`、およびカーネル自身がロードされた `LoaderData/Code` は再利用してはいけません。",
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="8.3",
+                topic="カーネルデータ構造の退避と過渡的 UEFI メモリの危険性",
+                question="ブートローダから渡された `MemoryMap` や `FrameBufferConfig` などのデータ構造体を、カーネル初期化時にローカル変数やカーネル管理下の固定領域へコピー退避しなければならない理由として正しいものはどれか？",
+                options=[
+                    "ブートローダが引数を渡したメモリ領域は `BootServicesData` などの過渡的領域（Transitional Memory）に配置されており、`ExitBootServices` 後にカーネルメモリマネージャがその領域を空きメモリとして回収・再割り当てすると、データが上書き破壊される危険性があるため",
+                    "UEFI 領域のデータは暗号化されており、カーネルからは読み出せないため",
+                    "ブートローダの引数は 16 ビットリアルモード専用のアドレスに配置されているため",
+                    "C++ のクラス構造体は UEFI ポインタから直接メンバ関数を呼び出せないため",
+                ],
+                correct_index=0,
+                explanation="ブートローダが確保したメモリマップバッファ等は `BootServicesData` 領域に置かれており、カーネルがメモリ管理を開始した直後に別の用途（スタックやヒープ）として再利用されるとデータが上書きされます。そのため、安全なカーネル専用メモリ（`.bss` や独自管理領域）へ値コピーしておく必要があります。",
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="8.4",
+                topic="カーネルスタックの .bss 移動と System V AMD64 ABI 16バイトアライメント",
+                question="x86-64 におけるカーネルスタックの確保・切り替えにおいて、スタックポインタ（RSP）のアドレス計算および System V AMD64 ABI 規約に関する説明として正しいものはどれか？",
+                options=[
+                    "x86-64 のスタックは下位アドレスに向かって伸長する（Full Descending）ため、確保した配列 `kernel_stack[SIZE]` の末尾（`kernel_stack + SIZE`）を RSP に設定し、`CALL` 命令実行直前の RSP は 16 バイト境界にアライメントされていなければならない（SSE `movaps` 命令のクラッシュ防止）",
+                    "スタックは上位アドレスに向かって伸長するため、配列の先頭 `kernel_stack` を RSP に設定し、8 バイト境界であれば ABI 違反にはならない",
+                    "UEFI スタックは 1GiB 以上の安全な領域に配置されているため、カーネルスタックを自前で用意する必要はない",
+                    "RSP レジスタは CPU の特権命令（Ring 0 専用命令）を使わなければ一切値を書き換えることができない",
+                ],
+                correct_index=0,
+                explanation="x86-64 では PUSH 命令で RSP が減算される Full Descending スタックです。そのため配列末尾アドレスを初期 RSP とします。また System V AMD64 ABI では関数呼び出し時点で `(RSP + 8)` が 16 バイトアライメントされている必要があり、これに違反するとコンパイラが生成した 128 ビット SSE 命令（`movaps` 等）が一般保護例外（#GP）で即座にクラッシュします。",
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="8.5",
+                topic="x86-64 Long Mode における GDT（セグメンテーション）の役割と残存理由",
+                question="x86-64 Long Mode ではセグメントベースとリミットによるアドレス変換が無効化（Base=0, Limit=無制限のフラットモデル）されているにもかかわらず、OS が GDT を設定しなければならない理由として正しいものはどれか？",
+                options=[
+                    "コードセグメント記述子（CS）の L ビット（Long Mode 64ビット動作指示）および DPL（特権レベル Ring 0 / Ring 3）のハードウェア決定に依然として GDT が必須であるため",
+                    "GDT を設定しないと物理 RAM のクロック周波数が半分に制限されるため",
+                    "Long Mode ではセグメンテーションを使って仮想記憶とページフォールトを実現しているため",
+                    "GDT は UEFI BIOS が作成したものをそのまま使い続けることが仕様で強制されているため",
+                ],
+                correct_index=0,
+                explanation="x86-64 Long Mode ではデータセグメントのベース/リミットチェックは無効化されますが、CS（コードセグメント）レジスタのセレクタが指す記述子の L ビット（bit 21 = 1: 64ビットモード、0: 32ビット互換モード）と DPL（Descriptor Privilege Level: Ring 0/3）は CPU が命令実行モードを決定するために依然として不可欠です。",
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="8.5",
+                topic="iretq 命令を用いたスタック偽装によるアトミックな CS レジスタ切り替え",
+                question="GDT を `LGDT` 命令でロードした後、通常データセグメント（DS/SS等）は `mov` 命令で更新できますが、CS レジスタを直接 `mov cs, ax` で書き換えることができない理由と、その安全な切り替え手法として正しいものはどれか？",
+                options=[
+                    "x86-64 CPU 命令セットに CS を直接変更する `MOV` 命令が存在しないため、スタックに [SS, RSP, RFLAGS, CS, RIP] を順にプッシュして `IRETQ`（割り込み復帰）命令を実行し、CS と RIP をアトミックに切り替える",
+                    "CS レジスタはハードウェア配線で固定されており、CPU をリセットしない限り変更できない",
+                    "`JMP` 命令を使うと即座に Page Fault 例外が発生するため、NMI 割り込みを故意に発生させる必要がある",
+                    "`OUT` 命令で I/O ポート 0xCF8 にセグメント番号を書き込むことで切り替える",
+                ],
+                correct_index=0,
+                explanation="x86 アーキテクチャでは `mov cs, reg` という命令は存在せず、Far JMP (`jmp far`) または `iretq` による復帰動作を用いて CS と RIP を同時にアトミック更新する必要があります。MikanOS では割り込みスタックフレームを偽装して `iretq` を実行することで、新しい CS セレクタ（`0x08`）への切り替えを行っています。",
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="8.6",
+                topic="2MiB Huge Page による 64GiB 恒等マッピングとメモリ削減数理",
+                question="MikanOS が第8章で採用した 4 階層ページング（PML4 / PDP / PD）において、PD（Page Directory）エントリの `PageSize` ビット（PS=1）を設定して 2MiB 巨大ページ（Huge Page）を用いる利点として正しいものはどれか？",
+                options=[
+                    "最下層のページテーブル（PT: 4KiB単位）を一切確保せずに済み、64GiB の恒等マッピングに必要なページ管理メモリが 128MiB からわずか 264KiB（PML4 1枚 + PDP 1枚 + PD 64枚）へと劇的に削減され、TLB ヒット率も向上する",
+                    "2MiB ページを使うと仮想アドレスが 32 ビットに圧縮され、CPU のバス幅が節約できる",
+                    "Huge Page を使用するとハードウェア割り込みの遅延がゼロになる",
+                    "2MiB ページは RAM ではなく SSD に直接マッピングされるため、物理メモリを消費しない",
+                ],
+                correct_index=0,
+                explanation="4KiB ページで 64GiB をマッピングすると 1600 万エントリ（PT が 32,768 枚 = 128MiB）必要ですが、2MiB ページ（PS=1）を使えば PT を全廃でき、PD 64 枚（256KiB）＋ PDP 1枚（4KiB）＋ PML4 1枚（4KiB）の合計 264KiB（485分の1）で 64GiB 全域を恒等マッピングできます。",
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="8.7",
+                topic="BitmapMemoryManager の First-Fit 探索における start_frame_id += i + 1 スキップ数理",
+                question="`BitmapMemoryManager::Allocate(size_t num_frames)` の First-Fit 探索において、`start_frame_id` から `i` 個目のフレームが割り当て済み（`GetBit() == true`）であることが判明した際、次の探索開始位置を `start_frame_id + 1` ではなく `start_frame_id += i + 1` と一気にスキップできる数理的根拠として正しいものはどれか？",
+                options=[
+                    "`start_frame_id` から `start_frame_id + i - 1` までのどのフレームを開始地点に選んでも、`start_frame_id + i` の割り当て済みフレームを必ず跨いでしまい、必要な `num_frames` 個の連続空き領域を絶対に確保できないため",
+                    "CPU のキャッシュラインが 64 バイトであり、`i` が 64 の倍数になることが保証されているため",
+                    "スキップしないとコンパイラが最適化で無限ループと誤認して削除してしまうため",
+                    "割り当て済みフレームの次のフレームは常に空きであることが数学的に証明されているため",
+                ],
+                correct_index=0,
+                explanation="連続する $K$ 個の空きフレームを探している途中で、インデックス $i$ ($0 \\le i < K$) に使用中フレームが存在した場合、$0$ から $i$ までの任意のフレームを開始位置とする範囲はすべてその使用中フレームを包含してしまいます。したがって、開始位置を一気に $i + 1$ だけ前進させても空き領域を取りこぼすことはなく、計算量を $\\mathcal{O}(N)$ に抑制できます。",
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="8.7",
+                topic="BitmapMemoryManager 初期化の 3 大不変条件と NULL ポインタ保護",
+                question="UEFI メモリマップから `BitmapMemoryManager` を初期化する際、全ビットを 1（割り当て済み）に初期化した後に利用可能領域のみを解放（`Free`）するアプローチを採用する理由および `FrameID{1}` 以降を管理対象とする理由として正しいものはどれか？",
+                options=[
+                    "未定義・予約領域や MMIO 領域が誤って解放されるのを安全側に倒して防ぎ、さらに物理アドレス 0x0（FrameID{0}）を常に割り当て済みとして確保・ロックしておくことで NULL ポインタ参照バグによるメモリ破壊を即座に検知・防止するため",
+                    "物理アドレス 0x0 には CPU のマイクロコードが書き込まれており、消去するとハードウェアが物理的に故障するため",
+                    "UEFI のメモリディスクリプタは物理アドレス 0x0 からしか配置できないため",
+                    "`Free` 関数は引数に 0 を渡すと常に例外をスローするように C++ 仕様で定められているため",
+                ],
+                correct_index=0,
+                explanation="デフォルトで全領域を割り当て済み（1）にしておけば、メモリマップに現れない未知の予約領域やデバイス MMIO が誤って割り当てられる安全上の危険を防げます。また FrameID{0}（物理アドレス 0x0000〜0x0FFF）をロックしておくことで、NULL ポインタ参照が発生した際に有効なデータ構造としてアクセスされる事故を防ぎます。",
+            ),
+        ]
+
+    def evaluate(self, user_answers: dict[int, int]) -> dict[str, any]:
+        """Evaluate user answers, calculate percentage, and compute per-section mastery rates."""
+        correct_count = 0
+        total_questions = len(self.questions)
+        results = []
+        section_stats: dict[str, dict[str, int]] = {}
+
+        for q in self.questions:
+            sec = q.section
+            if sec not in section_stats:
+                section_stats[sec] = {"total": 0, "correct": 0}
+            section_stats[sec]["total"] += 1
+
+            ans = user_answers.get(q.question_id)
+            is_correct = (ans == q.correct_index)
+            if is_correct:
+                correct_count += 1
+                section_stats[sec]["correct"] += 1
+
+            results.append({
+                "question_id": q.question_id,
+                "section": q.section,
+                "topic": q.topic,
+                "user_answer": ans,
+                "correct_answer": q.correct_index,
+                "is_correct": is_correct,
+                "explanation": q.explanation,
+            })
+
+        percentage = (correct_count / total_questions) * 100.0
+        mastery_rates = {
+            sec: (stats["correct"] / stats["total"]) * 100.0
+            for sec, stats in sorted(section_stats.items())
+        }
+
+        return {
+            "total_questions": total_questions,
+            "correct_count": correct_count,
+            "percentage": percentage,
+            "passed": percentage >= 80.0,
+            "mastery_rates": mastery_rates,
+            "question_results": results,
+        }
+
+
+class Chapter8TheoryValidator:
+    """Validation helper for Chapter 8 systems theory: UEFI MemMap, Stacks, GDT, Paging, and Bitmap Allocator."""
+
+    @staticmethod
+    def validate_uefi_memmap_stepping(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate UEFI memory descriptor pointer arithmetic, descriptor_size, and IsAvailable."""
+        desc_size = data.get("descriptor_size", 48)
+        sizeof_desc = data.get("sizeof_descriptor", 40)
+        num_descriptors = data.get("num_descriptors", 10)
+        calculated_offset = data.get("calculated_offset_for_idx_5")
+        available_types = set(data.get("available_types", []))
+
+        expected_offset = 5 * desc_size
+        expected_available = {1, 3, 4} # BootServicesCode(1), BootServicesData(3), Conventional(4)
+
+        errors = []
+        if calculated_offset != expected_offset:
+            errors.append(f"calculated_offset_for_idx_5: 期待値={expected_offset}, 入力値={calculated_offset}")
+        if desc_size <= sizeof_desc:
+            errors.append(f"descriptor_size ({desc_size}) は sizeof(MemoryDescriptor) ({sizeof_desc}) より大きくなければなりません。")
+        if not expected_available.issubset(available_types):
+            errors.append(f"利用可能メモリタイプ（Conventional, BootServicesCode/Data）が不足しています: {available_types}")
+
+        if not errors:
+            return True, (
+                f"正解！UEFI メモリマップ走査数理を検証しました。"
+                f" [descriptor_size={desc_size}B (Off-by-{desc_size - sizeof_desc}防止), "
+                f"idx[5]_offset={calculated_offset}B, IsAvailable回収={available_types}]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_stack_alignment(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate kernel stack allocation in .bss, Full Descending RSP address, and 16-byte alignment."""
+        base = data.get("stack_base", 0x100000)
+        size = data.get("stack_size", 1024 * 1024) # 1MiB
+        rsp = data.get("rsp")
+
+        expected_rsp = base + size
+        errors = []
+
+        if rsp != expected_rsp:
+            errors.append(f"RSP 初期値: 期待値=0x{expected_rsp:x} (base + size), 入力値=0x{rsp:x}")
+        if (rsp % 16) != 0:
+            errors.append(f"RSP は 16 バイト境界にアライメントされていなければなりません (rsp % 16 = {rsp % 16})")
+
+        # System V AMD64 ABI: right before CALL instruction, RSP must be 16-byte aligned.
+        # Inside the called function after CALL (which pushes 8-byte return address), RSP % 16 == 8.
+        if not errors:
+            return True, (
+                f"正解！カーネルスタックの Full Descending 配置および 16 バイトアライメントを検証しました。"
+                f" [Base=0x{base:x}, Size={size // 1024}KiB, Top/RSP=0x{rsp:x} (16B-Aligned={rsp % 16 == 0})]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_gdt_descriptor(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate x86-64 64-bit code segment descriptor bit layout and selector."""
+        selector = data.get("selector", 0x08)
+        desc_raw = data.get("descriptor_raw", 0)
+
+        # Expected 64-bit Kernel Code Segment Descriptor:
+        # Limit=0xFFFF (ignored), Base=0 (ignored)
+        # Type=10 (Execute/Read code), S=1 (Code/Data), DPL=0 (Kernel), P=1 (Present)
+        # L=1 (64-bit Long Mode), D/B=0 (must be 0 for L=1), G=1 (4KiB granularity)
+        # Raw value standard: 0x00AF9A000000FFFF
+        type_val = (desc_raw >> 40) & 0x0F
+        s_bit = (desc_raw >> 44) & 0x01
+        dpl_val = (desc_raw >> 45) & 0x03
+        p_bit = (desc_raw >> 47) & 0x01
+        l_bit = (desc_raw >> 53) & 0x01
+        db_bit = (desc_raw >> 54) & 0x01
+
+        errors = []
+        if selector != 0x08:
+            errors.append(f"カーネルコードセグメントセレクタ: 期待値=0x08 (Index 1, RPL 0), 入力値=0x{selector:02x}")
+        if type_val != 10 and type_val != 11: # Execute/Read code
+            errors.append(f"Segment Type: 期待値=10 (0xA: Execute/Read), 入力値={type_val}")
+        if s_bit != 1:
+            errors.append("S ビット (Descriptor Type) は 1 (Code/Data) でなければなりません。")
+        if dpl_val != 0:
+            errors.append(f"DPL: 期待値=0 (Ring 0), 入力値={dpl_val}")
+        if p_bit != 1:
+            errors.append("Present ビットは 1 でなければなりません。")
+        if l_bit != 1:
+            errors.append("L ビット (Long Mode 64-bit) は 1 でなければなりません。")
+        if db_bit != 0:
+            errors.append("D/B ビットは L=1 のとき必ず 0 でなければなりません。")
+
+        if not errors:
+            return True, (
+                f"正解！64-bit カーネルコードセグメント記述子 (0x{desc_raw:016x}) およびセレクタ 0x{selector:02x} を検証しました。"
+                f" [Type={type_val}, DPL={dpl_val}, P={p_bit}, L={l_bit}, D/B={db_bit}]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_identity_paging_entry(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate PML4, PDP, and PD (2MiB Huge Page) identity mapping entries."""
+        cr3 = data.get("cr3", 0)
+        pml4_entry = data.get("pml4_entry", 0)
+        pdp_entry = data.get("pdp_entry", 0)
+        pd_entry = data.get("pd_entry", 0)
+
+        # Bit 0: Present (1), Bit 1: Writable (1), Bit 7: PageSize (1 for 2MiB PDE)
+        errors = []
+        if (cr3 % 4096) != 0:
+            errors.append(f"CR3 アドレス 0x{cr3:x} は 4KiB 境界にアライメントされていなければなりません。")
+        if (pml4_entry & 0x03) != 0x03:
+            errors.append(f"PML4 エントリ下位フラグ: 期待値=0x03 (P=1, W=1), 入力値=0x{pml4_entry & 0x03:x}")
+        if (pdp_entry & 0x03) != 0x03:
+            errors.append(f"PDP エントリ下位フラグ: 期待値=0x03 (P=1, W=1), 入力値=0x{pdp_entry & 0x03:x}")
+        if (pd_entry & 0x83) != 0x83:
+            errors.append(f"PD (2MiB Huge Page) エントリ下位フラグ: 期待値=0x83 (P=1, W=1, PS=1), 入力値=0x{pd_entry & 0x83:x}")
+
+        if not errors:
+            return True, (
+                f"正解！4階層 Identity Paging 設定を検証しました。"
+                f" [CR3=0x{cr3:x}, PML4E_flags=0x{pml4_entry & 0xFF:x}, PDPE_flags=0x{pdp_entry & 0xFF:x}, PDE_flags=0x{pd_entry & 0xFF:x} (2MiB Huge Page)]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_bitmap_skip_math(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate First-Fit allocation skip logic (start_frame_id += i + 1) and bit indexing math."""
+        frame_id = data.get("frame_id", 130)
+        start_frame_id = data.get("start_frame_id", 10)
+        failed_offset = data.get("failed_offset_i", 5)
+        next_start_frame = data.get("next_start_frame")
+
+        expected_line = frame_id // 64
+        expected_bit = frame_id % 64
+        expected_next = start_frame_id + failed_offset + 1
+
+        calc_line = data.get("calculated_line")
+        calc_bit = data.get("calculated_bit")
+
+        errors = []
+        if calc_line != expected_line:
+            errors.append(f"Bitmap 行インデックス: 期待値={expected_line}, 入力値={calc_line}")
+        if calc_bit != expected_bit:
+            errors.append(f"Bitmap ビット位置: 期待値={expected_bit}, 入力値={calc_bit}")
+        if next_start_frame != expected_next:
+            errors.append(f"First-Fit スキップ先フレーム: 期待値={expected_next}, 入力値={next_start_frame}")
+
+        if not errors:
+            return True, (
+                f"正解！BitmapMemoryManager のインデックス数理と First-Fit スキップ最適化を検証しました。"
+                f" [FrameID={frame_id} -> Line {calc_line}, Bit {calc_bit}; Skip {start_frame_id} + {failed_offset} + 1 -> {next_start_frame}]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+
+def plot_chapter8_exercises_summary(output_path: Path | str) -> Path:
+    """Generate Chapter 8 comprehensive exercises curriculum and memory architecture summary chart."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle(
+        "第8章 総合演習問題カリキュラム & メモリ管理アーキテクチャ評価マップ\n"
+        "(Chapter 8 Comprehensive Exercises & Systems Memory Architecture Verification)",
+        fontsize=14, fontweight="bold", color="#1A237E", y=0.98,
+    )
+
+    # 1. 7節の技術スタック構造 (Top-Left)
+    ax1 = axes[0, 0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 第8章 メモリ管理 7大コア技術スタック", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    topics = [
+        ("8.1-8.2 メモリ管理の動機 & UEFI走査", "PMM vs VMM・4KiBフレーム・descriptor_size (48B) Off-by-8防止数理", "#E3F2FD", "#1565C0"),
+        ("8.3-8.4 過渡的領域退避 & スタック移動", "ディープコピー生存期間・.bss 1MiB Full Descendingスタック・ABI 16B整合", "#E8F5E9", "#2E7D32"),
+        ("8.5-8.6 GDTセグメント & Identity Paging", "Long Modeフラットモデル・iretq スタック偽装CS切替・2MiB Huge Page 64GiB", "#FFF3E0", "#E65100"),
+        ("8.7 BitmapMemoryManager 実装", "FrameID強い型付け・64bitビットマップ・First-Fit O(N) スキップ証明・3大不変条件", "#F3E5F5", "#6A1B9A"),
+    ]
+
+    y_pos = 0.82
+    for title, desc, bg, border in topics:
+        box = FancyBboxPatch((0.03, y_pos - 0.06), 0.94, 0.13, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax1.add_patch(box)
+        ax1.text(0.06, y_pos, title, fontsize=9.2, fontweight="bold", color=border)
+        ax1.text(0.38, y_pos, desc, fontsize=7.6, color="#263238")
+        y_pos -= 0.20
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. 演習問題構成比率 (Top-Right)
+    ax2 = axes[0, 1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 演習問題・検証モジュール構成比率", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    categories = ["UEFIメモリ走査", "スタック/ABI数理", "GDT/セグメント", "4階層Identity Paging", "Bitmap First-Fit/C++20"]
+    weights = [20, 20, 20, 20, 20]
+    colors = ["#1976D2", "#388E3C", "#F57C00", "#7B1FA2", "#0097A7"]
+
+    wedges, texts, autotexts = ax2.pie(
+        weights, labels=categories, autopct="%1.0f%%", startangle=140,
+        colors=colors, textprops=dict(fontsize=8.5, color="#263238"),
+        wedgeprops=dict(edgecolor="#FFFFFF", linewidth=1.5, antialiased=True),
+    )
+    for at in autotexts:
+        at.set_color("#FFFFFF")
+        at.set_fontweight("bold")
+
+    # 3. メモリ保護・変換パイプラインフロー (Bottom-Left)
+    ax3 = axes[1, 0]
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. メモリ初期化・保護・変換パイプラインフロー", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    steps = [
+        ("1. UEFI MemMap", "GetMemoryMap() -> 48Bポインタ走査\nConventional / BootServices回収", "#E1F5FE", "#0288D1"),
+        ("2. Kernel Stack", ".bss 1MiB 領域へ RSP 切替\nSystem V ABI 16B アライメント", "#E8F5E9", "#388E3C"),
+        ("3. GDT & CS", "0x00AF9A000000FFFF (64-bit CS)\niretq スタック偽装でアトミック更新", "#FFF8E1", "#FFA000"),
+        ("4. Identity Paging", "CR3 -> PML4 -> PDP -> PD (PS=1)\n64GiB 恒等マッピング (PT不要)", "#EDE7F6", "#7E57C2"),
+        ("5. Bitmap Allocator", "FrameID{1}〜終端 4KiB ページ管理\nFirst-Fit スキップ探索 & 自由合体", "#FCE4EC", "#C2185B"),
+    ]
+
+    for idx, (stitle, sdesc, sbg, sborder) in enumerate(steps):
+        sy = 0.82 - idx * 0.17
+        r = FancyBboxPatch((0.04, sy - 0.05), 0.92, 0.13, boxstyle="round,pad=0.015",
+                           facecolor=sbg, edgecolor=sborder, lw=1.2)
+        ax3.add_patch(r)
+        ax3.text(0.07, sy + 0.02, stitle, fontsize=8.8, fontweight="bold", color=sborder)
+        ax3.text(0.35, sy, sdesc, fontsize=7.2, color="#263238")
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    # 4. DoD (Definition of Done) チェックリスト (Bottom-Right)
+    ax4 = axes[1, 1]
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. 第8章 Definition of Done (DoD) 検証基準", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    dod_items = [
+        ("第8章 7大節 理論の完全網羅", "PMM vs VMM・UEFI MemMap・退避・スタック・GDT・Paging・Bitmap", "#1565C0"),
+        ("数理導出・図版生成 (DPI 300)", "fig8_ex1_exercises_summary.png, fig8_ex2_ch8_mastery_radar.png", "#2E7D32"),
+        ("C++20 スタンドアロン検証コード", "os_chapter8_exercises.cpp が ctest で全件パス", "#E65100"),
+        ("10問自己採点クイズ & レーダーチャート", "Chapter8Quiz & Chapter8TheoryValidator が pytest パス", "#6A1B9A"),
+    ]
+
+    y_pos = 0.80
+    for title, desc, color in dod_items:
+        ax4.text(0.05, y_pos, f"✔ {title}", fontsize=9.2, fontweight="bold", color=color)
+        ax4.text(0.08, y_pos - 0.06, desc, fontsize=7.8, color="#546E7A")
+        y_pos -= 0.20
+
+    ax4.set_xlim(0, 1.0)
+    ax4.set_ylim(0, 1.0)
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_chapter8_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float]) -> Path:
+    """Generate 7-axis radar chart showing mastery rates across all 7 sections of Chapter 8."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    sections = [
+        "8.1\nメモリ管理動機\n&PMM vs VMM",
+        "8.2\nUEFIメモリマップ\n&48Bポインタ数理",
+        "8.3\n過渡的データ退避\n&生存期間安全性",
+        "8.4\nカーネルスタック\n&ABI 16B整合",
+        "8.5\nGDT記述子\n&iretq CS切替",
+        "8.6\n4階層ページング\n&2MiB Huge Page",
+        "8.7\nBitmapManager\n&First-Fitスキップ",
+    ]
+    sec_keys = [f"8.{i}" for i in range(1, 8)]
+    rates = [mastery_rates.get(k, 100.0) for k in sec_keys]
+
+    num_vars = len(sections)
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    rates_closed = rates + rates[:1]
+    angles_closed = angles + angles[:1]
+
+    fig = plt.figure(figsize=(9, 9))
+    fig.patch.set_facecolor("#FAFAFA")
+    ax = fig.add_subplot(111, polar=True)
+    ax.set_facecolor("#FFFFFF")
+
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+
+    ax.set_xticks(angles)
+    ax.set_xticklabels(sections, fontsize=8.8, fontweight="bold", color="#1A237E")
+
+    ax.set_rlabel_position(0)
+    plt.yticks([20, 40, 60, 80, 100], ["20%", "40%", "60%", "80%", "100%"],
+               color="#78909C", size=8)
+    plt.ylim(0, 105)
+
+    ax.plot(angles_closed, rates_closed, color="#1565C0", linewidth=2.2, linestyle="solid")
+    ax.fill(angles_closed, rates_closed, color="#1565C0", alpha=0.25)
+
+    for angle, rate, sec_name in zip(angles, rates, sections):
+        ax.scatter([angle], [rate], color="#0D47A1", s=40, zorder=5)
+        ax.text(angle, rate + 6, f"{rate:.0f}%", ha="center", va="center",
+                fontsize=8.5, fontweight="bold", color="#0D47A1")
+
+    avg_score = np.mean(rates)
+    plt.title(
+        f"第8章 メモリ管理 総合理解度レーダーチャート\n(Chapter 8 Mastery Radar - Average: {avg_score:.1f}%)\n",
+        fontsize=12, fontweight="bold", color="#1A237E", pad=15,
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path

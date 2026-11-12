@@ -222,6 +222,9 @@ add_test(NAME test_ch08_identity_paging_sim COMMAND ch08_identity_paging_sim --t
 add_executable(ch08_bitmap_memory_manager_sim src/ch08/bitmap_memory_manager_sim.cpp)
 add_test(NAME test_ch08_bitmap_memory_manager_sim COMMAND ch08_bitmap_memory_manager_sim --test)
 
+add_executable(ch08_os_chapter8_exercises src/ch08/os_chapter8_exercises.cpp)
+add_test(NAME test_ch08_os_chapter8_exercises COMMAND ch08_os_chapter8_exercises --test)
+
 add_executable(ch07_os_chapter7_exercises src/ch07/os_chapter7_exercises.cpp)
 add_test(NAME test_ch07_os_chapter7_exercises COMMAND ch07_os_chapter7_exercises --test)
 
