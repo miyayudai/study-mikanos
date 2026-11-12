@@ -96,7 +96,7 @@ cmake --build build
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | `[x]` 完了 (5/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | [`8_Exercises.ipynb`](8/8_Exercises.ipynb) | `[x]` 完了 (8/8) |
-| **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[-]` 進行中 (6/8) |
+| **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[-]` 進行中 (7/8) |
 | **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ、`TimerManager`、RSDPとACPI PMタイマ | `11_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第12章** | キー入力 | 6 | `day12a`–`12f` | FADT、タイマ較正、USBキーボードHID、テキストボックス | `12_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
@@ -250,6 +250,7 @@ cmake --build build
 | [`9.4_Profiling_Compositing_Performance.ipynb`](9/9.4_Profiling_Compositing_Performance.ipynb) | 9.4 重ね合わせ処理の時間計測（`osbook_day09b`・Local APIC (LAPIC) タイマ MMIO レジスタ配置 `0xFEE00000`・分周比 1:1・LVT タイママスクとワンショット計測・初期値減算数理・`volatile` 修飾子の意義・全画面再描画のボトルネックとフレーム予算 16.6ms 超過・マウス遅延とキュー滞留・$\mathcal{O}(W \cdot H)$ vs $\mathcal{O}(w \cdot h)$ 1000倍の格差と次節差分再描画への展望・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.4_Profiling_Compositing_Performance.ipynb) |
 | [`9.5_Optimizing_Layer_Redraw_Bounding_Box.ipynb`](9/9.5_Optimizing_Layer_Redraw_Bounding_Box.ipynb) | 9.5 重ね合わせ処理の高速化（`osbook_day09c`・FrameBufferクラス・画面VRAMとオフスクリーン抽象化・Windowシャドウバッファ`shadow_buffer_`・透過色有無によるDrawTo高速分岐・非透過レイヤのライン単位一括`memcpy`転送・2次元幾何クリッピング座標数理・120倍超の爆速化実証・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.5_Optimizing_Layer_Redraw_Bounding_Box.ipynb) |
 | [`9.6_Measuring_Console_Scroll_Time.ipynb`](9/9.6_Measuring_Console_Scroll_Time.ipynb) | 9.6 スクロール処理の時間計測（`osbook_day09d`・`printk`内Local APICタイマ計測・`[%9d]`フォーマット出力・コンソールスクロール時の57倍遅延解剖・全画面256,000ピクセル消去(82.8%)と24行全文字再展開(16.5%)の二大ボトルネック特定・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.6_Measuring_Console_Scroll_Time.ipynb) |
+| [`9.7_Optimizing_Scroll_with_memcpy.ipynb`](9/9.7_Optimizing_Scroll_with_memcpy.ipynb) | 9.7 スクロール処理の高速化（`osbook_day09e`・`FrameBuffer::Move`重複領域走査方向数理・`Window::Move`とシャドウバッファ連携・384ライン一括`memcpy`転送と最下行10,240ピクセルクリア・文字ビットマップ再展開ゼロ化・70倍超の劇的高速化実証・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.7_Optimizing_Scroll_with_memcpy.ipynb) |
 
 
 

@@ -8,6 +8,7 @@ build/
 generate_*.py
 generate_nb_*.py
 create_nb*.py
+create_notebook.py
 create_ch*.py
 make_notebook*.py
 build_*.py

@@ -535,6 +535,12 @@ from common.os_sim import (
     plot_fig9_16_console_scroll_overhead_mechanism,
     plot_fig9_17_scroll_time_measurement_timeline,
     plot_fig9_18_scroll_bottleneck_breakdown_and_comparison,
+    ScrollBenchmarkComparisonResult,
+    FrameBufferMoveSim,
+    ConsoleMemcpyScrollSim,
+    plot_fig9_19_framebuffer_move_overlap_mechanism,
+    plot_fig9_20_console_scroll_optimization_architecture,
+    plot_fig9_21_scroll_performance_comparison_benchmark,
 )
 
 __all__ = [
@@ -1072,4 +1078,10 @@ __all__ = [
     "plot_fig9_16_console_scroll_overhead_mechanism",
     "plot_fig9_17_scroll_time_measurement_timeline",
     "plot_fig9_18_scroll_bottleneck_breakdown_and_comparison",
+    "ScrollBenchmarkComparisonResult",
+    "FrameBufferMoveSim",
+    "ConsoleMemcpyScrollSim",
+    "plot_fig9_19_framebuffer_move_overlap_mechanism",
+    "plot_fig9_20_console_scroll_optimization_architecture",
+    "plot_fig9_21_scroll_performance_comparison_benchmark",
 ]

@@ -246,6 +246,9 @@ add_test(NAME test_ch09_optimizing_layer_redraw COMMAND ch09_optimizing_layer_re
 add_executable(ch09_measuring_scroll_time src/ch09/os_chapter9_measuring_scroll_time.cpp)
 add_test(NAME test_ch09_measuring_scroll_time COMMAND ch09_measuring_scroll_time)
 
+add_executable(ch09_optimizing_scroll src/ch09/os_chapter9_optimizing_scroll.cpp)
+add_test(NAME test_ch09_optimizing_scroll COMMAND ch09_optimizing_scroll)
+
 
 
 
