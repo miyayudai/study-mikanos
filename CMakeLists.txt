@@ -252,6 +252,11 @@ add_test(NAME test_ch09_optimizing_scroll COMMAND ch09_optimizing_scroll)
 add_executable(ch09_os_chapter9_exercises src/ch09/os_chapter9_exercises.cpp)
 add_test(NAME test_ch09_os_chapter9_exercises COMMAND ch09_os_chapter9_exercises --test)
 
+# Chapter 10
+add_executable(ch10_mouse_refactor src/ch10/os_chapter10_mouse_refactor.cpp)
+add_test(NAME test_ch10_mouse_refactor COMMAND ch10_mouse_refactor --test)
+
+
 
 
 

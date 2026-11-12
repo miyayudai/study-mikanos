@@ -541,6 +541,11 @@ from common.os_sim import (
     plot_fig9_19_framebuffer_move_overlap_mechanism,
     plot_fig9_20_console_scroll_optimization_architecture,
     plot_fig9_21_scroll_performance_comparison_benchmark,
+    MousePositionClampingSim,
+    WindowDrawClippingSim,
+    plot_fig10_01_mouse_clamping_and_screen_bounds,
+    plot_fig10_02_window_drawto_intersection_clipping_math,
+    plot_fig10_03_mouse_cursor_edge_rendering_simulation,
 )
 
 __all__ = [
@@ -1084,4 +1089,9 @@ __all__ = [
     "plot_fig9_19_framebuffer_move_overlap_mechanism",
     "plot_fig9_20_console_scroll_optimization_architecture",
     "plot_fig9_21_scroll_performance_comparison_benchmark",
+    "MousePositionClampingSim",
+    "WindowDrawClippingSim",
+    "plot_fig10_01_mouse_clamping_and_screen_bounds",
+    "plot_fig10_02_window_drawto_intersection_clipping_math",
+    "plot_fig10_03_mouse_cursor_edge_rendering_simulation",
 ]

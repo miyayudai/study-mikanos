@@ -97,7 +97,7 @@ cmake --build build
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | [`8_Exercises.ipynb`](8/8_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | [`9_Exercises.ipynb`](9/9_Exercises.ipynb) | `[x]` 完了 (8/8) |
-| **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
+| **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[x]` 進行中 (1/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ、`TimerManager`、RSDPとACPI PMタイマ | `11_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第12章** | キー入力 | 6 | `day12a`–`12f` | FADT、タイマ較正、USBキーボードHID、テキストボックス | `12_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
 | **第13章** | マルチタスク(1) | 5 | `day13a`–`13d` | `TaskContext`、`SwitchContext`アセンブリ、`TaskManager` | `13_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
@@ -252,6 +252,13 @@ cmake --build build
 | [`9.6_Measuring_Console_Scroll_Time.ipynb`](9/9.6_Measuring_Console_Scroll_Time.ipynb) | 9.6 スクロール処理の時間計測（`osbook_day09d`・`printk`内Local APICタイマ計測・`[%9d]`フォーマット出力・コンソールスクロール時の57倍遅延解剖・全画面256,000ピクセル消去(82.8%)と24行全文字再展開(16.5%)の二大ボトルネック特定・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.6_Measuring_Console_Scroll_Time.ipynb) |
 | [`9.7_Optimizing_Scroll_with_memcpy.ipynb`](9/9.7_Optimizing_Scroll_with_memcpy.ipynb) | 9.7 スクロール処理の高速化（`osbook_day09e`・`FrameBuffer::Move`重複領域走査方向数理・`Window::Move`とシャドウバッファ連携・384ライン一括`memcpy`転送と最下行10,240ピクセルクリア・文字ビットマップ再展開ゼロ化・70倍超の劇的高速化実証・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.7_Optimizing_Scroll_with_memcpy.ipynb) |
 | [`9_Exercises.ipynb`](9/9_Exercises.ipynb) | 第9章 演習問題（重ね合わせ処理・スクロール最適化総合演習・ペインター則と透過色合成数理・Newlib `sbrk`動的ヒープと4KiBページ切り上げ・`LayerManager`スマートポインタ所有権・Local APICタイマMMIOワンショット計測・2次元幾何クリッピング交差数理・走査線一括`memcpy`・スクロール重複判定と高速シフト数理・C++20単体検証・10問自己採点テスト・7軸レーダーチャート） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9_Exercises.ipynb) |
+
+### 第10章 ウィンドウ (`10/`)
+
+| ノートブック | 内容 | Colab で開く |
+|---|---|:---:|
+| [`10.1_Refactoring_Mouse_Class.ipynb`](10/10.1_Refactoring_Mouse_Class.ipynb) | 10.1 もっとマウス（`osbook_day10a`・マウス絶対座標追跡と画面矩形クランプ数理・ホットスポット消失問題の解決・透過色レイヤの幾何交差クリッピング数理・`Window::DrawTo` 二重ループ境界不等式導出・VRAM境界外アクセス完全防止・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/10/10.1_Refactoring_Mouse_Class.ipynb) |
+
 
 
 

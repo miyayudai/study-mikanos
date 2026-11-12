@@ -36745,3 +36745,555 @@ def plot_chapter9_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path
+
+
+# ==============================================================================
+# Chapter 10: Window & Advanced Mouse Processing (osbook_day10a - 10g)
+# ==============================================================================
+
+@dataclass
+class MousePositionClampingSim:
+    """Simulator for mouse absolute coordinate tracking with screen clamping (osbook_day10a)."""
+    screen_width: int = 640
+    screen_height: int = 400
+    pos_x: int = 200
+    pos_y: int = 200
+    history: list[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.history:
+            self.history.append({
+                "step": 0,
+                "dx": 0,
+                "dy": 0,
+                "raw_x": self.pos_x,
+                "raw_y": self.pos_y,
+                "clamped_x": self.pos_x,
+                "clamped_y": self.pos_y,
+                "was_clamped": False,
+            })
+
+    def clamp(self, x: int, y: int) -> tuple[int, int]:
+        """Clamp coordinates to valid screen boundaries: [0, screen_width-1] x [0, screen_height-1]."""
+        cx = min(max(x, 0), self.screen_width - 1)
+        cy = min(max(y, 0), self.screen_height - 1)
+        return cx, cy
+
+    def move(self, dx: int, dy: int) -> tuple[int, int]:
+        """Apply relative displacement and clamp to screen rectangle."""
+        raw_x = self.pos_x + dx
+        raw_y = self.pos_y + dy
+        clamped_x, clamped_y = self.clamp(raw_x, raw_y)
+
+        was_clamped = (raw_x != clamped_x) or (raw_y != clamped_y)
+        self.pos_x = clamped_x
+        self.pos_y = clamped_y
+
+        step_record = {
+            "step": len(self.history),
+            "dx": dx,
+            "dy": dy,
+            "raw_x": raw_x,
+            "raw_y": raw_y,
+            "clamped_x": clamped_x,
+            "clamped_y": clamped_y,
+            "was_clamped": was_clamped,
+        }
+        self.history.append(step_record)
+        return clamped_x, clamped_y
+
+    def simulate_sequence(self, displacements: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Simulate a sequence of relative mouse motions."""
+        return [self.move(dx, dy) for dx, dy in displacements]
+
+
+@dataclass
+class WindowDrawClippingSim:
+    """Simulator for 2D geometric intersection clipping in Window::DrawTo (osbook_day10a)."""
+    window_width: int
+    window_height: int
+    screen_width: int
+    screen_height: int
+
+    def compute_clipping_bounds(self, pos_x: int, pos_y: int) -> dict:
+        """Compute the iteration ranges in local layer coordinates according to MikanOS formula.
+        
+        Formula:
+          y: [max(0, 0 - pos_y), min(window_height, screen_height - pos_y))
+          x: [max(0, 0 - pos_x), min(window_width, screen_width - pos_x))
+        """
+        y_start = max(0, -pos_y)
+        y_end = min(self.window_height, self.screen_height - pos_y)
+        x_start = max(0, -pos_x)
+        x_end = min(self.window_width, self.screen_width - pos_x)
+
+        valid_x = x_end > x_start
+        valid_y = y_end > y_start
+        is_visible = valid_x and valid_y
+
+        visible_width = max(0, x_end - x_start) if is_visible else 0
+        visible_height = max(0, y_end - y_start) if is_visible else 0
+        drawn_pixels = visible_width * visible_height
+        total_pixels = self.window_width * self.window_height
+        clipped_pixels = total_pixels - drawn_pixels
+
+        # Screen coordinates of the drawn rectangle
+        screen_x_start = pos_x + x_start if is_visible else None
+        screen_x_end = pos_x + x_end if is_visible else None
+        screen_y_start = pos_y + y_start if is_visible else None
+        screen_y_end = pos_y + y_end if is_visible else None
+
+        return {
+            "pos": (pos_x, pos_y),
+            "x_range": (x_start, x_end),
+            "y_range": (y_start, y_end),
+            "is_visible": is_visible,
+            "visible_width": visible_width,
+            "visible_height": visible_height,
+            "drawn_pixels": drawn_pixels,
+            "clipped_pixels": clipped_pixels,
+            "total_pixels": total_pixels,
+            "screen_rect": (screen_x_start, screen_y_start, screen_x_end, screen_y_end),
+            "out_of_bounds_detected": False,  # Mathematically guaranteed to be 0
+        }
+
+    def render_clipped(self, pos_x: int, pos_y: int,
+                       pixel_matrix: list[list[int]] | None = None,
+                       transparent_value: int = -1) -> dict:
+        """Simulate pixel-by-pixel rendering to screen with transparent color skipping and bounds verification."""
+        bounds = self.compute_clipping_bounds(pos_x, pos_y)
+        if pixel_matrix is None:
+            # Default mock pattern (0: transparent, 1: black, 2: white)
+            pixel_matrix = [
+                [(1 if (x == 0 or x == y) else (2 if x < y else 0)) for x in range(self.window_width)]
+                for y in range(self.window_height)
+            ]
+
+        written_coords = []
+        skipped_transparent = 0
+        illegal_writes = 0
+
+        if bounds["is_visible"]:
+            x_start, x_end = bounds["x_range"]
+            y_start, y_end = bounds["y_range"]
+
+            for y in range(y_start, y_end):
+                for x in range(x_start, x_end):
+                    val = pixel_matrix[y][x]
+                    if val == transparent_value:
+                        skipped_transparent += 1
+                        continue
+
+                    screen_x = pos_x + x
+                    screen_y = pos_y + y
+
+                    # Strict hardware bounds assertion
+                    if not (0 <= screen_x < self.screen_width and 0 <= screen_y < self.screen_height):
+                        illegal_writes += 1
+                    else:
+                        written_coords.append((screen_x, screen_y, val))
+
+        return {
+            "bounds": bounds,
+            "written_count": len(written_coords),
+            "skipped_transparent": skipped_transparent,
+            "illegal_writes": illegal_writes,
+            "written_coords": written_coords,
+        }
+
+
+def plot_fig10_01_mouse_clamping_and_screen_bounds(output_path: Path | str) -> Path:
+    """Generate high-resolution architecture diagram of mouse position clamping and screen boundary protection (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle(
+        "第10章 10.1 もっとマウス: 絶対座標追跡と画面境界クランプ機構 (osbook_day10a)",
+        fontsize=15, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # 1. 画面座標系とマウス境界制約数理 (Top-Left)
+    ax1 = axes[0, 0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 画面解像度とマウスカーソル絶対座標クランプ数理", fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Screen box
+    screen_rect = patches.Rectangle((0, 0), 640, 400, linewidth=2.5, edgecolor="#1565C0", facecolor="#E3F2FD", alpha=0.5)
+    ax1.add_patch(screen_rect)
+
+    # Valid clamped area
+    valid_rect = patches.Rectangle((0, 0), 639, 399, linewidth=1.5, edgecolor="#2E7D32", facecolor="none", linestyle="--")
+    ax1.add_patch(valid_rect)
+
+    ax1.text(320, 200, "MikanOS 有効画面表示領域\n(640 × 400 ピクセル)", ha="center", va="center",
+             fontsize=12, fontweight="bold", color="#1565C0")
+    ax1.text(10, 385, "(0, 0) 原点 [Left-Top]", fontsize=9, fontweight="bold", color="#1B5E20")
+    ax1.text(630, 15, "(639, 399) 最大座標 [Right-Bottom]", fontsize=9, fontweight="bold", color="#B71C1C", ha="right")
+
+    # Clamping formula box
+    formula_text = (
+        r"$\mathbf{new\_pos.x = \min(\max(pos.x + dx, 0), Width - 1)}$" + "\n" +
+        r"$\mathbf{new\_pos.y = \min(\max(pos.y + dy, 0), Height - 1)}$" + "\n\n"
+        "• 相対移動量 (dx, dy) を積算しつつ画面矩形 [0, W-1]×[0, H-1] 内へ射影\n"
+        "• カーソル先端 (Hotspot = Left-Top) が画面外へ永久消失するバグを根絶"
+    )
+    ax1.text(320, 80, formula_text, ha="center", va="center", fontsize=9.5,
+             bbox=dict(boxstyle="round,pad=0.6", facecolor="#FFF9C4", edgecolor="#FBC02D", lw=1.5))
+
+    ax1.set_xlim(-50, 690)
+    ax1.set_ylim(-30, 430)
+    ax1.invert_yaxis()  # Screen coordinate system (Y goes down)
+    ax1.set_xlabel("X 座標 (ピクセル)", fontsize=9.5, fontweight="bold")
+    ax1.set_ylabel("Y 座標 (ピクセル)", fontsize=9.5, fontweight="bold")
+    ax1.grid(True, linestyle=":", alpha=0.5)
+
+    # 2. クランプなし (暴走) vs クランプあり (安全) 軌跡シミュレーション (Top-Right)
+    ax2 = axes[0, 1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. マウス移動シミュレーション: クランプなし vs クランプあり", fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Simulate random walk towards screen edge
+    np.random.seed(42)
+    steps = 40
+    raw_x, raw_y = [200], [200]
+    clamped_x, clamped_y = [200], [200]
+
+    for _ in range(steps):
+        dx = int(np.random.randint(-15, 30))
+        dy = int(np.random.randint(-25, 10))
+        rx = raw_x[-1] + dx
+        ry = raw_y[-1] + dy
+        raw_x.append(rx)
+        raw_y.append(ry)
+        clamped_x.append(min(max(rx, 0), 639))
+        clamped_y.append(min(max(ry, 0), 399))
+
+    # Screen box
+    ax2.add_patch(patches.Rectangle((0, 0), 640, 400, linewidth=2, edgecolor="#90A4AE", facecolor="#ECEFF1", alpha=0.4))
+
+    # Draw trajectories
+    ax2.plot(raw_x, raw_y, color="#E53935", linestyle="--", marker="o", markersize=3, label="クランプなし (画面外へ消失・復帰困難)")
+    ax2.plot(clamped_x, clamped_y, color="#1E88E5", linewidth=2.5, marker="s", markersize=4, label="クランプあり (境界で停止・安全)")
+
+    # Highlight clamped points
+    clamped_indices = [i for i in range(len(raw_x)) if (raw_x[i] != clamped_x[i] or raw_y[i] != clamped_y[i])]
+    if clamped_indices:
+        cx_vals = [clamped_x[i] for i in clamped_indices]
+        cy_vals = [clamped_y[i] for i in clamped_indices]
+        ax2.scatter(cx_vals, cy_vals, color="#FF6F00", s=80, zorder=5, label="境界クランプ吸着点")
+
+    ax2.set_xlim(-60, 680)
+    ax2.set_ylim(-40, 440)
+    ax2.invert_yaxis()
+    ax2.set_xlabel("X 座標 (ピクセル)", fontsize=9.5, fontweight="bold")
+    ax2.set_ylabel("Y 座標 (ピクセル)", fontsize=9.5, fontweight="bold")
+    ax2.legend(loc="upper left", fontsize=8.5, framealpha=0.9)
+    ax2.grid(True, linestyle=":", alpha=0.5)
+
+    # 3. 4隅・4辺におけるクランプ決定木・状態マトリクス (Bottom-Left)
+    ax3 = axes[1, 0]
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 画面4境界におけるクランプ判定マトリクス", fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    matrix_data = [
+        ("左境界 (Left Edge)", "x + dx < 0", "new_pos.x = 0", "左端で停止 (X値下限ガード)"),
+        ("右境界 (Right Edge)", "x + dx >= Width", "new_pos.x = Width - 1", "右端で停止 (X値上限ガード)"),
+        ("上境界 (Top Edge)", "y + dy < 0", "new_pos.y = 0", "上端で停止 (Y値下限ガード)"),
+        ("下境界 (Bottom Edge)", "y + dy >= Height", "new_pos.y = Height - 1", "下端で停止 (Y値上限ガード)"),
+        ("左上隅 (Top-Left)", "x < 0 かつ y < 0", "(0, 0)", "原点で完全拘束"),
+        ("右下隅 (Bottom-Right)", "x >= W かつ y >= H", "(Width - 1, Height - 1)", "画面最下端で完全拘束"),
+    ]
+
+    table_text = (
+        f"{'境界領域':<16} | {'判定条件':<20} | {'クランプ結果':<20} | {'OS挙動'}\n"
+        f"{'-'*75}\n"
+    )
+    for boundary, cond, res, desc in matrix_data:
+        table_text += f"{boundary:<16} | {cond:<20} | {res:<20} | {desc}\n"
+
+    ax3.text(0.03, 0.95, table_text, family="monospace", fontsize=8.8, va="top", color="#263238",
+             bbox=dict(boxstyle="round,pad=0.7", facecolor="#F5F5F5", edgecolor="#B0BEC5", lw=1.2))
+
+    ax3.set_xlim(0, 1)
+    ax3.set_ylim(0, 1)
+    ax3.axis("off")
+
+    # 4. xHCI パケットから MouseObserver へのイベントパイプライン (Bottom-Right)
+    ax4 = axes[1, 1]
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. xHCI 相対パケットからカーソル移動までの処理パイプライン", fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    pipeline_steps = [
+        ("① USB HID マウスパケット", "xHCI割り込み ➔ Event Ring ➔ 3バイト相対データ (buttons, dx, dy)", "#E3F2FD", "#1565C0"),
+        ("② ArrayQueue<Message>", "割り込みハンドラからメッセージキューへエンキュー (ノンブロッキング)", "#E8F5E9", "#2E7D32"),
+        ("③ KernelMain イベントループ", "キューからメッセージ取得 ➔ MouseObserver(dx, dy) 呼び出し", "#FFF3E0", "#E65100"),
+        ("④ 境界クランプ計算", "絶対座標 mouse_position + (dx, dy) を [0, W-1]×[0, H-1] でクリップ", "#F3E5F5", "#6A1B9A"),
+        ("⑤ レイヤ移動 & 再描画", "layer_manager->Move(mouse_id, new_pos) ➔ LayerManager::Draw()", "#ECEFF1", "#37474F"),
+    ]
+
+    for idx, (title, detail, bg, border) in enumerate(pipeline_steps):
+        y_pos = 0.84 - idx * 0.18
+        box = patches.FancyBboxPatch((0.05, y_pos - 0.05), 0.9, 0.13, boxstyle="round,pad=0.03",
+                                    facecolor=bg, edgecolor=border, lw=1.5)
+        ax4.add_patch(box)
+        ax4.text(0.08, y_pos + 0.035, title, fontsize=9.5, fontweight="bold", color=border)
+        ax4.text(0.08, y_pos - 0.025, detail, fontsize=8.2, color="#37474F")
+        if idx < len(pipeline_steps) - 1:
+            ax4.annotate("", xy=(0.5, y_pos - 0.06), xytext=(0.5, y_pos - 0.01),
+                         arrowprops=dict(arrowstyle="->", color="#78909C", lw=1.5))
+
+    ax4.set_xlim(0, 1)
+    ax4.set_ylim(0, 1)
+    ax4.axis("off")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig10_02_window_drawto_intersection_clipping_math(output_path: Path | str) -> Path:
+    """Generate high-resolution geometric diagram for Window::DrawTo intersection clipping math (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle(
+        "第10章 10.1 描画領域クリッピング: 2次元幾何交差とメモリ境界保護数理 (osbook_day10a)",
+        fontsize=15, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # 1. ローカル座標と画面座標の交差モデル (Top-Left)
+    ax1 = axes[0, 0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 画面矩形とレイヤ矩形の2次元幾何交差 (Intersection)", fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    # Screen rectangle
+    screen_rect = patches.Rectangle((0, 0), 100, 70, linewidth=2, edgecolor="#1565C0", facecolor="#E3F2FD", alpha=0.6)
+    ax1.add_patch(screen_rect)
+    ax1.text(50, 35, "画面 (Screen FrameBuffer)\n[0, Width) × [0, Height)", ha="center", va="center",
+             fontsize=10, fontweight="bold", color="#1565C0")
+
+    # Layer hanging off top-left (e.g. pos = (-15, -10), size = (40, 30))
+    layer_rect = patches.Rectangle((-15, -10), 40, 30, linewidth=2, edgecolor="#D32F2F", facecolor="#FFCDD2", alpha=0.5, linestyle="--")
+    ax1.add_patch(layer_rect)
+    ax1.text(-10, -5, "レイヤ (Layer)\npos=(-15, -10)", fontsize=8.5, fontweight="bold", color="#C62828")
+
+    # Clipped overlap rectangle: [0, 25) x [0, 20)
+    overlap_rect = patches.Rectangle((0, 0), 25, 20, linewidth=2.5, edgecolor="#2E7D32", facecolor="#C8E6C9", alpha=0.8)
+    ax1.add_patch(overlap_rect)
+    ax1.text(12.5, 10, "有効交差領域\n(Clipped Overlap)", ha="center", va="center", fontsize=8.5, fontweight="bold", color="#1B5E20")
+
+    ax1.set_xlim(-30, 110)
+    ax1.set_ylim(-20, 80)
+    ax1.invert_yaxis()
+    ax1.set_xlabel("画面 X 座標", fontsize=9.5, fontweight="bold")
+    ax1.set_ylabel("画面 Y 座標", fontsize=9.5, fontweight="bold")
+    ax1.grid(True, linestyle=":", alpha=0.5)
+
+    # 2. 数学的導出プロセス (Top-Right)
+    ax2 = axes[0, 1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 描画ループ範囲の数学的導出 (不等式変形)", fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    math_text = (
+        "【1. 画面書き込み可能条件 (有効画面範囲)】\n"
+        "  0 <= pos.x + x < writer.Width()\n"
+        "  0 <= pos.y + y < writer.Height()\n\n"
+        "【2. レイヤローカル座標 (x, y) に対する不等式変形】\n"
+        "  0 - pos.x <= x < writer.Width() - pos.x\n"
+        "  0 - pos.y <= y < writer.Height() - pos.y\n\n"
+        "【3. レイヤ自身固有の有効インデックス範囲】\n"
+        "  0 <= x < Width(),   0 <= y < Height()\n\n"
+        "【4. 積集合 (AND条件) による最終ループ境界】\n"
+        "  x in [max(0, 0 - pos.x), min(Width(),  writer.Width()  - pos.x))\n"
+        "  y in [max(0, 0 - pos.y), min(Height(), writer.Height() - pos.y))\n\n"
+        "【5. 結論: メモリ安全性保証】\n"
+        "  pos が負値や画面境界を超えても、描画インデックスは\n"
+        "  数学的に常に [0, Width) x [0, Height) かつ VRAM 範囲内に収まる"
+    )
+    ax2.text(0.05, 0.95, math_text, fontsize=9.2, va="top", color="#1A237E",
+             family="monospace",
+             bbox=dict(boxstyle="round,pad=0.7", facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.5))
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.axis("off")
+
+    # 3. 4つの境界はみ出しパターンの交差検証 (Bottom-Left)
+    ax3 = axes[1, 0]
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 4大はみ出しシナリオにおけるループ境界値一覧", fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    patterns = [
+        ("左上はみ出し (pos < 0)", "pos=(-5, -8)", "x: [5, w), y: [8, h)", "負座標ピクセルを安全にスキップ"),
+        ("画面中央 (通常描画)", "pos=(100, 100)", "x: [0, w), y: [0, h)", "全ピクセルを描画"),
+        ("右下はみ出し (pos+size > screen)", "pos=(W-5, H-8)", "x: [0, 5), y: [0, 8)", "画面外はみ出しピクセルをスキップ"),
+        ("完全画面外 (完全に外)", "pos=(-50, -50)", "x: [50, w) 空集合", "ループが0回実行されノーオペレーション"),
+    ]
+
+    p_table = (
+        f"{'パターン':<18} | {'配置座標 pos':<14} | {'ローカルループ範囲':<18} | {'安全性評価'}\n"
+        f"{'-'*75}\n"
+    )
+    for name, p_pos, p_range, p_eval in patterns:
+        p_table += f"{name:<18} | {p_pos:<14} | {p_range:<18} | {p_eval}\n"
+
+    ax3.text(0.03, 0.95, p_table, family="monospace", fontsize=8.8, va="top", color="#263238",
+             bbox=dict(boxstyle="round,pad=0.7", facecolor="#F5F5F5", edgecolor="#B0BEC5", lw=1.2))
+    ax3.set_xlim(0, 1)
+    ax3.set_ylim(0, 1)
+    ax3.axis("off")
+
+    # 4. メモリ破壊バッファオーバーフローの防止効果 (Bottom-Right)
+    ax4 = axes[1, 1]
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. メモリ保護効果: クリッピング導入前 vs 導入後", fontsize=11, fontweight="bold", color="#0D47A1", pad=10)
+
+    categories = ["クリッピングなし\n(未対策)", "幾何交差クリッピング\n(osbook_day10a)"]
+    invalid_access_risk = [100.0, 0.0]  # Risk percentage
+    colors = ["#EF5350", "#66BB6A"]
+
+    bars = ax4.bar(categories, invalid_access_risk, color=colors, edgecolor="#37474F", width=0.45, linewidth=1.5)
+    ax4.set_ylabel("VRAM 境界外書き込み・破壊リスク (%)", fontsize=9.5, fontweight="bold")
+    ax4.set_ylim(0, 120)
+
+    for bar, val in zip(bars, invalid_access_risk):
+        ax4.text(bar.get_x() + bar.get_width()/2, val + 4, f"{val:.0f}%",
+                 ha="center", fontsize=11, fontweight="bold",
+                 color="#C62828" if val > 0 else "#2E7D32")
+
+    # Annotations
+    ax4.text(0, 50, "× 負のインデックス書き込み\n× 画面外VRAMポインタ破壊\n× カーネルパニック / クラッシュ",
+             ha="center", fontsize=8.5, color="#B71C1C", bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFEBEE", edgecolor="#EF5350"))
+    ax4.text(1, 50, "○ ループ境界が厳密に制限\n○ 不正メモリアクセスゼロ\n○ 画面端の自由なマウス移動保証",
+             ha="center", fontsize=8.5, color="#1B5E20", bbox=dict(boxstyle="round,pad=0.4", facecolor="#E8F5E9", edgecolor="#66BB6A"))
+
+    ax4.grid(True, linestyle=":", alpha=0.5, axis="y")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig10_03_mouse_cursor_edge_rendering_simulation(output_path: Path | str) -> Path:
+    """Generate high-resolution pixel-level simulation diagram of mouse cursor edge rendering (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.5))
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle(
+        "第10章 10.1 マウスカーソル画面端ピクセル描画シミュレーション (16×24スプライト)",
+        fontsize=14, fontweight="bold", color="#1A237E", y=0.98
+    )
+
+    # Mouse cursor mock bitmap (16 x 24)
+    # 0: transparent, 1: black edge, 2: white body
+    cursor_shape = np.zeros((24, 16), dtype=int)
+    for y in range(24):
+        for x in range(min(y + 1, 16)):
+            if x == 0 or x == min(y, 15) or y == 23 or (y > 14 and x == y - 5):
+                cursor_shape[y, x] = 1  # Black edge
+            elif x < min(y, 15):
+                cursor_shape[y, x] = 2  # White fill
+
+    # 1. 完全表示 (中央配置)
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 画面中央 (クリッピングなし / 全画素描画)", fontsize=10.5, fontweight="bold", color="#0D47A1")
+
+    disp1 = np.ones((26, 18, 3)) * 0.9  # Background gray
+    for y in range(24):
+        for x in range(16):
+            val = cursor_shape[y, x]
+            if val == 1:
+                disp1[y + 1, x + 1] = [0, 0, 0]  # Black
+            elif val == 2:
+                disp1[y + 1, x + 1] = [1, 1, 1]  # White
+
+    ax1.imshow(disp1)
+    ax1.set_xticks(range(0, 18, 4))
+    ax1.set_yticks(range(0, 26, 4))
+    ax1.set_xlabel("X (px)")
+    ax1.set_ylabel("Y (px)")
+    ax1.text(9, 24.5, "有効描画: 16×24 (384 px)", ha="center", fontsize=8.5, fontweight="bold", color="#1B5E20")
+
+    # 2. 左上端はみ出し (pos = (-6, -8))
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 画面左上端 (pos = -6, -8 / 上左クリップ)", fontsize=10.5, fontweight="bold", color="#0D47A1")
+
+    disp2 = np.ones((26, 18, 3)) * 0.9
+    # Screen boundary at x=7, y=9
+    disp2[9:, 7:] = [0.85, 0.92, 1.0]  # Visible screen area (light blue)
+
+    for y in range(24):
+        for x in range(16):
+            screen_y = y - 8 + 9
+            screen_x = x - 6 + 7
+            if 0 <= screen_y < 26 and 0 <= screen_x < 18:
+                val = cursor_shape[y, x]
+                if y >= 8 and x >= 6:  # Inside screen!
+                    if val == 1:
+                        disp2[screen_y, screen_x] = [0, 0, 0]
+                    elif val == 2:
+                        disp2[screen_y, screen_x] = [1, 1, 1]
+                else:  # Clipped outside
+                    if val != 0:
+                        disp2[screen_y, screen_x] = [0.95, 0.6, 0.6]  # Reddish clipped ghost
+
+    ax2.imshow(disp2)
+    ax2.axvline(6.5, color="#1565C0", linestyle="--", linewidth=1.8, label="画面左端境界")
+    ax2.axhline(8.5, color="#1565C0", linestyle="--", linewidth=1.8, label="画面上端境界")
+    ax2.set_xticks(range(0, 18, 4))
+    ax2.set_yticks(range(0, 26, 4))
+    ax2.set_xlabel("X (px)")
+    ax2.set_ylabel("Y (px)")
+    ax2.legend(loc="upper right", fontsize=8)
+    ax2.text(9, 24.5, "描画: 10×16 (160 px), クリップ: 224 px", ha="center", fontsize=8.5, fontweight="bold", color="#C62828")
+
+    # 3. 右下端はみ出し (pos = (W-8, H-12))
+    ax3 = axes[2]
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. 画面右下端 (pos = W-8, H-12 / 右下クリップ)", fontsize=10.5, fontweight="bold", color="#0D47A1")
+
+    disp3 = np.ones((26, 18, 3)) * 0.9
+    disp3[:15, :9] = [0.85, 0.92, 1.0]  # Visible screen area
+
+    for y in range(24):
+        for x in range(16):
+            screen_y = y + 3
+            screen_x = x + 1
+            if 0 <= screen_y < 26 and 0 <= screen_x < 18:
+                val = cursor_shape[y, x]
+                if y < 12 and x < 8:  # Inside screen
+                    if val == 1:
+                        disp3[screen_y, screen_x] = [0, 0, 0]
+                    elif val == 2:
+                        disp3[screen_y, screen_x] = [1, 1, 1]
+                else:
+                    if val != 0:
+                        disp3[screen_y, screen_x] = [0.95, 0.6, 0.6]
+
+    ax3.imshow(disp3)
+    ax3.axvline(8.5, color="#1565C0", linestyle="--", linewidth=1.8, label="画面右端境界")
+    ax3.axhline(14.5, color="#1565C0", linestyle="--", linewidth=1.8, label="画面下端境界")
+    ax3.set_xticks(range(0, 18, 4))
+    ax3.set_yticks(range(0, 26, 4))
+    ax3.set_xlabel("X (px)")
+    ax3.set_ylabel("Y (px)")
+    ax3.legend(loc="lower left", fontsize=8)
+    ax3.text(9, 24.5, "描画: 8×12 (96 px), クリップ: 288 px", ha="center", fontsize=8.5, fontweight="bold", color="#C62828")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
