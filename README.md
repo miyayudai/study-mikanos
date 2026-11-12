@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-556%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-30.7%25%20(70%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-572%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-31.6%25%20(72%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -96,7 +96,7 @@ cmake --build build
 | **第6章** | マウス入力とPCI | 4 | `day06a`–`06c` | マウスカーソル、PCI探索、xHCI初期化とポーリング | [`6_Exercises.ipynb`](6/6_Exercises.ipynb) | `[x]` 完了 (5/5) |
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | [`8_Exercises.ipynb`](8/8_Exercises.ipynb) | `[x]` 完了 (8/8) |
-| **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
+| **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | `9_Exercises.ipynb` | `[-]` 進行中 (1/8) |
 | **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[ ]` 未着手 (0/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ、`TimerManager`、RSDPとACPI PMタイマ | `11_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第12章** | キー入力 | 6 | `day12a`–`12f` | FADT、タイマ較正、USBキーボードHID、テキストボックス | `12_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
@@ -239,6 +239,12 @@ cmake --build build
 | [`8.6_Setting_Up_Identity_Paging.ipynb`](8/8.6_Setting_Up_Identity_Paging.ipynb) | 8.6 ページングの設定（`osbook_day08b`/`08c`・Long Modeとページング必須要件`CR0.PG=1`・UEFIページテーブル脱却・48bit正規仮想アドレス分解`9+9+9+9+12`・PML4/PDP/PD/PT 4階層探索・2MiB Huge PageによるPT全廃・4KiBアライメント制約`alignas(4096)`・64GiB恒等マッピング数理・128MiBから264KiBへ485倍メモリ削減・エントリフラグ`0x003`と`0x083`導出・`CR3`レジスタ設定と自動TLBフラッシュ・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/8/8.6_Setting_Up_Identity_Paging.ipynb) |
 | [`8.7_Implementing_BitmapMemoryManager.ipynb`](8/8.7_Implementing_BitmapMemoryManager.ipynb) | 8.7 メモリ管理に挑戦（`osbook_day08c`・4KiBページフレーム数理・空間オーバーヘッド`0.00305%`導出・ユーザー定義リテラルと強い型付け`FrameID`/`kNullFrame`・128GiB=3355万フレーム=4MiBビットマップ・1MiBスタック溢れ回避と`.bss`配置`new`・`static_cast<MapLineType>(1)<<bit_index` 64bitシフト安全性・First-Fit `start_frame_id += i + 1` $\mathcal{O}(N)$ スキップ証明・`Free()`自動合体と外部断片化・UEFI `MemoryMap`走査初期化3大不変条件・ホスト単体テスト`CppUTest`全7ケース・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/8/8.7_Implementing_BitmapMemoryManager.ipynb) |
 | [`8_Exercises.ipynb`](8/8_Exercises.ipynb) | 第8章 演習問題（メモリ管理総合演習・PMM vs VMM数理・UEFIメモリマップ48B走査とOff-by-8防止・過渡的メモリ退避・.bss 1MiBスタックとSystem V ABI 16B整合・GDT 64bit CSとiretqスタック偽装切替・2MiB Huge Page 64GiB恒等ページング・BitmapMemoryManager First-Fit O(N)スキップ最適化・C++20単体検証・10問自己採点テスト・7軸レーダーチャート） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/8/8_Exercises.ipynb) |
+
+### 第9章 重ね合わせ処理 (`9/`)
+
+| ノートブック | 内容 | Colab で開く |
+|---|---|:---:|
+| [`9.1_Introduction_to_Layer_Compositing.ipynb`](9/9.1_Introduction_to_Layer_Compositing.ipynb) | 9.1 重ね合わせ処理（`osbook_day09a`・マウス移動時の背景破壊問題・画家アルゴリズム・オフスクリーンWindowと透過色カラーキーイング・`Vector2D<T>`・`Layer`・`LayerManager`重なり順スタックと`UpDown`・全画面再描画のボトルネック・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/9/9.1_Introduction_to_Layer_Compositing.ipynb) |
 
 
 

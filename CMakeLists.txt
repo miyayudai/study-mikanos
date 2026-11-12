@@ -228,6 +228,9 @@ add_test(NAME test_ch08_os_chapter8_exercises COMMAND ch08_os_chapter8_exercises
 add_executable(ch07_os_chapter7_exercises src/ch07/os_chapter7_exercises.cpp)
 add_test(NAME test_ch07_os_chapter7_exercises COMMAND ch07_os_chapter7_exercises --test)
 
+add_executable(ch09_layer_intro src/ch09/os_chapter9_layer_intro.cpp)
+add_test(NAME test_ch09_layer_intro COMMAND ch09_layer_intro --test)
+
 
 
 

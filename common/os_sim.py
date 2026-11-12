@@ -15407,6 +15407,15 @@ class PixelColorSim:
         else:
             raise ValueError(f"Unsupported PixelFormat: {fmt}")
 
+    def to_rgb_tuple(self) -> tuple[int, int, int]:
+        return (self.r, self.g, self.b)
+
+    def to_hex(self) -> str:
+        return f"#{self.r:02x}{self.g:02x}{self.b:02x}"
+
+    def to_normalized_tuple(self) -> tuple[float, float, float]:
+        return (self.r / 255.0, self.g / 255.0, self.b / 255.0)
+
 
 class WritePixelSimulator:
     """Simulates MikanOS WritePixel and frame buffer operations matching osbook_day04b."""
@@ -21336,6 +21345,9 @@ class Vector2DSim:
 
     def as_tuple(self) -> Tuple[int, int]:
         return (self.x, self.y)
+
+    def __repr__(self) -> str:
+        return f"Vector2D({self.x}, {self.y})"
 
 
 Vector2D = Vector2DSim
@@ -32925,6 +32937,444 @@ def plot_chapter8_mastery_radar(output_path: Path | str, mastery_rates: dict[str
     )
 
     plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+# ==============================================================================
+# Chapter 9.1: Layer Compositing & Painter's Algorithm Simulation
+# ==============================================================================
+
+class WindowSim:
+    """Simulates MikanOS Window class holding off-screen 2D pixel buffer."""
+    def __init__(self, width: int, height: int, fill_color: PixelColorSim = PixelColorSim(0, 0, 0)) -> None:
+        self.width = width
+        self.height = height
+        self.data: list[list[PixelColorSim]] = [
+            [fill_color for _ in range(width)] for _ in range(height)
+        ]
+        self.transparent_color: Optional[PixelColorSim] = None
+
+    def set_transparent_color(self, color: Optional[PixelColorSim]) -> None:
+        self.transparent_color = color
+
+    def write(self, x: int, y: int, color: PixelColorSim) -> None:
+        if 0 <= x < self.width and 0 <= y < self.height:
+            self.data[y][x] = color
+
+    def at(self, x: int, y: int) -> PixelColorSim:
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self.data[y][x]
+        raise IndexError(f"Window coordinate ({x}, {y}) out of bounds ({self.width}x{self.height})")
+
+    def draw_to(self, writer_data: list[list[PixelColorSim]], position: Vector2DSim) -> None:
+        """Render window onto target buffer with transparent color skipping and clipping."""
+        target_h = len(writer_data)
+        if target_h == 0:
+            return
+        target_w = len(writer_data[0])
+
+        tc = self.transparent_color
+        for wy in range(self.height):
+            sy = position.y + wy
+            if sy < 0 or sy >= target_h:
+                continue
+            for wx in range(self.width):
+                sx = position.x + wx
+                if sx < 0 or sx >= target_w:
+                    continue
+                color = self.data[wy][wx]
+                if tc is not None and color == tc:
+                    continue
+                writer_data[sy][sx] = color
+
+
+class LayerSim:
+    """Simulates MikanOS Layer class holding window reference and 2D coordinate."""
+    def __init__(self, layer_id: int = 0) -> None:
+        self.id = layer_id
+        self.pos = Vector2DSim(0, 0)
+        self.window: Optional[WindowSim] = None
+
+    def set_window(self, window: WindowSim) -> LayerSim:
+        self.window = window
+        return self
+
+    def move(self, pos: Vector2DSim) -> LayerSim:
+        self.pos = pos
+        return self
+
+    def move_relative(self, diff: Vector2DSim) -> LayerSim:
+        self.pos = self.pos + diff
+        return self
+
+    def draw_to(self, writer_data: list[list[PixelColorSim]]) -> None:
+        if self.window is not None:
+            self.window.draw_to(writer_data, self.pos)
+
+
+class LayerManagerSim:
+    """Simulates MikanOS LayerManager managing layer pool, z-order stack, and compositing."""
+    def __init__(self, screen_width: int, screen_height: int, bg_color: PixelColorSim = PixelColorSim(45, 118, 237)) -> None:
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.bg_color = bg_color
+        self.frame_buffer: list[list[PixelColorSim]] = [
+            [bg_color for _ in range(screen_width)] for _ in range(screen_height)
+        ]
+        self.layers: dict[int, LayerSim] = {}
+        self.layer_stack: list[int] = []  # Indices in ascending order (0 = back, -1 = front)
+        self.latest_id = 0
+
+    def new_layer(self) -> LayerSim:
+        self.latest_id += 1
+        layer = LayerSim(self.latest_id)
+        self.layers[self.latest_id] = layer
+        return layer
+
+    def find_layer(self, layer_id: int) -> Optional[LayerSim]:
+        return self.layers.get(layer_id)
+
+    def up_down(self, layer_id: int, new_height: int) -> None:
+        """Change layer z-order height or hide if new_height < 0."""
+        if new_height < 0:
+            self.hide(layer_id)
+            return
+        if new_height > len(self.layer_stack):
+            new_height = len(self.layer_stack)
+
+        if layer_id not in self.layers:
+            return
+
+        old_idx = self.layer_stack.index(layer_id) if layer_id in self.layer_stack else None
+
+        if old_idx is None:
+            self.layer_stack.insert(new_height, layer_id)
+            return
+
+        new_idx = new_height
+        if new_idx == len(self.layer_stack):
+            new_idx -= 1
+        self.layer_stack.pop(old_idx)
+        self.layer_stack.insert(new_idx, layer_id)
+
+    def hide(self, layer_id: int) -> None:
+        if layer_id in self.layer_stack:
+            self.layer_stack.remove(layer_id)
+
+    def move(self, layer_id: int, new_pos: Vector2DSim) -> None:
+        if layer_id in self.layers:
+            self.layers[layer_id].move(new_pos)
+
+    def move_relative(self, layer_id: int, diff: Vector2DSim) -> None:
+        if layer_id in self.layers:
+            self.layers[layer_id].move_relative(diff)
+
+    def draw(self) -> None:
+        """Composite all visible layers from bottom to top (Painter's Algorithm)."""
+        # Clear frame buffer to default background
+        for y in range(self.screen_height):
+            for x in range(self.screen_width):
+                self.frame_buffer[y][x] = self.bg_color
+
+        for lid in self.layer_stack:
+            layer = self.layers.get(lid)
+            if layer:
+                layer.draw_to(self.frame_buffer)
+
+    def to_numpy_array(self) -> np.ndarray:
+        arr = np.zeros((self.screen_height, self.screen_width, 3), dtype=np.uint8)
+        for y in range(self.screen_height):
+            for x in range(self.screen_width):
+                c = self.frame_buffer[y][x]
+                arr[y, x] = [c.r, c.g, c.b]
+        return arr
+
+
+class BackgroundDestructionComparator:
+    """Compares naive screen overwrite vs layer compositing."""
+    @staticmethod
+    def simulate_naive_vs_layer_movement() -> dict[str, Any]:
+        bg_col = PixelColorSim(45, 118, 237)
+        text_col = PixelColorSim(255, 255, 255)
+        cursor_col = PixelColorSim(0, 0, 0)
+        cursor_trans = PixelColorSim(123, 123, 123)
+
+        # Naive approach buffer
+        naive_buf = [[bg_col for _ in range(30)] for _ in range(30)]
+        naive_buf[15][15] = text_col
+        # Step 1: Cursor covers (15, 15)
+        naive_buf[15][15] = cursor_col
+        # Step 2: Cursor moves, erasing old position with bg_col
+        naive_buf[15][15] = bg_col
+        naive_buf[20][20] = cursor_col
+        naive_text_pixel_preserved = (naive_buf[15][15] == text_col)
+
+        # Layer approach
+        mgr = LayerManagerSim(30, 30, bg_col)
+        bg_win = WindowSim(30, 30, bg_col)
+        bg_win.write(15, 15, text_col)
+        cursor_win = WindowSim(5, 5, cursor_trans)
+        cursor_win.set_transparent_color(cursor_trans)
+        cursor_win.write(0, 0, cursor_col)
+
+        l_bg = mgr.new_layer().set_window(bg_win).move(Vector2DSim(0, 0))
+        l_cur = mgr.new_layer().set_window(cursor_win).move(Vector2DSim(15, 15))
+        mgr.up_down(l_bg.id, 0)
+        mgr.up_down(l_cur.id, 1)
+
+        mgr.draw()
+        layer_step1_cursor_at_15 = (mgr.frame_buffer[15][15] == cursor_col)
+
+        # Move cursor to (20, 20) and redraw
+        mgr.move(l_cur.id, Vector2DSim(20, 20))
+        mgr.draw()
+        layer_text_pixel_preserved = (mgr.frame_buffer[15][15] == text_col)
+
+        return {
+            "naive_text_preserved": naive_text_pixel_preserved,
+            "layer_text_preserved": layer_text_pixel_preserved,
+            "layer_step1_cursor": layer_step1_cursor_at_15,
+            "cursor_new_pos_correct": (mgr.frame_buffer[20][20] == cursor_col),
+        }
+
+
+def plot_fig9_01_background_destruction_vs_layer_compositing(output_path: Path | str = "9/result/fig9_01_background_destruction_vs_layer_compositing.png") -> Path:
+    """Figure 9.01: Comparison of Background Destruction (Naive Overwrite) vs Layer Compositing."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6.5))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Colors
+    c_bg = "#2D76ED"
+    c_text = "#FFFFFF"
+    c_cursor = "#000000"
+
+    # Left: Naive Approach (Destruction)
+    ax0 = axes[0]
+    ax0.set_facecolor("#FFF5F5")
+    ax0.set_title("【従来の方式 (第8章まで)】直接描画と背景破壊問題\n(Naive Framebuffer Direct Overwriting)", fontsize=11, fontweight="bold", color="#C62828")
+
+    # Steps for left
+    steps_left = [
+        ("Step 1: 初期状態\n(デスクトップ上に文字を描画)", "文字 'A' (白) がVRAMに直接書き込まれている", 0.82),
+        ("Step 2: マウスカーソルが通過\n(文字の上にマウスを描画)", "マウスの黒ピクセルで文字ピクセルが上書きされる", 0.52),
+        ("Step 3: マウスが移動\n(直前の位置を背景色で消去)", "[!] 直前の矩形を単色で塗りつぶすため文字が消滅！\n    (背景情報が永久破壊される)", 0.22),
+    ]
+
+    for title, desc, y in steps_left:
+        bbox = FancyBboxPatch((0.05, y - 0.10), 0.90, 0.18, boxstyle="round,pad=0.02,rounding_size=0.03",
+                              facecolor="#FFFFFF", edgecolor="#EF5350", linewidth=1.5)
+        ax0.add_patch(bbox)
+        ax0.text(0.08, y + 0.04, title, fontsize=9.5, fontweight="bold", color="#B71C1C", va="center")
+        ax0.text(0.08, y - 0.03, desc, fontsize=8.5, color="#37474F", va="center")
+
+    ax0.set_xlim(0, 1.0)
+    ax0.set_ylim(0.05, 0.98)
+    ax0.axis("off")
+
+    # Right: Layer Compositing Approach
+    ax1 = axes[1]
+    ax1.set_facecolor("#F1F8E9")
+    ax1.set_title("【新方式 (第9章〜)】レイヤ重ね合わせ処理 (画家アルゴリズム)\n(Layer Compositing & Painter's Algorithm)", fontsize=11, fontweight="bold", color="#2E7D32")
+
+    steps_right = [
+        ("Step 1: 独立したレイヤ管理\n(背景レイヤ & マウスレイヤ)", "背景(文字)とマウスは別々のオフスクリーン Window に保持", 0.82),
+        ("Step 2: 画家アルゴリズムによる合成\n(奥のレイヤから手前へ順番に描画)", "最背面(背景+文字)を描画後、最前面(マウス)を透過合成", 0.52),
+        ("Step 3: マウス移動と再描画\n(背景レイヤは完全に無傷！)", "[OK] 奥から全レイヤを描き直すことで文字が100%復元！\n     (非破壊・完全整合なマルチレイヤGUI)", 0.22),
+    ]
+
+    for title, desc, y in steps_right:
+        bbox = FancyBboxPatch((0.05, y - 0.10), 0.90, 0.18, boxstyle="round,pad=0.02,rounding_size=0.03",
+                              facecolor="#FFFFFF", edgecolor="#66BB6A", linewidth=1.5)
+        ax1.add_patch(bbox)
+        ax1.text(0.08, y + 0.04, title, fontsize=9.5, fontweight="bold", color="#1B5E20", va="center")
+        ax1.text(0.08, y - 0.03, desc, fontsize=8.5, color="#37474F", va="center")
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0.05, 0.98)
+    ax1.axis("off")
+
+    plt.suptitle("Figure 9.01: 背景破壊問題 vs レイヤ重ね合わせ処理 (画家アルゴリズム) の原理対比", fontsize=13, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_02_layer_compositing_architecture(output_path: Path | str = "9/result/fig9_02_layer_compositing_architecture.png") -> Path:
+    """Figure 9.02: Window, Layer, and LayerManager Architecture and Memory Pipeline."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, ax = plt.subplots(figsize=(13, 7.5))
+    fig.patch.set_facecolor("#FAFAFA")
+    ax.set_facecolor("#FFFFFF")
+
+    # LayerManager Box
+    lm_box = FancyBboxPatch((0.03, 0.55), 0.38, 0.38, boxstyle="round,pad=0.02,rounding_size=0.03",
+                            facecolor="#E3F2FD", edgecolor="#1976D2", linewidth=2.0)
+    ax.add_patch(lm_box)
+    ax.text(0.05, 0.88, "LayerManager", fontsize=12, fontweight="bold", color="#0D47A1")
+    ax.text(0.05, 0.83, "・writer_: PixelWriter* (描画先VRAM)", fontsize=8.8, color="#1565C0")
+    ax.text(0.05, 0.77, "・layers_: vector<unique_ptr<Layer>> (実体所有)", fontsize=8.8, color="#1565C0")
+    ax.text(0.05, 0.71, "・layer_stack_: vector<Layer*> (奥から手前の描画順)", fontsize=8.8, color="#1565C0")
+    ax.text(0.05, 0.65, "・NewLayer() / UpDown(id, h) / Hide(id)", fontsize=8.8, color="#1565C0")
+    ax.text(0.05, 0.59, "・Draw(): 最背面から最前面へ画家アルゴリズム描画", fontsize=8.8, fontweight="bold", color="#0D47A1")
+
+    # Layer Box
+    layer_box = FancyBboxPatch((0.48, 0.55), 0.22, 0.38, boxstyle="round,pad=0.02,rounding_size=0.03",
+                               facecolor="#EDE7F6", edgecolor="#673AB7", linewidth=2.0)
+    ax.add_patch(layer_box)
+    ax.text(0.50, 0.88, "Layer", fontsize=12, fontweight="bold", color="#4A148C")
+    ax.text(0.50, 0.83, "・id_: unsigned int", fontsize=8.8, color="#512DA8")
+    ax.text(0.50, 0.77, "・pos_: Vector2D<int>", fontsize=8.8, color="#512DA8")
+    ax.text(0.50, 0.71, "・window_: shared_ptr<Window>", fontsize=8.8, color="#512DA8")
+    ax.text(0.50, 0.65, "・Move(pos) / MoveRelative(diff)", fontsize=8.8, color="#512DA8")
+    ax.text(0.50, 0.59, "・DrawTo(writer): window_->DrawTo", fontsize=8.8, fontweight="bold", color="#4A148C")
+
+    # Window Box
+    win_box = FancyBboxPatch((0.75, 0.55), 0.22, 0.38, boxstyle="round,pad=0.02,rounding_size=0.03",
+                             facecolor="#FFF3E0", edgecolor="#F57C00", linewidth=2.0)
+    ax.add_patch(win_box)
+    ax.text(0.77, 0.88, "Window", fontsize=12, fontweight="bold", color="#E65100")
+    ax.text(0.77, 0.83, "・width_, height_: int", fontsize=8.8, color="#EF6C00")
+    ax.text(0.77, 0.77, "・data_: vector<vector<PixelColor>>", fontsize=8.8, color="#EF6C00")
+    ax.text(0.77, 0.71, "・transparent_color_: optional<PixelColor>", fontsize=8.8, color="#EF6C00")
+    ax.text(0.77, 0.65, "・writer_: WindowWriter (内部クラス)", fontsize=8.8, color="#EF6C00")
+    ax.text(0.77, 0.59, "・DrawTo(writer, pos): 透過色スキップ合成", fontsize=8.8, fontweight="bold", color="#E65100")
+
+    # Connecting Arrows (Top)
+    ax.annotate("", xy=(0.48, 0.74), xytext=(0.41, 0.74),
+                arrowprops=dict(arrowstyle="->", lw=2, color="#1976D2"))
+    ax.text(0.42, 0.76, "1..N", fontsize=9, fontweight="bold", color="#1976D2")
+
+    ax.annotate("", xy=(0.75, 0.74), xytext=(0.70, 0.74),
+                arrowprops=dict(arrowstyle="->", lw=2, color="#673AB7"))
+    ax.text(0.71, 0.76, "参照", fontsize=9, fontweight="bold", color="#673AB7")
+
+    # Bottom Pipeline: Compositing Pipeline
+    pipe_box = FancyBboxPatch((0.03, 0.08), 0.94, 0.38, boxstyle="round,pad=0.02,rounding_size=0.03",
+                              facecolor="#FAFAFA", edgecolor="#455A64", linewidth=1.5)
+    ax.add_patch(pipe_box)
+    ax.text(0.06, 0.40, "■ 画家アルゴリズム (Painter's Algorithm) 合成パイプライン", fontsize=11, fontweight="bold", color="#263238")
+
+    stages = [
+        ("1. layer_stack_[0]\n(背景レイヤ)", "Desktop / WallPaper\n(画面全体を単色/壁紙で塗る)", "#BBDEFB"),
+        ("2. layer_stack_[1]\n(コンソール / ウィンドウ)", "Console / Text / GUI\n(文字やウィンドウを描画)", "#D1C4E9"),
+        ("3. layer_stack_[2]\n(マウスカーソルレイヤ)", "MouseCursor (15x24)\n(透過色以外を最前面に合成)", "#FFE0B2"),
+        ("4. 描画先 (VRAM)\n(PixelWriter)", "最終的な統合フレームバッファ\n(チラつきなし・文字復元)", "#C8E6C9"),
+    ]
+
+    for i, (title, desc, bgc) in enumerate(stages):
+        x = 0.06 + i * 0.23
+        s_box = FancyBboxPatch((x, 0.12), 0.20, 0.23, boxstyle="round,pad=0.02,rounding_size=0.02",
+                               facecolor=bgc, edgecolor="#546E7A", linewidth=1.2)
+        ax.add_patch(s_box)
+        ax.text(x + 0.02, 0.29, title, fontsize=9.2, fontweight="bold", color="#1A237E")
+        ax.text(x + 0.02, 0.19, desc, fontsize=7.8, color="#37474F")
+
+        if i < 3:
+            ax.annotate("", xy=(x + 0.225, 0.23), xytext=(x + 0.20, 0.23),
+                        arrowprops=dict(arrowstyle="->", lw=1.8, color="#37474F"))
+
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0, 1.0)
+    ax.axis("off")
+
+    plt.suptitle("Figure 9.02: MikanOS レイヤ重ね合わせアーキテクチャとデータ構造関連図", fontsize=13, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig9_03_layer_stack_updown_and_compositing_order(output_path: Path | str = "9/result/fig9_03_layer_stack_updown_and_compositing_order.png") -> Path:
+    """Figure 9.03: LayerManager UpDown operations, z-order stack reordering, and compositing outcome."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Case A: Default order (Background 0 -> Window 1 -> Mouse 2)
+    ax0 = axes[0]
+    ax0.set_facecolor("#FFFFFF")
+    ax0.set_title("Case A: 通常のスタック順\n(Bg=0, Win=1, Mouse=2)", fontsize=10.5, fontweight="bold", color="#1565C0")
+
+    stack_a = [
+        ("Layer 2: Mouse (最前面)", "#FFCDD2", "#B71C1C", "マウスがウィンドウの上にある"),
+        ("Layer 1: Window (中間層)", "#E1BEE7", "#4A148C", "ウィンドウが背景の上にある"),
+        ("Layer 0: Background (最背面)", "#BBDEFB", "#0D47A1", "全画面背景"),
+    ]
+    for i, (name, bgc, fgc, desc) in enumerate(stack_a):
+        y = 0.65 - i * 0.22
+        box = FancyBboxPatch((0.08, y), 0.84, 0.18, boxstyle="round,pad=0.02,rounding_size=0.03",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.5)
+        ax0.add_patch(box)
+        ax0.text(0.12, y + 0.10, name, fontsize=9.2, fontweight="bold", color=fgc)
+        ax0.text(0.12, y + 0.04, desc, fontsize=8.0, color="#37474F")
+
+    ax0.text(0.50, 0.05, "合成結果: マウスが最前面に正常表示", ha="center", fontsize=9, fontweight="bold", color="#2E7D32")
+    ax0.set_xlim(0, 1.0)
+    ax0.set_ylim(0, 0.95)
+    ax0.axis("off")
+
+    # Case B: UpDown Reordering (Window moved to 2 -> Window covers Mouse)
+    ax1 = axes[1]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("Case B: UpDown(Win, 2) 順序逆転\n(Bg=0, Mouse=1, Win=2)", fontsize=10.5, fontweight="bold", color="#E65100")
+
+    stack_b = [
+        ("Layer 1: Window (最前面に昇格)", "#E1BEE7", "#4A148C", "ウィンドウがマウスの上に重なる"),
+        ("Layer 2: Mouse (中間層に降格)", "#FFCDD2", "#B71C1C", "マウスがウィンドウに隠される"),
+        ("Layer 0: Background (最背面)", "#BBDEFB", "#0D47A1", "全画面背景"),
+    ]
+    for i, (name, bgc, fgc, desc) in enumerate(stack_b):
+        y = 0.65 - i * 0.22
+        box = FancyBboxPatch((0.08, y), 0.84, 0.18, boxstyle="round,pad=0.02,rounding_size=0.03",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.5)
+        ax1.add_patch(box)
+        ax1.text(0.12, y + 0.10, name, fontsize=9.2, fontweight="bold", color=fgc)
+        ax1.text(0.12, y + 0.04, desc, fontsize=8.0, color="#37474F")
+
+    ax1.text(0.50, 0.05, "合成結果: マウスがウィンドウの下に隠れる", ha="center", fontsize=9, fontweight="bold", color="#C62828")
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 0.95)
+    ax1.axis("off")
+
+    # Case C: Hide / Negative height (Hide(Window) or UpDown(Win, -1))
+    ax2 = axes[2]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("Case C: Hide(Win) / 非表示化\n(UpDown(Win, -1))", fontsize=10.5, fontweight="bold", color="#6A1B9A")
+
+    stack_c = [
+        ("Layer 2: Mouse (最前面)", "#FFCDD2", "#B71C1C", "スタック内"),
+        ("Layer 0: Background (最背面)", "#BBDEFB", "#0D47A1", "スタック内"),
+        ("Layer 1: Window [非表示]", "#EEEEEE", "#9E9E9E", "layer_stack_ から除外 (描画スキップ)"),
+    ]
+    for i, (name, bgc, fgc, desc) in enumerate(stack_c):
+        y = 0.65 - i * 0.22
+        box = FancyBboxPatch((0.08, y), 0.84, 0.18, boxstyle="round,pad=0.02,rounding_size=0.03",
+                             facecolor=bgc, edgecolor=fgc, linewidth=1.5,
+                             linestyle="--" if i == 2 else "-")
+        ax2.add_patch(box)
+        ax2.text(0.12, y + 0.10, name, fontsize=9.2, fontweight="bold", color=fgc)
+        ax2.text(0.12, y + 0.04, desc, fontsize=8.0, color="#37474F")
+
+    ax2.text(0.50, 0.05, "合成結果: ウィンドウが非表示になり背後が見える", ha="center", fontsize=9, fontweight="bold", color="#1565C0")
+    ax2.set_xlim(0, 1.0)
+    ax2.set_ylim(0, 0.95)
+    ax2.axis("off")
+
+    plt.suptitle("Figure 9.03: LayerManager UpDown 操作による重なり順 (Z-order) 制御とレイヤスタック状態遷移", fontsize=13, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     return output_path

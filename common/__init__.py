@@ -493,6 +493,15 @@ from common.os_sim import (
     plot_fig8_19_bitmap_memory_manager_architecture,
     plot_fig8_20_first_fit_allocation_and_skip_math,
     plot_fig8_21_uefi_memmap_to_bitmap_initialization,
+    Vector2DSim,
+    PixelColorSim,
+    WindowSim,
+    LayerSim,
+    LayerManagerSim,
+    BackgroundDestructionComparator,
+    plot_fig9_01_background_destruction_vs_layer_compositing,
+    plot_fig9_02_layer_compositing_architecture,
+    plot_fig9_03_layer_stack_updown_and_compositing_order,
 )
 
 __all__ = [
@@ -988,4 +997,13 @@ __all__ = [
     "plot_fig8_19_bitmap_memory_manager_architecture",
     "plot_fig8_20_first_fit_allocation_and_skip_math",
     "plot_fig8_21_uefi_memmap_to_bitmap_initialization",
+    "Vector2DSim",
+    "PixelColorSim",
+    "WindowSim",
+    "LayerSim",
+    "LayerManagerSim",
+    "BackgroundDestructionComparator",
+    "plot_fig9_01_background_destruction_vs_layer_compositing",
+    "plot_fig9_02_layer_compositing_architecture",
+    "plot_fig9_03_layer_stack_updown_and_compositing_order",
 ]
