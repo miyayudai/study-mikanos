@@ -249,6 +249,9 @@ add_test(NAME test_ch09_measuring_scroll_time COMMAND ch09_measuring_scroll_time
 add_executable(ch09_optimizing_scroll src/ch09/os_chapter9_optimizing_scroll.cpp)
 add_test(NAME test_ch09_optimizing_scroll COMMAND ch09_optimizing_scroll)
 
+add_executable(ch09_os_chapter9_exercises src/ch09/os_chapter9_exercises.cpp)
+add_test(NAME test_ch09_os_chapter9_exercises COMMAND ch09_os_chapter9_exercises --test)
+
 
 
 

@@ -36089,3 +36089,659 @@ def plot_fig9_21_scroll_performance_comparison_benchmark(output_path: str = "9/r
     plt.close()
     return output_path
 
+
+
+# ==============================================================================
+# Chapter 9 Comprehensive Exercises: Theory, Quiz, Simulation & Radar Chart
+# ==============================================================================
+
+
+class Chapter9Quiz:
+    """Comprehensive multiple-choice quiz engine covering Sections 9.1 to 9.7."""
+
+    def __init__(self) -> None:
+        self.questions: list[QuizQuestion] = [
+            QuizQuestion(
+                question_id=1,
+                section="9.1",
+                topic="レイヤ重ね合わせの基本原理とペインターアルゴリズム",
+                question=(
+                    "MikanOS がウィンドウやマウスカーソルの重ね合わせ表示を実現するために採用した"
+                    "「ペインターアルゴリズム（Painter's Algorithm）」とレイヤ管理モデルの説明として正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "最背面の背景レイヤから最前面のマウスカーソルレイヤに向かって奥から手前へ順番に重ね描き（上書き描画）し、"
+                        "透明色（kTransColor）のピクセルは書き込みをスキップすることで、透過および正しい前後関係の重ね合わせを実現する"
+                    ),
+                    (
+                        "最前面のレイヤから奥に向かって描画し、すでにピクセルが塗られている箇所はスキップするZバッファ法である"
+                    ),
+                    "すべてのレイヤのピクセル色を平均値ブレンディング（Alpha Blending）して一括出力する",
+                    (
+                        "レイヤを重ね合わせるのではなく、ウィンドウを動かすたびに画面全体を黒で消去してから単一バッファに全画面を描き直す"
+                    ),
+                ],
+                correct_index=0,
+                explanation=(
+                    "ペインターアルゴリズムは画家の油絵のように「奥（Z順序が低いレイヤ）から手前（高いレイヤ）へ」順番に重ね塗りしていく手法です。"
+                    "MikanOS では各レイヤのピクセルが透過色（kTransColor: デフォルト 0x01, 0x01, 0x01 等）でない場合にのみ"
+                    "描画先バッファへコピーすることで、透明部分を通して奥の画像が見える重ね合わせを実現しています。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=2,
+                section="9.2",
+                topic="Newlib sbrk() 実装とプログラムブレークのページ単位伸長数理",
+                question=(
+                    "MikanOS カーネルにおいて、C標準ライブラリ（Newlib）の動的メモリ確保（malloc / C++ new）を有効化するために"
+                    "実装したシステムコール sbrk(ptrdiff_t incr) の動作およびページアライメント数理として正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "現在のヒープ終端（プログラムブレーク program_break）に incr を加算した新しいブレークアドレスを計算し、"
+                        "必要なフレーム数を 4KiB ページ単位で切り上げて BitmapMemoryManager から連続確保し、成功したら古いブレークアドレスを返す"
+                    ),
+                    (
+                        "1 バイト単位で物理メモリマネージャからメモリを確保し、new が呼ばれるたびに GDT セグメントを拡張する"
+                    ),
+                    "sbrk は仮想メモリ専用であり、物理メモリの割り当ては行わずページフォールトハンドラに委ねる",
+                    "incr が負の値の場合にのみメモリを確保し、正の値の場合は直ちに解放を行う",
+                ],
+                correct_index=0,
+                explanation=(
+                    "sbrk() はヒープ領域の終端境界（プログラムブレーク）を移動させる低レイヤ関数です。"
+                    "MikanOS では現在の program_break と新しい new_break のページ境界（4KiB）差分を計算し、"
+                    "必要なページ数を BitmapMemoryManager::Allocate() で物理フレームとして確保します。"
+                    "呼び出し元には伸長前の旧アドレス（直前までのプログラムブレーク）を返します。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=3,
+                section="9.2",
+                topic="C++ new 演算子と std::vector などのコンテナが解放される仕組み",
+                question=(
+                    "sbrk() を実装したことで C++20 の標準ライブラリ（std::vector など）や new / delete 演算子が"
+                    "MikanOS カーネル内で利用可能になる技術的メカニズムとして正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "C++ の標準 operator new は内部で C ランタイムの malloc を呼び出し、"
+                        "malloc はメモリ不足時に sbrk を呼び出してヒープを拡張するため、"
+                        "sbrk さえ提供すれば Newlib のメモリアロケータと C++ 自由記憶域（Free Store）が完全に機能する"
+                    ),
+                    "Clang コンパイラがカーネル専用の組み込みガベージコレクタを自動生成するため",
+                    "C++ の std::vector はヒープを使わず、カーネルスタック領域（.bss）に要素を動的配置するため",
+                    "sbrk を定義すると CPU の CR3 レジスタが自動的に動的メモリモードに切り替わるため",
+                ],
+                correct_index=0,
+                explanation=(
+                    "C++ の言語仕様における ::operator new のデフォルト実装は std::malloc() を呼び出します。"
+                    "Newlib の malloc（dlmalloc / nano-malloc）は初期ヒープを使い切ると低レイヤの sbrk() をフックして OS からメモリを補充します。"
+                    "したがって、カーネルが sbrk() を1つ実装するだけで、標準テンプレートライブラリ（STL）の動的コンテナ群がすべて使えるようになります。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=4,
+                section="9.3",
+                topic="Window, Layer, LayerManager のオブジェクト指向責務分担と透過合成",
+                question=(
+                    "MikanOS のレイヤ合成アーキテクチャにおける Window, Layer, LayerManager の責務分担の説明として正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "Window は矩形ピクセルバッファと透過色情報を保持して自己描画を行い、"
+                        "Layer は表示座標 (x, y) と Window への参照を保持し、"
+                        "LayerManager は全レイヤの重なり順序（layer_stack_）の管理と下層から上層への合成描画を統括する"
+                    ),
+                    (
+                        "Window が全画面フレームバッファを直接操作し、Layer は Local APIC タイマを制御し、"
+                        "LayerManager はマウスのパケット解析を行う"
+                    ),
+                    "Layer が描画ピクセルデータを直接配列として保持し、Window は単なるタイトルの文字列クラスである",
+                    "LayerManager はハードウェア PCI デバイスであり、GPU の 3D パイプラインを直接呼び出す",
+                ],
+                correct_index=0,
+                explanation=(
+                    "MikanOS では明確なオブジェクト指向設計が行われています。"
+                    "Window は内容（ピクセルデータと幅・高さ・透過色）、"
+                    "Layer は配置（画面上の座標 (x, y) や ID、関連づけられた Window）、"
+                    "LayerManager は空間全体の構成（レイヤの Z スタック順序管理、座標移動、画面への合成描画）を担当します。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=5,
+                section="9.3",
+                topic="C++ スマートポインタ（std::unique_ptr と std::shared_ptr）の所有権モデル",
+                question=(
+                    "MikanOS の LayerManager や各種ドライバにおいて、生ポインタ（Raw Pointer）ではなく"
+                    "std::unique_ptr や std::shared_ptr を活用する設計上の利点および注意点として正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "RAII (Resource Acquisition Is Initialization) により、スコープ脱出や明示的破棄時にデストラクタ経由でメモリが自動解放されメモリリークを根絶できる。"
+                        "単一所有権にはオーバーヘッドのない unique_ptr、複数箇所から参照されるウィンドウ共有には参照カウントを持つ shared_ptr を使い分け、"
+                        "循環参照による解放漏れを防ぐ"
+                    ),
+                    "shared_ptr を使うと CPU のキャッシュミスがゼロになり、生ポインタよりも実行速度が 10 倍高速になる",
+                    "カーネル空間ではスマートポインタは一切使用できず、必ずグローバル変数配列として静的に宣言しなければならない",
+                    "unique_ptr はコピー可能であり、複数のスレッドで同時に所有権を共有できる",
+                ],
+                correct_index=0,
+                explanation=(
+                    "スマートポインタは C++ の RAII 哲学に基づき、リソースの寿命と所有権を型システムで保証します。"
+                    "単一所有権（排他所有）ならゼロコスト抽象化の std::unique_ptr、複数コンポーネントで共有する場合は std::shared_ptr を使用します。"
+                    "循環参照による解放漏れを防ぐためには std::weak_ptr を併用します。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=6,
+                section="9.4",
+                topic="Local APIC タイマ MMIO レジスタ構成とワンショット計測数理",
+                question=(
+                    "x86-64 CPU 内蔵の Local APIC タイマを用いた高精度時間計測（プロファイリング）において、"
+                    "レジスタ設定と経過クロック数（Ticks）算出の数理として正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "分周設定レジスタ（DCR）で分周比（1:1 等）を設定し、ローカルベクタテーブル（LVT）でワンショットモードかつ割り込みマスクを設定後、"
+                        "初期カウント（ICR）に大きな値を書き込み、処理直後に現在カウント（CCR）を読み取って 経過Ticks = ICR - CCR を計算する"
+                    ),
+                    "CCR は 0 から ICR に向かってインクリメントされるため、経過Ticks = CCR - ICR で計算する",
+                    "Local APIC タイマは I/O ポート in / out 命令でのみアクセス可能であり、メモリマップド I/O (MMIO) は使用できない",
+                    "タイマを動かすと必ず割り込みが発生するため、CPU の割り込みフラグ (IF) をクリアしてはいけない",
+                ],
+                correct_index=0,
+                explanation=(
+                    "Local APIC タイマは MMIO（デフォルト 0xFEE00000 付近）経由でアクセスします。"
+                    "カウンタは ICR に値を書き込むと自動的に開始され、バスターゲット周波数でデクリメント（減算）されます。"
+                    "したがって、経過時間は ICR - CCR によって正確に求まります。"
+                    "LVT タイマレジスタでマスクビット（ビット16）を立てておけば割り込みを発生させずに純粋なストップウォッチとして利用できます。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=7,
+                section="9.4",
+                topic="全画面再描画のボトルネックとキュー溢れの数理",
+                question=(
+                    "9.4 節において、マウスを動かしたときにマウスカーソルが激しく遅延し、操作への追従が遅れた（キュー溢れが生じた）根本原因の定量的メカニズムとして正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "マウス割り込み（約 100Hz = 10ms 周期）が発生するたびに、画面全体（解像度 1024x768 = 約 78.6 万ピクセル）に対して"
+                        "全レイヤの重なり判定とピクセル走査・書き込み（約 3000 万 CPU サイクル ≒ 30ms）を行っていたため、"
+                        "再描画時間がイベント発生間隔を超過し、メッセージキュー（FIFO）が溢れた"
+                    ),
+                    "マウスのパケットサイズが 1GiB を超えていたため USB コントローラが停止した",
+                    "Local APIC タイマが CPU を 100% 占有し、他の処理が一切実行できなくなったため",
+                    "C++ の std::vector がマウス移動のたびに全メモリを初期化していたため",
+                ],
+                correct_index=0,
+                explanation=(
+                    "1024x768 の全画面再描画には、レイヤ数分の二重ループと透過判定、VRAM へのピクセル書き込みが発生し、数十ミリ秒（30ms 以上）を要します。"
+                    "一方、マウスは毎秒 100 回前後（10ms 間隔）でイベントを生成するため、消費速度が生産速度に追いつかず、"
+                    "キューが満杯になってイベントが遅延・破棄されていました。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=8,
+                section="9.5",
+                topic="2次元幾何矩形クリッピングとシャドウバッファによる memcpy 一括転送",
+                question=(
+                    "9.5 節で導入された再描画高速化において、2次元矩形領域の交差判定（Intersection）およびシャドウバッファによる memcpy 最適化の成立条件として正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "再描画対象矩形とレイヤ矩形の重なり領域 [max(r0.x, r1.x), min(r0.x+w0, r1.x+w1)] を計算し、交差部分のみを描画する。"
+                        "さらに透過色を持たない（全面不透明な）レイヤの場合は、1 ピクセルずつの判定ループを省略し、"
+                        "行単位（Horizontal Scanline）で memcpy を用いて一括転送することで、描画計算量を劇的に削減する"
+                    ),
+                    "矩形の重なり判定は行わず、画面を円形にクリッピングして三角関数で計算する",
+                    "透過色を持つレイヤであっても、透明ピクセルごと memcpy して後から背景色で再上書きする",
+                    "memcpy は 1 バイト単位でしか転送できないため、ピクセルごとの手動コピーより遅くなる",
+                ],
+                correct_index=0,
+                explanation=(
+                    "矩形交差（積集合）の計算は x0 = max(l.x, r.x), x1 = min(l.x + l.w, r.x + r.w) で求まります。"
+                    "交差領域の外側のピクセルは一切処理しません。また、ウィンドウ等の不透明レイヤはピクセルごとの透過判定が不要なため、"
+                    "1行（Scanline）分のピクセル列を std::memcpy で CPU の SIMD / 64-bit ロード・ストアにより一括転送でき、100倍以上の高速化を達成できます。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=9,
+                section="9.6",
+                topic="コンソールスクロールのボトルネック（全フォント再展開 vs バッファシフト）",
+                question=(
+                    "9.6 節のプロファイリングにより明らかになった、従来の Console::PutString スクロール処理が約 57 倍もの遅延（約 135 万 Ticks）を要していた最大の要因として正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "スクロール発生時にコンソール領域全体（256,000 ピクセル）を塗りつぶし消去した上で、"
+                        "画面上に表示されていた全文字（最大 80 桁 × 24 行 = 1,920 文字）のフォントビットマップを展開し直し、"
+                        "1 文字あたり 128 ピクセル（計 245,760 回）もの個別描画処理を愚直に再実行していたため"
+                    ),
+                    "コンソールの文字コード変換で UTF-32 から Shift-JIS への暗号化処理が行われていたため",
+                    "画面の解像度が 8K (7680x4320) に自動変更されていたため",
+                    "printk 内でディスクへのログ書き出しが同期実行されていたため",
+                ],
+                correct_index=0,
+                explanation=(
+                    "従来のスクロール処理は、全文字のフォントデータを 1 文字ずつビット展開して 1 ピクセルずつ WritePixel() を呼び出していました。"
+                    "1,920 文字 × 16 行 × 8 列 = 245,760 回のピクセル書き込みが発生し、これが CPU キャッシュと描画パイプラインの重大なボトルネックとなっていました。"
+                ),
+            ),
+            QuizQuestion(
+                question_id=10,
+                section="9.7",
+                topic="ピクセルバッファ一括転送（memmove / memcpy）によるスクロール最適化",
+                question=(
+                    "9.7 節で実装されたスクロール最適化において、ピクセルバッファの移動に memcpy / memmove を適用する際のメモリ重複（Overlap）判定と最下行処理として正しいものはどれか？"
+                ),
+                options=[
+                    (
+                        "画面を 1 行分（高さ 16 ピクセル）上に移動させる際、移動先（dst）は移動元（src）より手前のアドレス（dst < src）になるため、"
+                        "上から順に行単位で転送すればデータ破壊は起きず memcpy（または memmove）で高速にシフトできる。"
+                        "そして最下行（最後の 16 ピクセル高の行）のみを背景色で塗りつぶし、新規文字を描画する"
+                    ),
+                    "移動先が移動元より後ろ（dst > src）になるため、下から上にコピーしないとデータがすべて消滅する",
+                    "VRAM は CPU からの読み出しが禁止されているため、バッファシフトは行えず GPU シェーダが必要となる",
+                    "スクロールするたびに画面バッファを解放して新しく new で再確保しなければならない",
+                ],
+                correct_index=0,
+                explanation=(
+                    "スクロールアップは「2行目の内容を1行目に、3行目を2行目に…」とコピーするため、各走査線の移動先アドレス dst は移動元 src より小さくなります（dst < src）。"
+                    "そのため、上の行から順にコピーする限り、コピー前のデータが上書き破壊されることはありません。"
+                    "残った最下行のみを背景色でクリアすれば、再描画ピクセル数はコンソール全体のわずか 1/25（数%）に削減され、100倍近い劇的高速化が実現します。"
+                ),
+            ),
+        ]
+
+    def evaluate(self, user_answers: dict[int, int]) -> dict[str, any]:
+        """Evaluate submitted answers and return score, percentage, and section-wise mastery rates."""
+        correct_count = 0
+        section_stats: dict[str, dict[str, int]] = {}
+
+        for q in self.questions:
+            sec = q.section
+            if sec not in section_stats:
+                section_stats[sec] = {"total": 0, "correct": 0}
+            section_stats[sec]["total"] += 1
+
+            user_ans = user_answers.get(q.question_id)
+            if user_ans == q.correct_index:
+                correct_count += 1
+                section_stats[sec]["correct"] += 1
+
+        total = len(self.questions)
+        pct = (correct_count / total * 100.0) if total > 0 else 0.0
+        passed = pct >= 80.0
+
+        mastery_rates = {
+            sec: (stats["correct"] / stats["total"] * 100.0)
+            for sec, stats in sorted(section_stats.items())
+        }
+
+        results = []
+        for q in self.questions:
+            u_ans = user_answers.get(q.question_id)
+            is_correct = (u_ans == q.correct_index)
+            results.append({
+                "question_id": q.question_id,
+                "section": q.section,
+                "topic": q.topic,
+                "user_answer": u_ans,
+                "correct_index": q.correct_index,
+                "is_correct": is_correct,
+                "explanation": q.explanation,
+            })
+
+        return {
+            "total_questions": total,
+            "correct_count": correct_count,
+            "percentage": pct,
+            "passed": passed,
+            "mastery_rates": mastery_rates,
+            "question_results": results,
+        }
+
+
+class Chapter9TheoryValidator:
+    """Validation helper for Chapter 9 systems theory: Compositing, sbrk, Clipping, LAPIC, and Fast Scroll."""
+
+    @staticmethod
+    def validate_layer_compositing(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate painter's algorithm order, transparency skip, and pixel composition."""
+        z_order = data.get("z_order", [])  # list of layer ids in drawing order
+        expected_z_order = data.get("expected_z_order", [0, 1, 2])
+        trans_color = data.get("trans_color", 0x010101)
+        test_pixel = data.get("test_pixel")  # e.g. at (x, y)
+        expected_color = data.get("expected_color")
+
+        errors = []
+        if z_order != expected_z_order:
+            errors.append(f"Zオーダー描画順序: 期待値={expected_z_order}, 入力値={z_order}")
+
+        if test_pixel is not None and expected_color is not None and test_pixel != expected_color:
+            errors.append(f"合成ピクセル色: 期待値=0x{expected_color:06X}, 入力値=0x{test_pixel:06X}")
+
+        if not errors:
+            return True, (
+                f"正解！ペインターアルゴリズムと透過合成数理を検証しました。"
+                f" [Z順序={z_order}, 透過色=0x{trans_color:06X}, ピクセル=0x{expected_color if expected_color is not None else 0:06X}]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_sbrk_alignment(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate sbrk increment, program break advancement, and 4KiB page allocation math."""
+        prev_break = data.get("prev_break", 0x10000000)
+        increment = data.get("increment", 5000)  # bytes
+        page_size = data.get("page_size", 4096)
+        new_break = data.get("new_break")
+        allocated_pages = data.get("allocated_pages")
+
+        expected_new_break = prev_break + increment
+        prev_pages = (prev_break + page_size - 1) // page_size
+        new_pages = (expected_new_break + page_size - 1) // page_size
+        expected_alloc = max(0, new_pages - prev_pages)
+
+        errors = []
+        if new_break != expected_new_break:
+            errors.append(f"新しい program_break: 期待値=0x{expected_new_break:x}, 入力値=0x{new_break:x}")
+        if allocated_pages != expected_alloc:
+            errors.append(f"新規確保 4KiB ページ数: 期待値={expected_alloc}, 入力値={allocated_pages}")
+
+        if not errors:
+            return True, (
+                f"正解！sbrk() のプログラムブレーク移動および 4KiB ページ切り上げ数理を検証しました。"
+                f" [OldBreak=0x{prev_break:x}, Incr={increment}B, NewBreak=0x{new_break:x}, 確保ページ={allocated_pages}]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_clipping_rect(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate 2D geometric clipping intersection between layer rect and redraw rect."""
+        layer_x = data.get("layer_x", 100)
+        layer_y = data.get("layer_y", 100)
+        layer_w = data.get("layer_w", 200)
+        layer_h = data.get("layer_h", 150)
+
+        redraw_x = data.get("redraw_x", 150)
+        redraw_y = data.get("redraw_y", 80)
+        redraw_w = data.get("redraw_w", 100)
+        redraw_h = data.get("redraw_h", 100)
+
+        # Expected intersection in screen coordinates:
+        x0 = max(layer_x, redraw_x)
+        y0 = max(layer_y, redraw_y)
+        x1 = min(layer_x + layer_w, redraw_x + redraw_w)
+        y1 = min(layer_y + layer_h, redraw_y + redraw_h)
+
+        exp_intersect = (x0 < x1 and y0 < y1)
+        exp_w = max(0, x1 - x0)
+        exp_h = max(0, y1 - y0)
+        exp_src_x = max(0, x0 - layer_x) if exp_intersect else 0
+        exp_src_y = max(0, y0 - layer_y) if exp_intersect else 0
+
+        has_intersect = data.get("has_intersection")
+        inter_w = data.get("intersect_width")
+        inter_h = data.get("intersect_height")
+        src_x = data.get("src_offset_x")
+        src_y = data.get("src_offset_y")
+
+        errors = []
+        if has_intersect != exp_intersect:
+            errors.append(f"交差判定: 期待値={exp_intersect}, 入力値={has_intersect}")
+        if inter_w != exp_w:
+            errors.append(f"交差幅: 期待値={exp_w}, 入力値={inter_w}")
+        if inter_h != exp_h:
+            errors.append(f"交差高さ: 期待値={exp_h}, 入力値={inter_h}")
+        if exp_intersect:
+            if src_x != exp_src_x:
+                errors.append(f"レイヤ内転送開始 X (src_x): 期待値={exp_src_x}, 入力値={src_x}")
+            if src_y != exp_src_y:
+                errors.append(f"レイヤ内転送開始 Y (src_y): 期待値={exp_src_y}, 入力値={src_y}")
+
+        if not errors:
+            return True, (
+                f"正解！2次元幾何クリッピング交差数理を検証しました。"
+                f" [交差領域=({x0},{y0})-({x1},{y1}), サイズ={exp_w}x{exp_h}, LayerOffset=({exp_src_x},{exp_src_y})]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_lapic_timer_math(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate Local APIC timer ticks calculation and elapsed time math."""
+        icr = data.get("initial_count", 0xFFFFFFFF)
+        ccr = data.get("current_count", 0xFFFE7960)  # ~100,000 ticks difference
+        bus_freq_hz = data.get("bus_frequency_hz", 100_000_000)  # 100MHz (1 tick = 10ns)
+        divide_ratio = data.get("divide_ratio", 1)
+
+        expected_ticks = (icr - ccr) * divide_ratio
+        expected_elapsed_sec = expected_ticks / bus_freq_hz
+        expected_elapsed_ms = expected_elapsed_sec * 1000.0
+
+        calc_ticks = data.get("calculated_ticks")
+        calc_ms = data.get("calculated_ms")
+
+        errors = []
+        if calc_ticks != expected_ticks:
+            errors.append(f"経過 Ticks (ICR - CCR): 期待値={expected_ticks}, 入力値={calc_ticks}")
+        if calc_ms is not None and abs(calc_ms - expected_elapsed_ms) > 0.001:
+            errors.append(f"経過ミリ秒: 期待値={expected_elapsed_ms:.4f}ms, 入力値={calc_ms:.4f}ms")
+
+        if not errors:
+            return True, (
+                f"正解！Local APIC タイマのデクリメント減算数理および経過時間換算を検証しました。"
+                f" [ICR=0x{icr:X}, CCR=0x{ccr:X}, 経過={expected_ticks} ticks ({expected_elapsed_ms:.2f} ms)]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+    @staticmethod
+    def validate_scroll_memcpy_math(data: dict[str, any]) -> tuple[bool, str]:
+        """Validate console scroll buffer shift with memcpy/memmove and clear bottom row math."""
+        cols = data.get("console_columns", 80)
+        rows = data.get("console_rows", 25)
+        font_w = data.get("font_width", 8)
+        font_h = data.get("font_height", 16)
+        bpp = data.get("bytes_per_pixel", 4)  # 32-bit color
+
+        screen_w = cols * font_w  # 640
+        screen_h = rows * font_h  # 400
+        stride = data.get("stride", screen_w)
+
+        # Shift height = (rows - 1) * font_h
+        shift_h = (rows - 1) * font_h
+        expected_shift_bytes = shift_h * stride * bpp
+        expected_clear_bytes = font_h * stride * bpp
+
+        calc_shift_bytes = data.get("calculated_shift_bytes")
+        calc_clear_bytes = data.get("calculated_clear_bytes")
+        is_safe_memcpy = data.get("is_safe_memcpy")  # dst < src is safe for forward memcpy
+
+        errors = []
+        if calc_shift_bytes != expected_shift_bytes:
+            errors.append(f"シフト転送バイト数: 期待値={expected_shift_bytes}, 入力値={calc_shift_bytes}")
+        if calc_clear_bytes != expected_clear_bytes:
+            errors.append(f"最下行クリアバイト数: 期待値={expected_clear_bytes}, 入力値={calc_clear_bytes}")
+        if is_safe_memcpy is not True:
+            errors.append("上スクロールは dst < src のため、順方向 memcpy は安全です (True が必要)")
+
+        if not errors:
+            return True, (
+                f"正解！コンソールスクロールの memcpy メモリシフト数理を検証しました。"
+                f" [解像度={screen_w}x{screen_h}, シフト={expected_shift_bytes:,}B, 最下行クリア={expected_clear_bytes:,}B]"
+            )
+        return False, f"不正解です。{'; '.join(errors)}"
+
+
+def plot_chapter9_exercises_summary(output_path: Path | str) -> Path:
+    """Generate Chapter 9 comprehensive exercises curriculum and compositing optimization summary chart."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.patch.set_facecolor("#FAFAFA")
+    fig.suptitle(
+        "第9章 総合演習問題カリキュラム & 重ね合わせ・スクロール最適化評価マップ\n"
+        "(Chapter 9 Comprehensive Exercises & Layer Compositing Performance Verification)",
+        fontsize=14,
+        fontweight="bold",
+        color="#1A237E",
+        y=0.98,
+    )
+
+    # 1. 7節の技術スタック構造 (Top-Left)
+    ax1 = axes[0, 0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 第9章 レイヤ合成・プロファイリング・最適化 7大技術スタック", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    topics = [
+        ("9.1-9.3 レイヤモデル & C++動的メモリ", "ペインターアルゴリズム・透過色合成・Newlib sbrk・unique/shared_ptr", "#E3F2FD", "#1565C0"),
+        ("9.4 APICプロファイリング & 遅延解析", "Local APIC MMIOワンショット計測・全画面描画ボトルネック・キュー滞留", "#FFF3E0", "#E65100"),
+        ("9.5 幾何クリッピング & memcpy高速化", "2次元矩形交差数理・FrameBufferシャドウバッファ・走査線一括転送", "#E8F5E9", "#2E7D32"),
+        ("9.6-9.7 スクロール高速化 & memmove", "全文字フォント再展開の解剖・ピクセル一括シフト・最下行のみクリア", "#F3E5F5", "#6A1B9A"),
+    ]
+
+    y_pos = 0.82
+    for title, desc, bg, border in topics:
+        box = FancyBboxPatch((0.03, y_pos - 0.06), 0.94, 0.13, boxstyle="round,pad=0.015",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax1.add_patch(box)
+        ax1.text(0.06, y_pos, title, fontsize=9.2, fontweight="bold", color=border)
+        ax1.text(0.38, y_pos, desc, fontsize=7.6, color="#263238")
+        y_pos -= 0.20
+
+    ax1.set_xlim(0, 1.0)
+    ax1.set_ylim(0, 1.0)
+    ax1.axis("off")
+
+    # 2. 演習問題構成比率 (Top-Right)
+    ax2 = axes[0, 1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 演習問題・検証モジュール構成比率", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    categories = ["レイヤ透過合成", "sbrk/動的ヒープ", "APICプロファイリング", "幾何クリッピング/memcpy", "スクロール一括シフト"]
+    weights = [20, 20, 20, 20, 20]
+    colors = ["#1976D2", "#00897B", "#F57C00", "#388E3C", "#7B1FA2"]
+
+    wedges, texts, autotexts = ax2.pie(
+        weights, labels=categories, autopct="%1.0f%%", startangle=140,
+        colors=colors, textprops=dict(fontsize=8.5, color="#263238"),
+        wedgeprops=dict(edgecolor="#FFFFFF", linewidth=1.5, antialiased=True),
+    )
+    for at in autotexts:
+        at.set_color("#FFFFFF")
+        at.set_fontweight("bold")
+
+    # 3. 重ね合わせ合成 & クリッピングパイプライン (Bottom-Left)
+    ax3 = axes[1, 0]
+    ax3.set_facecolor("#FFFFFF")
+    ax3.set_title("3. レイヤ合成 & 差分描画クリッピングパイプライン", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    stages = [
+        ("1. Z-Order Stack", "背景 (Z=0) ➔ ウィンドウ (Z=1) ➔ マウス (Z=2)", "#E1F5FE", "#0288D1"),
+        ("2. Rect Intersection", "交差領域 [max(x0,x1), min(x0+w0, x1+w1)] 計算", "#FFF8E1", "#FFA000"),
+        ("3. Fast Scanline", "不透明レイヤ: 1行一括 memcpy 転送\n透過レイヤ: kTransColor スキップ判定", "#E8F5E9", "#388E3C"),
+        ("4. Shadow Buffer", "バックバッファへ描画後、VRAM へ一括反映", "#EDE7F6", "#512DA8"),
+    ]
+
+    for idx, (name, detail, bg, border) in enumerate(stages):
+        y = 0.82 - idx * 0.22
+        box = FancyBboxPatch((0.04, y - 0.07), 0.92, 0.17, boxstyle="round,pad=0.02",
+                             facecolor=bg, edgecolor=border, lw=1.2)
+        ax3.add_patch(box)
+        ax3.text(0.08, y + 0.02, name, fontsize=9.2, fontweight="bold", color=border)
+        ax3.text(0.08, y - 0.04, detail, fontsize=7.8, color="#37474F")
+        if idx < len(stages) - 1:
+            ax3.annotate("", xy=(0.5, y - 0.08), xytext=(0.5, y - 0.01),
+                         arrowprops=dict(arrowstyle="->", color="#78909C", lw=1.5))
+
+    ax3.set_xlim(0, 1.0)
+    ax3.set_ylim(0, 1.0)
+    ax3.axis("off")
+
+    # 4. 最適化前後の性能向上比較 (Bottom-Right)
+    ax4 = axes[1, 1]
+    ax4.set_facecolor("#FFFFFF")
+    ax4.set_title("4. 第9章 各種最適化による劇的高速化実績 (Ticks 対比)", fontsize=11, fontweight="bold", color="#0D47A1", pad=8)
+
+    labels = ["全画面再描画\n➔ 矩形クリッピング", "ピクセル透過判定\n➔ 行一括 memcpy", "フォント全再描画\n➔ スクロール memcpy"]
+    speedup = [120.0, 15.0, 57.0]  # 倍率
+    bar_colors = ["#26A69A", "#42A5F5", "#AB47BC"]
+
+    bars = ax4.bar(labels, speedup, color=bar_colors, edgecolor="#37474F", width=0.5, linewidth=1.2)
+    ax4.set_ylabel("高速化倍率 (Speedup Ratio: x倍)", fontsize=9.5, fontweight="bold")
+    ax4.set_yscale("log")
+    ax4.set_ylim(1, 300)
+
+    for bar, sp in zip(bars, speedup):
+        y = bar.get_height()
+        ax4.text(bar.get_x() + bar.get_width()/2, y * 1.25, f"{sp:.0f}x",
+                 ha="center", fontsize=10, fontweight="bold", color="#1A237E")
+
+    ax4.grid(True, linestyle="--", alpha=0.5, axis="y")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_chapter9_mastery_radar(output_path: Path | str, mastery_rates: dict[str, float]) -> Path:
+    """Generate Chapter 9 section-wise mastery radar chart across 7 core topics (9.1 to 9.7)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+
+    sections = ["9.1", "9.2", "9.3", "9.4", "9.5", "9.6", "9.7"]
+    labels = [
+        "9.1 レイヤモデル\n(ペインター則)",
+        "9.2 new / sbrk\n(動的メモリ)",
+        "9.3 LayerManager\n(スマートポインタ)",
+        "9.4 APIC時間計測\n(プロファイリング)",
+        "9.5 矩形クリッピング\n(memcpy高速化)",
+        "9.6 スクロール計測\n(ボトルネック)",
+        "9.7 スクロールmemcpy\n(行一括転送)",
+    ]
+
+    values = [mastery_rates.get(sec, 100.0) for sec in sections]
+    num_vars = len(labels)
+
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    values_closed = values + [values[0]]
+    angles_closed = angles + [angles[0]]
+
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+    fig.patch.set_facecolor("#FAFAFA")
+    ax.set_facecolor("#FFFFFF")
+
+    ax.plot(angles_closed, values_closed, color="#1E88E5", linewidth=2.5, linestyle="solid")
+    ax.fill(angles_closed, values_closed, color="#2196F3", alpha=0.3)
+
+    ax.set_yticklabels([])
+    ax.set_xticks(angles)
+    ax.set_xticklabels(labels, fontsize=9.2, fontweight="bold", color="#263238")
+    ax.set_ylim(0, 105)
+
+    # Reference grid circles
+    for r in [25, 50, 75, 100]:
+        ax.plot(np.linspace(0, 2*np.pi, 100), [r]*100, color="#CFD8DC", linestyle="--", linewidth=0.8)
+        ax.text(0, r, f"{r}%", color="#78909C", fontsize=7.5, ha="left", va="center")
+
+    avg_score = float(np.mean(values))
+    title_color = "#2E7D32" if avg_score >= 80.0 else "#C62828"
+    status_text = "合格 (Passed)" if avg_score >= 80.0 else "要復習 (Review Needed)"
+
+    plt.title(
+        f"第9章 重ね合わせ処理・高速化 理解度レーダーチャート\n"
+        f"平均習熟度: {avg_score:.1f}% [{status_text}]",
+        fontsize=13, fontweight="bold", color=title_color, pad=25,
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
