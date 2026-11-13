@@ -546,6 +546,16 @@ from common.os_sim import (
     plot_fig10_01_mouse_clamping_and_screen_bounds,
     plot_fig10_02_window_drawto_intersection_clipping_math,
     plot_fig10_03_mouse_cursor_edge_rendering_simulation,
+    CLOSE_BUTTON_PATTERN,
+    COLOR_WHITE,
+    COLOR_LIGHT_GRAY,
+    COLOR_DARK_GRAY,
+    COLOR_BLACK,
+    COLOR_TITLE_BAR,
+    WindowBevelDecoratorSim,
+    plot_fig10_04_window_bevel_and_light_source_math,
+    plot_fig10_05_close_button_bitmap_matrix,
+    plot_fig10_06_first_window_composition_render,
 )
 
 __all__ = [
@@ -1094,4 +1104,14 @@ __all__ = [
     "plot_fig10_01_mouse_clamping_and_screen_bounds",
     "plot_fig10_02_window_drawto_intersection_clipping_math",
     "plot_fig10_03_mouse_cursor_edge_rendering_simulation",
+    "CLOSE_BUTTON_PATTERN",
+    "COLOR_WHITE",
+    "COLOR_LIGHT_GRAY",
+    "COLOR_DARK_GRAY",
+    "COLOR_BLACK",
+    "COLOR_TITLE_BAR",
+    "WindowBevelDecoratorSim",
+    "plot_fig10_04_window_bevel_and_light_source_math",
+    "plot_fig10_05_close_button_bitmap_matrix",
+    "plot_fig10_06_first_window_composition_render",
 ]

@@ -256,6 +256,9 @@ add_test(NAME test_ch09_os_chapter9_exercises COMMAND ch09_os_chapter9_exercises
 add_executable(ch10_mouse_refactor src/ch10/os_chapter10_mouse_refactor.cpp)
 add_test(NAME test_ch10_mouse_refactor COMMAND ch10_mouse_refactor --test)
 
+add_executable(ch10_first_window src/ch10/os_chapter10_first_window.cpp)
+add_test(NAME test_ch10_first_window COMMAND ch10_first_window --test)
+
 
 
 

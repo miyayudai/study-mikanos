@@ -37297,3 +37297,494 @@ def plot_fig10_03_mouse_cursor_edge_rendering_simulation(output_path: Path | str
     plt.close()
     return output_path
 
+
+# ==============================================================================
+# Chapter 10.2: First GUI Window Decoration & 3D Bevel Math (osbook_day10b)
+# ==============================================================================
+
+# Standard MikanOS Close Button Bitmap (14 rows x 16 cols)
+CLOSE_BUTTON_PATTERN: list[str] = [
+    "...............@",
+    ".:::::::::::::$@",
+    ".:::::::::::::$@",
+    ".:::@@::::@@::$@",
+    ".::::@@::@@:::$@",
+    ".:::::@@@@::::$@",
+    ".::::::@@:::::$@",
+    ".:::::@@@@::::$@",
+    ".::::@@::@@:::$@",
+    ".:::@@::::@@::$@",
+    ".:::::::::::::$@",
+    ".:::::::::::::$@",
+    ".$$$$$$$$$$$$$$@",
+    "@@@@@@@@@@@@@@@@",
+]
+
+# MikanOS Window Color Palette Constants (RGB tuples)
+COLOR_WHITE: tuple[int, int, int] = (255, 255, 255)       # 0xffffff: Inner top-left highlight
+COLOR_LIGHT_GRAY: tuple[int, int, int] = (198, 198, 198)  # 0xc6c6c6: Outer top-left, Window body, button body
+COLOR_DARK_GRAY: tuple[int, int, int] = (132, 132, 132)   # 0x848484: Inner bottom-right shadow, button shadow
+COLOR_BLACK: tuple[int, int, int] = (0, 0, 0)             # 0x000000: Outer bottom-right shadow, close button border
+COLOR_TITLE_BAR: tuple[int, int, int] = (0, 0, 132)       # 0x000084: Classic navy blue active title bar
+
+
+def _load_hankaku_font_dict() -> dict[int, list[int]]:
+    """Parse hankaku.txt font file into a dictionary mapping char code to 16 bytes."""
+    candidates = [
+        Path("5/hankaku.txt"),
+        Path("vendor/mikanos/kernel/hankaku.txt"),
+        Path("../5/hankaku.txt"),
+        Path("/home/student/Documents/GitHub/study-mikanos/5/hankaku.txt"),
+    ]
+    for p in candidates:
+        if p.exists():
+            font_dict: dict[int, list[int]] = {}
+            current_code = None
+            current_rows: list[int] = []
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("0x"):
+                        parts = line.split()
+                        if current_code is not None and len(current_rows) == 16:
+                            font_dict[current_code] = current_rows
+                        current_code = int(parts[0], 16)
+                        current_rows = []
+                    elif current_code is not None and len(line) == 8 and all(c in ".@" for c in line):
+                        val = 0
+                        for c in line:
+                            val = (val << 1) | (1 if c == "@" else 0)
+                        current_rows.append(val)
+                if current_code is not None and len(current_rows) == 16:
+                    font_dict[current_code] = current_rows
+            if font_dict:
+                return font_dict
+
+    # Fallback minimal font dictionary
+    fallback: dict[int, list[int]] = {}
+    for code in range(256):
+        fallback[code] = [0] * 16
+    return fallback
+
+
+_GLOBAL_HANKAKU_FONT: dict[int, list[int]] | None = None
+
+def get_hankaku_font_data() -> dict[int, list[int]]:
+    """Get lazily loaded hankaku font dictionary."""
+    global _GLOBAL_HANKAKU_FONT
+    if _GLOBAL_HANKAKU_FONT is None:
+        _GLOBAL_HANKAKU_FONT = _load_hankaku_font_dict()
+    return _GLOBAL_HANKAKU_FONT
+
+
+@dataclass
+class WindowBevelDecoratorSim:
+    """Simulator for MikanOS GUI Window Decoration, 3D Bevel Border, and Close Button (osbook_day10b)."""
+    width: int = 160
+    height: int = 68
+    title: str = "Hello Window"
+    lines: list[str] = field(default_factory=lambda: ["Welcome to", " MikanOS world!"])
+    buffer: np.ndarray = field(init=False)
+
+    def __post_init__(self):
+        self.buffer = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.render()
+
+    def _fill_rect(self, x: int, y: int, w: int, h: int, color: tuple[int, int, int]):
+        """Fill rectangular area with specified RGB color with clipping."""
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(self.width, x + w)
+        y1 = min(self.height, y + h)
+        if x1 > x0 and y1 > y0:
+            self.buffer[y0:y1, x0:x1] = color
+
+    def _render_ascii_glyph(self, x: int, y: int, char: str, color: tuple[int, int, int]):
+        """Render a single 8x16 ASCII glyph using built-in font bitmap representation."""
+        idx = ord(char)
+        font = get_hankaku_font_data()
+        if 0 <= idx < 256 and idx in font:
+            glyph_rows = font[idx]
+            for row in range(16):
+                bits = glyph_rows[row]
+                for col in range(8):
+                    if (bits << col) & 0x80:
+                        px = x + col
+                        py = y + row
+                        if 0 <= px < self.width and 0 <= py < self.height:
+                            self.buffer[py, px] = color
+
+    def _render_string(self, x: int, y: int, text: str, color: tuple[int, int, int]):
+        """Render string at (x, y) with 8px horizontal pitch."""
+        for i, ch in enumerate(text):
+            self._render_ascii_glyph(x + i * 8, y, ch, color)
+
+    def render(self):
+        """Execute full window decoration rendering algorithm (osbook_day10b DrawWindow)."""
+        w, h = self.width, self.height
+
+        # 1. 3D Bevel Border (Outer and Inner Frame)
+        # Top outer edge (0xc6c6c6)
+        self._fill_rect(0, 0, w, 1, COLOR_LIGHT_GRAY)
+        # Top inner edge (0xffffff)
+        self._fill_rect(1, 1, w - 2, 1, COLOR_WHITE)
+        # Left outer edge (0xc6c6c6)
+        self._fill_rect(0, 0, 1, h, COLOR_LIGHT_GRAY)
+        # Left inner edge (0xffffff)
+        self._fill_rect(1, 1, 1, h - 2, COLOR_WHITE)
+        # Right inner edge (0x848484)
+        self._fill_rect(w - 2, 1, 1, h - 2, COLOR_DARK_GRAY)
+        # Right outer edge (0x000000)
+        self._fill_rect(w - 1, 0, 1, h, COLOR_BLACK)
+        # Window interior background (0xc6c6c6)
+        self._fill_rect(2, 2, w - 4, h - 4, COLOR_LIGHT_GRAY)
+        # Title bar (0x000084, navy blue)
+        self._fill_rect(3, 3, w - 6, 18, COLOR_TITLE_BAR)
+        # Bottom inner edge (0x848484)
+        self._fill_rect(1, h - 2, w - 2, 1, COLOR_DARK_GRAY)
+        # Bottom outer edge (0x000000)
+        self._fill_rect(0, h - 1, w, 1, COLOR_BLACK)
+
+        # 2. Window Title String
+        self._render_string(24, 4, self.title, COLOR_WHITE)
+
+        # 3. Close Button (16x14 pattern at top-right: (w - 5 - 16, 5))
+        btn_w, btn_h = 16, 14
+        btn_x = w - 5 - btn_w
+        btn_y = 5
+
+        for dy in range(btn_h):
+            row_pattern = CLOSE_BUTTON_PATTERN[dy]
+            for dx in range(btn_w):
+                symbol = row_pattern[dx]
+                if symbol == "@":
+                    c = COLOR_BLACK
+                elif symbol == "$":
+                    c = COLOR_DARK_GRAY
+                elif symbol == ":":
+                    c = COLOR_LIGHT_GRAY
+                else:  # "."
+                    c = COLOR_WHITE
+                self._fill_rect(btn_x + dx, btn_y + dy, 1, 1, c)
+
+        # 4. Content Area Text Lines (e.g., Welcome to / MikanOS world!)
+        if len(self.lines) > 0 and self.lines[0]:
+            self._render_string(24, 28, self.lines[0], COLOR_BLACK)
+        if len(self.lines) > 1 and self.lines[1]:
+            self._render_string(24, 44, self.lines[1], COLOR_BLACK)
+
+    def get_pixel(self, x: int, y: int) -> tuple[int, int, int]:
+        """Get RGB color tuple of pixel at (x, y)."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return tuple(int(v) for v in self.buffer[y, x])
+        raise IndexError(f"Pixel coordinate ({x}, {y}) out of window bounds ({self.width}x{self.height})")
+
+    def get_border_segments(self) -> list[dict]:
+        """Return structural breakdown of all border segments and decorations."""
+        w, h = self.width, self.height
+        return [
+            {"name": "Outer Top Edge", "rect": (0, 0, w, 1), "color": COLOR_LIGHT_GRAY, "hex": "0xc6c6c6", "role": "Outer Highlight (Indirect)"},
+            {"name": "Inner Top Edge", "rect": (1, 1, w - 2, 1), "color": COLOR_WHITE, "hex": "0xffffff", "role": "Inner Highlight (Direct Light)"},
+            {"name": "Outer Left Edge", "rect": (0, 0, 1, h), "color": COLOR_LIGHT_GRAY, "hex": "0xc6c6c6", "role": "Outer Highlight (Indirect)"},
+            {"name": "Inner Left Edge", "rect": (1, 1, 1, h - 2), "color": COLOR_WHITE, "hex": "0xffffff", "role": "Inner Highlight (Direct Light)"},
+            {"name": "Inner Right Edge", "rect": (w - 2, 1, 1, h - 2), "color": COLOR_DARK_GRAY, "hex": "0x848484", "role": "Inner Shadow (Subtle Drop)"},
+            {"name": "Outer Right Edge", "rect": (w - 1, 0, 1, h), "color": COLOR_BLACK, "hex": "0x000000", "role": "Outer Shadow (Deep Shadow)"},
+            {"name": "Window Background", "rect": (2, 2, w - 4, h - 4), "color": COLOR_LIGHT_GRAY, "hex": "0xc6c6c6", "role": "Client/Dialog Base Surface"},
+            {"name": "Title Bar", "rect": (3, 3, w - 6, 18), "color": COLOR_TITLE_BAR, "hex": "0x000084", "role": "Window Drag / Focus Handle"},
+            {"name": "Inner Bottom Edge", "rect": (1, h - 2, w - 2, 1), "color": COLOR_DARK_GRAY, "hex": "0x848484", "role": "Inner Shadow (Subtle Drop)"},
+            {"name": "Outer Bottom Edge", "rect": (0, h - 1, w, 1), "color": COLOR_BLACK, "hex": "0x000000", "role": "Outer Shadow (Deep Shadow)"},
+        ]
+
+    def get_client_area(self) -> dict:
+        """Return coordinates and bounds of the usable client content area."""
+        title_bottom = 3 + 18
+        margin_x = 4
+        margin_y = 4
+        client_x = margin_x
+        client_y = title_bottom + margin_y
+        client_w = self.width - 2 * margin_x
+        client_h = self.height - client_y - margin_y
+        return {
+            "x": client_x,
+            "y": client_y,
+            "width": client_w,
+            "height": client_h,
+            "rect": (client_x, client_y, client_w, client_h),
+        }
+
+    def composite_onto_desktop(self, desktop_width: int = 640, desktop_height: int = 400,
+                                win_pos: tuple[int, int] = (300, 100),
+                                mouse_pos: tuple[int, int] = (200, 200)) -> np.ndarray:
+        """Composite MikanOS desktop background, window, and mouse cursor into a full frame."""
+        # 1. Desktop background: teal / classic MikanOS desktop color [45, 118, 137]
+        desktop = np.full((desktop_height, desktop_width, 3), [45, 118, 137], dtype=np.uint8)
+
+        # 2. Draw Window at win_pos
+        wx, wy = win_pos
+        w, h = self.width, self.height
+        for y in range(h):
+            for x in range(w):
+                dx = wx + x
+                dy = wy + y
+                if 0 <= dx < desktop_width and 0 <= dy < desktop_height:
+                    desktop[dy, dx] = self.buffer[y, x]
+
+        # 3. Draw Mouse Cursor at mouse_pos
+        mx, my = mouse_pos
+        for y in range(24):
+            for x in range(16):
+                is_edge = False
+                is_body = False
+                if x <= y and x < 16 and y < 16:
+                    if x == 0 or x == y or y == 15:
+                        is_edge = True
+                    else:
+                        is_body = True
+                elif 0 <= x <= 7 and 15 <= y < 24 and x == y - 10:
+                    is_edge = True
+
+                dx = mx + x
+                dy = my + y
+                if 0 <= dx < desktop_width and 0 <= dy < desktop_height:
+                    if is_edge:
+                        desktop[dy, dx] = [0, 0, 0]
+                    elif is_body:
+                        desktop[dy, dx] = [255, 255, 255]
+
+        return desktop
+
+
+def plot_fig10_04_window_bevel_and_light_source_math(output_path: Path | str) -> Path:
+    """Generate high-res architectural diagram of 3D Bevel Border and Light Source Math (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig = plt.figure(figsize=(15, 6.5))
+    fig.patch.set_facecolor("#FAFAFA")
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.1, 1.3], wspace=0.25)
+
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 左上平行光源モデルと擬似3Dベベル（Bevel）の幾何光学", fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    ax1.set_xlim(-1.5, 9.5)
+    ax1.set_ylim(-1.5, 8.5)
+    ax1.axis("off")
+
+    # Draw raised block bottom and right bevel slopes
+    ax1.fill([1, 8.2, 8.2, 1], [1, 1, 7.2, 7.2], color="#000000", alpha=0.3, label="投射影 (Drop Shadow)")
+    ax1.fill([1, 8, 7.6, 1.4], [1, 1, 1.4, 1.4], color="#848484", label="下辺シャドウ (0x848484)")
+    ax1.fill([8, 8, 7.6, 7.6], [1, 7, 6.6, 1.4], color="#000000", label="右辺シャドウ (0x000000)")
+    ax1.fill([1, 8, 7.6, 1.4], [7, 7, 6.6, 6.6], color="#FFFFFF", edgecolor="#C6C6C6", label="上辺ハイライト (0xFFFFFF)")
+    ax1.fill([1, 1.4, 1.4, 1], [1, 1.4, 6.6, 7], color="#C6C6C6", label="左辺ハイライト (0xC6C6C6)")
+    ax1.fill([1.4, 7.6, 7.6, 1.4], [1.4, 1.4, 6.6, 6.6], color="#C6C6C6")
+    ax1.text(4.5, 4.0, "ウィンドウ本体\n(表面色: 0xc6c6c6)", ha="center", va="center", fontsize=10, fontweight="bold", color="#212121")
+
+    # Light rays from top-left (-1, -1, 1) direction
+    for offset_y in [6.5, 7.5, 8.5]:
+        ax1.annotate(
+            "", xy=(1.0, offset_y - 1.5), xytext=(-0.8, offset_y),
+            arrowprops=dict(facecolor="#FFB300", edgecolor="#F57C00", width=2.5, headwidth=8, shrink=0.05)
+        )
+    ax1.text(-0.6, 8.0, "平行入射光\n$L = (-1, -1, 1)$", fontsize=10, fontweight="bold", color="#E65100", ha="center")
+
+    ax1.annotate("法線 $N_{top} = (0, 1, 0)$\n$L \\cdot N > 0$ (照射面: 明)", xy=(4.5, 7.0), xytext=(4.5, 8.2),
+                 ha="center", fontsize=8.5, color="#1B5E20", fontweight="bold",
+                 arrowprops=dict(arrowstyle="->", color="#2E7D32", lw=1.5))
+    ax1.annotate("法線 $N_{bottom} = (0, -1, 0)$\n$L \\cdot N < 0$ (影面: 暗)", xy=(4.5, 1.0), xytext=(4.5, -0.6),
+                 ha="center", fontsize=8.5, color="#B71C1C", fontweight="bold",
+                 arrowprops=dict(arrowstyle="->", color="#C62828", lw=1.5))
+
+    ax1.legend(loc="upper left", bbox_to_anchor=(0.0, 0.4), fontsize=8.5, framealpha=0.9)
+
+    # Subplot 2: Pixel-by-pixel cross section of MikanOS border lines
+    ax2 = fig.add_subplot(gs[1])
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. MikanOS DrawWindow() 二重境界線（Double Border）ピクセル構造", fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    ax2.set_xlim(-5, 165)
+    ax2.set_ylim(75, -10)
+    ax2.set_aspect("equal")
+
+    ax2.plot([0, 159, 159, 0, 0], [0, 0, 67, 67, 0], color="#9E9E9E", lw=1.2, linestyle=":")
+    ax2.plot([0, 159], [0, 0], color="#C6C6C6", lw=3.0, label="y=0: 外枠上辺 (0xc6c6c6)")
+    ax2.plot([0, 0], [0, 67], color="#C6C6C6", lw=3.0, label="x=0: 外枠左辺 (0xc6c6c6)")
+    ax2.plot([1, 158], [1, 1], color="#00E5FF", lw=2.5, label="y=1: 内枠上辺 (0xffffff, 図中シアン)")
+    ax2.plot([1, 1], [1, 66], color="#00E5FF", lw=2.5, label="x=1: 内枠左辺 (0xffffff)")
+
+    ax2.plot([158, 158], [1, 66], color="#616161", lw=2.5, label="x=W-2: 内枠右辺 (0x848484)")
+    ax2.plot([1, 158], [66, 66], color="#616161", lw=2.5, label="y=H-2: 内枠下辺 (0x848484)")
+    ax2.plot([159, 159], [0, 67], color="#000000", lw=3.0, label="x=W-1: 外枠右辺 (0x000000)")
+    ax2.plot([0, 159], [67, 67], color="#000000", lw=3.0, label="y=H-1: 外枠下辺 (0x000000)")
+
+    t_rect = plt.Rectangle((3, 3), 160 - 6, 18, facecolor="#000084", edgecolor="#1565C0", label="タイトルバー (3, 3) 154×18 (0x000084)")
+    ax2.add_patch(t_rect)
+    ax2.text(24, 15, "Hello Window", color="#FFFFFF", fontsize=8, fontweight="bold")
+
+    cb_rect = plt.Rectangle((160 - 21, 5), 16, 14, facecolor="#C6C6C6", edgecolor="#000000", lw=1, label="閉じるボタン (W-21, 5) 16×14")
+    ax2.add_patch(cb_rect)
+    ax2.text(160 - 13, 13, "×", color="#000000", fontsize=9, fontweight="bold", ha="center", va="center")
+
+    ca_rect = plt.Rectangle((4, 25), 152, 38, facecolor="#EEEEEE", edgecolor="#BDBDBD", linestyle="--", label="クライアント作業領域")
+    ax2.add_patch(ca_rect)
+    ax2.text(80, 36, "Welcome to", ha="center", fontsize=8.5, color="#212121")
+    ax2.text(80, 52, " MikanOS world!", ha="center", fontsize=8.5, color="#212121")
+
+    ax2.set_xlabel("X座標 (ピクセル)", fontsize=9.5)
+    ax2.set_ylabel("Y座標 (ピクセル)", fontsize=9.5)
+    ax2.legend(loc="lower left", bbox_to_anchor=(-0.05, -0.32), ncol=2, fontsize=7.8, framealpha=0.95)
+
+    plt.suptitle("第10章 10.2 GUI ウィンドウ描画と 3D 立体ベベル（Bevel）の光学・ピクセル数理",
+                 fontsize=13.5, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig10_05_close_button_bitmap_matrix(output_path: Path | str) -> Path:
+    """Generate high-res architectural diagram of Close Button Bitmap Matrix & Palette (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.2), gridspec_kw={"width_ratios": [1.1, 1.0]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 閉じるボタン（16×14ピクセル）4値パレット・ドット絵マトリクス",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    btn_h = 14
+    btn_w = 16
+    grid_img = np.zeros((btn_h, btn_w, 3))
+
+    color_map = {
+        "@": [0.0, 0.0, 0.0],
+        "$": [132/255, 132/255, 132/255],
+        ":": [198/255, 198/255, 198/255],
+        ".": [1.0, 1.0, 1.0],
+    }
+
+    for y in range(btn_h):
+        row = CLOSE_BUTTON_PATTERN[y]
+        for x in range(btn_w):
+            sym = row[x]
+            grid_img[y, x] = color_map[sym]
+            text_color = "white" if sym in ["@", "$"] else "black"
+            ax1.text(x, y, sym, ha="center", va="center", fontsize=7.5, fontweight="bold", color=text_color)
+
+    ax1.imshow(grid_img, origin="upper", aspect="equal")
+    ax1.set_xticks(range(btn_w))
+    ax1.set_yticks(range(btn_h))
+    ax1.set_xlabel("Xオフセット (0 〜 15 px)", fontsize=9.5)
+    ax1.set_ylabel("Yオフセット (0 〜 13 px)", fontsize=9.5)
+    ax1.grid(color="#9E9E9E", linestyle="-", linewidth=0.5, alpha=0.5)
+
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. パレットシンボル定義とボタン立体造形・「×」印の幾何構造",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+    ax2.axis("off")
+
+    palette_info = [
+        ("'.' (ピリオド)", "白 (0xffffff)", "#FFFFFF", "左上ハイライト枠", "左端・上端の1行1列。光を受けボタンが浮き上がる"),
+        ("':' (コロン)", "背景灰 (0xc6c6c6)", "#C6C6C6", "ボタン表面 (Face)", "ボタンの中央地色。ウィンドウ背景と同系色"),
+        ("'$' (ドル)", "暗灰 (0x848484)", "#848484", "右下シャドウ (Inner)", "下から2行目・右から2列目。内部の影を表現"),
+        ("'@' (アットマーク)", "黒 (0x000000)", "#000000", "外周枠 ＆ '×'印", "最下行・最右列の外枠、および中央のクロスアイコン"),
+    ]
+
+    table_y = 0.92
+    ax2.text(0.02, table_y, "【4値パレットと光学的役割の完全対応表】", fontsize=10.5, fontweight="bold", color="#0D47A1")
+
+    for i, (sym, cname, col, role, desc) in enumerate(palette_info):
+        y_pos = table_y - 0.12 - i * 0.16
+        rect = plt.Rectangle((0.02, y_pos - 0.02), 0.08, 0.08, facecolor=col, edgecolor="#212121", lw=1.2)
+        ax2.add_patch(rect)
+        ax2.text(0.13, y_pos + 0.035, f"{sym}: {cname} [{role}]", fontsize=9.5, fontweight="bold", color="#212121")
+        ax2.text(0.13, y_pos - 0.015, desc, fontsize=8.5, color="#616161")
+
+    box_y = 0.18
+    rect_box = plt.Rectangle((0.02, box_y - 0.12), 0.96, 0.22, facecolor="#E8EAF6", edgecolor="#3F51B5", lw=1.5)
+    ax2.add_patch(rect_box)
+    ax2.text(0.05, box_y + 0.05, "【ウィンドウ右上配置の座標変換数理】", fontsize=9.5, fontweight="bold", color="#1A237E")
+    ax2.text(0.05, box_y - 0.01,
+             "• ボタン基準座標: $x_{btn} = W_{win} - 5 - W_{btn} = 160 - 5 - 16 = 139$\n"
+             "• ボタン基準座標: $y_{btn} = 5$ (タイトルバー上端 $y=3$ から 2px 下)\n"
+             "• 各ピクセル描画位置: $(x_{btn} + dx, y_{btn} + dy) \\quad (0 \\leq dx < 16, 0 \\leq dy < 14)$",
+             fontsize=8.5, color="#283593")
+
+    plt.suptitle("第10章 10.2 閉じるボタン（Close Button）の 16×14 ドット絵パレット展開アルゴリズム",
+                 fontsize=13.5, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def plot_fig10_06_first_window_composition_render(output_path: Path | str) -> Path:
+    """Generate high-res simulation render of MikanOS Desktop, First Window, and Layers (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.0), gridspec_kw={"width_ratios": [1.4, 1.0]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    sim = WindowBevelDecoratorSim(width=160, height=68, title="Hello Window")
+    desktop_w, desktop_h = 640, 400
+    desktop = sim.composite_onto_desktop(desktop_w, desktop_h, win_pos=(300, 100), mouse_pos=(200, 200))
+
+    ax1 = axes[0]
+    ax1.set_facecolor("#000000")
+    ax1.set_title("1. MikanOS デスクトップ全体描画シミュレーション (640×400, 3レイヤ合成)",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+    ax1.imshow(desktop)
+    ax1.set_xlabel("X座標 (px)")
+    ax1.set_ylabel("Y座標 (px)")
+
+    rect_w = plt.Rectangle((300, 100), 160, 68, fill=False, edgecolor="#E91E63", lw=2, linestyle="--")
+    ax1.add_patch(rect_w)
+    ax1.text(380, 85, "メインウィンドウ (300, 100) 160×68 [Z=1]", color="#E91E63", fontsize=8.5, fontweight="bold", ha="center")
+
+    ax1.annotate("マウスカーソル (200, 200) [Z=2]", xy=(200, 200), xytext=(120, 270),
+                 color="#FFC107", fontsize=8.5, fontweight="bold",
+                 arrowprops=dict(facecolor="#FFC107", edgecolor="#FFA000", width=1.5, headwidth=6))
+
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. メインウィンドウ拡大ピクセルレンダリング (160×68)",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    ax2.imshow(sim.buffer)
+    ax2.set_xticks(range(0, 161, 32))
+    ax2.set_yticks(range(0, 69, 16))
+    ax2.set_xlabel("ウィンドウ相対 X (px)")
+    ax2.set_ylabel("ウィンドウ相対 Y (px)")
+
+    ax2.annotate("タイトルバー (0x000084)\n高さ: 18px", xy=(80, 12), xytext=(80, -8),
+                 color="#0D47A1", fontsize=8, fontweight="bold", ha="center",
+                 arrowprops=dict(arrowstyle="->", color="#0D47A1", lw=1.2))
+
+    ax2.annotate("閉じるボタン (16×14)", xy=(160 - 13, 12), xytext=(160 - 25, 35),
+                 color="#D32F2F", fontsize=8, fontweight="bold",
+                 arrowprops=dict(arrowstyle="->", color="#D32F2F", lw=1.2))
+
+    ax2.annotate("クライアント文字列\n'Welcome to / MikanOS world!'", xy=(80, 40), xytext=(80, 58),
+                 color="#212121", fontsize=8, fontweight="bold", ha="center",
+                 arrowprops=dict(arrowstyle="->", color="#212121", lw=1.2))
+
+    plt.suptitle("第10章 10.2 MikanOS レイヤ合成プレビュー（デスクトップ背景・初ウィンドウ・マウス）",
+                 fontsize=13.5, fontweight="bold", color="#0D47A1", y=0.98)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
