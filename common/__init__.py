@@ -587,6 +587,15 @@ from common.os_sim import (
     plot_fig10_14_layermanager_back_buffer_architecture,
     generate_ch10_15_flicker_elimination_vram_atomicity_analysis,
     plot_fig10_15_flicker_elimination_vram_atomicity_analysis,
+    HidMouseReport,
+    MouseDragTraceEntry,
+    WindowDragSim,
+    generate_ch10_16_usb_hid_mouse_report_and_drag_fsm,
+    plot_fig10_16_usb_hid_mouse_report_and_drag_fsm,
+    generate_ch10_17_find_layer_by_position_z_order_hit_test,
+    plot_fig10_17_find_layer_by_position_z_order_hit_test,
+    generate_ch10_18_window_drag_trajectory_and_bg_bug,
+    plot_fig10_18_window_drag_trajectory_and_bg_bug,
 )
 
 __all__ = [
@@ -1176,4 +1185,13 @@ __all__ = [
     "plot_fig10_14_layermanager_back_buffer_architecture",
     "generate_ch10_15_flicker_elimination_vram_atomicity_analysis",
     "plot_fig10_15_flicker_elimination_vram_atomicity_analysis",
+    "HidMouseReport",
+    "MouseDragTraceEntry",
+    "WindowDragSim",
+    "generate_ch10_16_usb_hid_mouse_report_and_drag_fsm",
+    "plot_fig10_16_usb_hid_mouse_report_and_drag_fsm",
+    "generate_ch10_17_find_layer_by_position_z_order_hit_test",
+    "plot_fig10_17_find_layer_by_position_z_order_hit_test",
+    "generate_ch10_18_window_drag_trajectory_and_bg_bug",
+    "plot_fig10_18_window_drag_trajectory_and_bg_bug",
 ]

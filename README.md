@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-670%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-36.8%25%20(84%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-677%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-37.3%25%20(85%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -97,7 +97,7 @@ cmake --build build
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | [`8_Exercises.ipynb`](8/8_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | [`9_Exercises.ipynb`](9/9_Exercises.ipynb) | `[x]` 完了 (8/8) |
-| **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[x]` 進行中 (5/8) |
+| **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[x]` 進行中 (6/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ、`TimerManager`、RSDPとACPI PMタイマ | `11_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第12章** | キー入力 | 6 | `day12a`–`12f` | FADT、タイマ較正、USBキーボードHID、テキストボックス | `12_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
 | **第13章** | マルチタスク(1) | 5 | `day13a`–`13d` | `TaskContext`、`SwitchContext`アセンブリ、`TaskManager` | `13_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
@@ -262,6 +262,7 @@ cmake --build build
 | [`10.3_High_Speed_Counter_Flicker_Problem.ipynb`](10/10.3_High_Speed_Counter_Flicker_Problem.ipynb) | 10.3 高速カウンタ（`osbook_day10c`・動的描画ストレステスト・ウィンドウ160×52リファクタリング・10桁ゼロ埋め書式化とFillRectangle消去数理・ペインターズ則直接上書きと60Hz垂直走査線の競合・画面フリッカーとティアリングの物理メカニズム・全画面再描画3.14MB vs 差分5.12KBの614倍帯域浪費・CPU 100%ビジーループ解剖・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/10/10.3_High_Speed_Counter_Flicker_Problem.ipynb) |
 | [`10.4_Eliminating_Flicker_with_Partial_Draw.ipynb`](10/10.4_Eliminating_Flicker_with_Partial_Draw.ipynb) | 10.4 チラチラ解消（`osbook_day10d`・レイヤ限定再描画 `LayerManager::Draw(id)`・背景およびコンソール描画スキップ・描画負荷126倍削減・FrameBuffer::Copy 3重矩形交差数理・走査線一括memcpy・レイヤ移動 Move の2段階描画カプセル化・文字フリッカー残存の限界解剖・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/10/10.4_Eliminating_Flicker_with_Partial_Draw.ipynb) |
 | [`10.5_Double_Buffering_and_Shadow_Buffer.ipynb`](10/10.5_Double_Buffering_and_Shadow_Buffer.ipynb) | 10.5 バックバッファ（`osbook_day10e`・ダブルバッファリングと2段階オフスクリーンバッファ構造・`FrameBuffer::Config()` と `frame_buffer=nullptr` RAM自動確保・ストライドパディング吸収数理・`mutable FrameBuffer back_buffer_`・`Draw(area)`/`Draw(id)` オフスクリーン合成と原子的VRAM転送・マウス重なり/Move過渡フリッカー完全根絶・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/10/10.5_Double_Buffering_and_Shadow_Buffer.ipynb) |
+| [`10.6_Dragging_Windows_with_Mouse.ipynb`](10/10.6_Dragging_Windows_with_Mouse.ipynb) | 10.6 ウィンドウのドラッグ移動（`osbook_day10f`・USB HID Boot Protocol 3バイトマウスレポート `buttons` 抽出と `ObserverType` 拡張・`LayerManager::FindLayerByPosition` 逆順Zオーダー走査と `exclude_id`/半開区間矩形判定・`MouseObserver` 4状態エッジ検出FSMと画面端クランプ `posdiff` 同期数理・`MoveRelative` 追従移動・背景ドラッグバグ解剖・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/10/10.6_Dragging_Windows_with_Mouse.ipynb) |
 
 
 

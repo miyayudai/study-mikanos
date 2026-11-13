@@ -39396,3 +39396,745 @@ def generate_ch10_15_flicker_elimination_vram_atomicity_analysis(
 plot_fig10_13_single_vs_double_buffering_pipeline = generate_ch10_13_single_vs_double_buffering_pipeline
 plot_fig10_14_layermanager_back_buffer_architecture = generate_ch10_14_layermanager_back_buffer_architecture
 plot_fig10_15_flicker_elimination_vram_atomicity_analysis = generate_ch10_15_flicker_elimination_vram_atomicity_analysis
+
+
+# =============================================================================
+# Chapter 10.6: Window Dragging with Mouse (osbook_day10f)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class HidMouseReport:
+    """3-byte USB HID Boot Protocol mouse input report (Buffer()[0..2])."""
+
+    buttons: int
+    displacement_x: int
+    displacement_y: int
+
+    @property
+    def left_pressed(self) -> bool:
+        """Bit 0 (0x01): Left mouse button pressed state."""
+        return bool(self.buttons & 0x01)
+
+    @property
+    def right_pressed(self) -> bool:
+        """Bit 1 (0x02): Right mouse button pressed state."""
+        return bool(self.buttons & 0x02)
+
+    @property
+    def middle_pressed(self) -> bool:
+        """Bit 2 (0x04): Middle mouse button pressed state."""
+        return bool(self.buttons & 0x04)
+
+    @classmethod
+    def from_bytes(cls, b0: int, b1: int, b2: int) -> "HidMouseReport":
+        """Decode raw 3-byte HID report with signed int8 two's complement displacements."""
+        dx = b1 - 256 if (b1 & 0x80) else b1
+        dy = b2 - 256 if (b2 & 0x80) else b2
+        return cls(buttons=b0 & 0xFF, displacement_x=dx, displacement_y=dy)
+
+
+@dataclass(frozen=True)
+class MouseDragTraceEntry:
+    """Single step trace of MouseObserver 4-state edge-detection FSM."""
+
+    step: int
+    buttons: int
+    dx: int
+    dy: int
+    old_mouse_pos: tuple[int, int]
+    new_mouse_pos: tuple[int, int]
+    posdiff: tuple[int, int]
+    prev_left: bool
+    curr_left: bool
+    transition: str
+    hit_layer_id: int | None
+    drag_layer_id: int
+    drag_layer_pos: tuple[int, int] | None
+
+
+class WindowDragSim:
+    """Simulates MikanOS osbook_day10f mouse dragging & FindLayerByPosition.
+
+    Composes DoubleBufferingLayerSim to guarantee double-buffered compositing while
+    tracking layer window presence, Z-order reverse lookup (`FindLayerByPosition`),
+    clamped `posdiff`, and the 4-state `MouseObserver` drag finite-state machine.
+    """
+
+    def __init__(
+        self,
+        screen_w: int = 320,
+        screen_h: int = 200,
+        mouse_layer_id: int = 4,
+        init_mouse_pos: tuple[int, int] = (200, 120),
+    ) -> None:
+        self.db_sim = DoubleBufferingLayerSim(screen_w=screen_w, screen_h=screen_h)
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        self.mouse_layer_id = mouse_layer_id
+        self.mouse_position: tuple[int, int] = init_mouse_pos
+        self.mouse_drag_layer_id: int = 0
+        self.previous_buttons: int = 0
+        self.has_window: dict[int, bool] = {}
+        self.step_count: int = 0
+        self.trace: list[MouseDragTraceEntry] = []
+
+    @property
+    def vram(self) -> np.ndarray:
+        """Expose current hardware VRAM surface."""
+        return self.db_sim.vram
+
+    @property
+    def back_buffer(self) -> np.ndarray:
+        """Expose current RAM back_buffer_ surface."""
+        return self.db_sim.back_buffer
+
+    def add_layer(
+        self,
+        spec: DoubleBufferLayerSpec,
+        *,
+        has_window: bool = True,
+        height: int | None = None,
+    ) -> None:
+        """Register a layer with optional window flag and explicit Z-height."""
+        self.has_window[spec.layer_id] = has_window
+        self.db_sim.add_layer(spec)
+        if height is not None:
+            self.up_down(spec.layer_id, height)
+
+    def up_down(self, layer_id: int, new_height: int) -> None:
+        """Adjust layer Z-order or hide if new_height < 0 (matches LayerManager::UpDown)."""
+        stack = self.db_sim.layer_stack
+        if new_height < 0:
+            if layer_id in stack:
+                stack.remove(layer_id)
+            return
+        if layer_id in stack:
+            stack.remove(layer_id)
+        clamped_h = min(new_height, len(stack))
+        stack.insert(clamped_h, layer_id)
+
+    def draw_all(self) -> dict[str, int]:
+        """Perform full-screen double-buffered Draw."""
+        return self.db_sim.draw_area(
+            SimRect(0, 0, self.screen_w, self.screen_h), use_double_buffer=True
+        )
+
+    def move_relative(self, layer_id: int, dx: int, dy: int) -> dict[str, int]:
+        """Mirror LayerManager::MoveRelative(id, pos_diff) via old_pos + pos_diff."""
+        spec = self.db_sim.layers[layer_id]
+        return self.db_sim.move_layer(
+            layer_id, spec.x + dx, spec.y + dy, use_double_buffer=True
+        )
+
+    def find_layer_by_position(
+        self, pos: tuple[int, int], exclude_id: int
+    ) -> tuple[int | None, list[dict[str, Any]]]:
+        """Exact Python replica of LayerManager::FindLayerByPosition(pos, exclude_id).
+
+        Scans `layer_stack` in reverse (`rbegin()` -> `rend()`) and returns
+        `(matched_layer_id_or_None, trace_records)`.
+        """
+        px, py = pos
+        scan_trace: list[dict[str, Any]] = []
+        matched: int | None = None
+
+        for z_idx in range(len(self.db_sim.layer_stack) - 1, -1, -1):
+            lid = self.db_sim.layer_stack[z_idx]
+            spec = self.db_sim.layers[lid]
+            if lid == exclude_id:
+                scan_trace.append({
+                    "z": z_idx, "layer_id": lid, "name": spec.name,
+                    "result": "SKIP (exclude_id)",
+                })
+                continue
+            if not self.has_window.get(lid, True):
+                scan_trace.append({
+                    "z": z_idx, "layer_id": lid, "name": spec.name,
+                    "result": "SKIP (!win)",
+                })
+                continue
+            x0, y0 = spec.x, spec.y
+            x1, y1 = x0 + spec.width, y0 + spec.height
+            inside = (x0 <= px < x1) and (y0 <= py < y1)
+            if inside:
+                scan_trace.append({
+                    "z": z_idx, "layer_id": lid, "name": spec.name,
+                    "result": f"HIT [{x0},{x1})x[{y0},{y1})",
+                })
+                matched = lid
+                break
+            scan_trace.append({
+                "z": z_idx, "layer_id": lid, "name": spec.name,
+                "result": f"MISS [{x0},{x1})x[{y0},{y1})",
+            })
+        return matched, scan_trace
+
+    def mouse_observer(
+        self, buttons: int, displacement_x: int, displacement_y: int
+    ) -> MouseDragTraceEntry:
+        """Execute exact osbook_day10f MouseObserver logic on a single HID report."""
+        self.step_count += 1
+        oldpos = self.mouse_position
+        raw_x = oldpos[0] + displacement_x
+        raw_y = oldpos[1] + displacement_y
+        clamped_x = max(0, min(self.screen_w - 1, raw_x))
+        clamped_y = max(0, min(self.screen_h - 1, raw_y))
+        self.mouse_position = (clamped_x, clamped_y)
+        posdiff = (clamped_x - oldpos[0], clamped_y - oldpos[1])
+
+        self.db_sim.move_layer(
+            self.mouse_layer_id, clamped_x, clamped_y, use_double_buffer=True
+        )
+
+        prev_left = bool(self.previous_buttons & 0x01)
+        curr_left = bool(buttons & 0x01)
+        hit_id: int | None = None
+
+        if (not prev_left) and curr_left:
+            transition = "RISING_EDGE (Drag Start)"
+            hit_id, _ = self.find_layer_by_position(
+                self.mouse_position, self.mouse_layer_id
+            )
+            if hit_id is not None:
+                self.mouse_drag_layer_id = hit_id
+        elif prev_left and curr_left:
+            transition = "HOLD (Dragging)"
+            if self.mouse_drag_layer_id > 0:
+                self.move_relative(self.mouse_drag_layer_id, posdiff[0], posdiff[1])
+        elif prev_left and (not curr_left):
+            transition = "FALLING_EDGE (Drag End)"
+            self.mouse_drag_layer_id = 0
+        else:
+            transition = "IDLE (Cursor Move)"
+
+        self.previous_buttons = buttons & 0xFF
+        drag_pos = (
+            (
+                self.db_sim.layers[self.mouse_drag_layer_id].x,
+                self.db_sim.layers[self.mouse_drag_layer_id].y,
+            )
+            if self.mouse_drag_layer_id > 0
+            else None
+        )
+        entry = MouseDragTraceEntry(
+            step=self.step_count,
+            buttons=buttons,
+            dx=displacement_x,
+            dy=displacement_y,
+            old_mouse_pos=oldpos,
+            new_mouse_pos=self.mouse_position,
+            posdiff=posdiff,
+            prev_left=prev_left,
+            curr_left=curr_left,
+            transition=transition,
+            hit_layer_id=hit_id,
+            drag_layer_id=self.mouse_drag_layer_id,
+            drag_layer_pos=drag_pos,
+        )
+        self.trace.append(entry)
+        return entry
+
+    @classmethod
+    def create_mikanos_desktop_sim(
+        cls,
+        screen_w: int = 320,
+        screen_h: int = 200,
+        init_mouse_pos: tuple[int, int] = (180, 72),
+    ) -> "WindowDragSim":
+        """Build a 4-layer MikanOS desktop matching osbook_day10f Z-order."""
+        sim = cls(
+            screen_w=screen_w,
+            screen_h=screen_h,
+            mouse_layer_id=4,
+            init_mouse_pos=init_mouse_pos,
+        )
+
+        # Layer 1: DesktopBG (45, 110, 142) + bottom taskbar (30, 30, 40)
+        bg = np.empty((screen_h, screen_w, 3), dtype=np.uint8)
+        bg[:, :] = (45, 110, 142)
+        bg[screen_h - 18 :, :] = (30, 34, 46)
+        bg[screen_h - 18 : screen_h - 16, :] = (200, 200, 200)
+        sim.add_layer(
+            DoubleBufferLayerSpec(1, "DesktopBG", 0, 0, screen_w, screen_h, bg),
+            has_window=True,
+            height=0,
+        )
+
+        # Layer 2: Console (16, 24, 32) with simulated green text lines
+        con_w, con_h = 156, 108
+        con = np.empty((con_h, con_w, 3), dtype=np.uint8)
+        con[:, :] = (16, 24, 32)
+        for row_y in range(8, 88, 12):
+            line_len = 70 + ((row_y * 17) % 60)
+            con[row_y : row_y + 4, 8 : min(con_w - 8, line_len)] = (210, 225, 215)
+        sim.add_layer(
+            DoubleBufferLayerSpec(2, "Console", 0, 0, con_w, con_h, con),
+            has_window=True,
+            height=1,
+        )
+
+        # Layer 3: Hello Window (110 x 48) with 3D bevel, blue title bar, close box
+        win_w, win_h = 110, 48
+        win = np.empty((win_h, win_w, 3), dtype=np.uint8)
+        win[:, :] = (198, 198, 198)
+        win[0, :] = (255, 255, 255)
+        win[:, 0] = (255, 255, 255)
+        win[-1, :] = (132, 132, 132)
+        win[:, -1] = (132, 132, 132)
+        win[3:19, 3 : win_w - 3] = (0, 17, 132)  # Active navy title bar
+        win[5:17, win_w - 17 : win_w - 5] = (198, 198, 198)  # Close button
+        win[7:15, win_w - 15 : win_w - 7] = (32, 32, 32)
+        win[26:36, 18:90] = (20, 20, 20)  # Counter digits placeholder
+        sim.add_layer(
+            DoubleBufferLayerSpec(3, "HelloWindow", 130, 56, win_w, win_h, win),
+            has_window=True,
+            height=2,
+        )
+
+        # Layer 4: MouseCursor (12 x 16) with transparent color (0, 0, 1)
+        trans = (0, 0, 1)
+        cursor_shape = [
+            "@...........",
+            "@@..........",
+            "@.@.........",
+            "@..@........",
+            "@...@.......",
+            "@....@......",
+            "@.....@.....",
+            "@......@....",
+            "@.......@...",
+            "@........@..",
+            "@.....@@@@..",
+            "@..@..@.....",
+            "@.@.@.@.....",
+            "@@...@.@....",
+            "@....@.@....",
+            "......@@....",
+        ]
+        m_arr = np.empty((16, 12, 3), dtype=np.uint8)
+        m_arr[:, :] = trans
+        for r_i, row_str in enumerate(cursor_shape):
+            for c_i, ch in enumerate(row_str):
+                if ch == "@":
+                    m_arr[r_i, c_i] = (0, 0, 0)
+                elif ch == ".":
+                    # Fill interior of arrow with white
+                    first_at = row_str.find("@")
+                    last_at = row_str.rfind("@")
+                    if first_at < c_i < last_at and r_i < 11:
+                        m_arr[r_i, c_i] = (255, 255, 255)
+        sim.add_layer(
+            DoubleBufferLayerSpec(
+                4,
+                "MouseCursor",
+                init_mouse_pos[0],
+                init_mouse_pos[1],
+                12,
+                16,
+                m_arr,
+                transparent_color=trans,
+            ),
+            has_window=True,
+            height=3,
+        )
+
+        sim.draw_all()
+        return sim
+
+
+def generate_ch10_16_usb_hid_mouse_report_and_drag_fsm(
+    output_path: str | Path = "10/result/fig10_16_usb_hid_mouse_report_and_drag_fsm.png",
+) -> Path:
+    """Generate Fig 10.16: USB HID 3-byte mouse report & MouseObserver 4-state FSM (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(
+        1, 2, figsize=(16.0, 6.8), gridspec_kw={"width_ratios": [1.0, 1.15]}
+    )
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left Panel: USB HID Boot Protocol 3-Byte Report Bitfield Anatomy
+    ax1 = axes[0]
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+    ax1.set_title(
+        "1. USB HID Boot Protocol 3バイトマウスレポート構造 (`Buffer()[0..2]`)",
+        fontsize=11.3,
+        fontweight="bold",
+        color="#1A237E",
+        pad=10,
+    )
+
+    byte_specs = [
+        (7.7, "Buffer()[0]: uint8_t buttons (ボタンビットフィールド)", "#E3F2FD", "#1565C0",
+         "Bit7..3: Reserved (0) | Bit2 (0x04): 中 | Bit1 (0x02): 右 | Bit0 (0x01): 左"),
+        (5.5, "Buffer()[1]: int8_t displacement_x (X軸相対移動量)", "#E8F5E9", "#2E7D32",
+         "2の補数符号付き8bit整数: -128 (左) 〜 +127 (右) | 正=右方向"),
+        (3.3, "Buffer()[2]: int8_t displacement_y (Y軸相対移動量)", "#FFF3E0", "#E65100",
+         "2の補数符号付き8bit整数: -128 (上) 〜 +127 (下) | 正=下方向"),
+    ]
+    for y_top, title, fc, ec, desc in byte_specs:
+        box = FancyBboxPatch(
+            (0.35, y_top), 9.3, 1.65,
+            boxstyle="round,pad=0.12", facecolor=fc, edgecolor=ec, lw=1.8,
+        )
+        ax1.add_patch(box)
+        ax1.text(0.6, y_top + 1.25, title, fontsize=9.8, fontweight="bold", color=ec)
+        ax1.text(0.6, y_top + 0.55, desc, fontsize=8.7, color="#212121")
+
+    # Bit-level expansion of Buffer()[0]
+    bit_labels = ["7\nRsv", "6\nRsv", "5\nRsv", "4\nRsv", "3\nRsv", "2\nMid", "1\nRight", "0\nLeft"]
+    bit_colors = ["#ECEFF1"] * 5 + ["#BBDEFB", "#90CAF9", "#FFD54F"]
+    bit_edges = ["#78909C"] * 5 + ["#1976D2", "#1976D2", "#E65100"]
+    for idx, (bl, bfc, bec) in enumerate(zip(bit_labels, bit_colors, bit_edges)):
+        bx = 0.55 + idx * 1.12
+        rect = patches.Rectangle((bx, 1.25), 1.02, 1.35, facecolor=bfc, edgecolor=bec, lw=1.6)
+        ax1.add_patch(rect)
+        ax1.text(bx + 0.51, 1.92, bl, ha="center", va="center", fontsize=8.3, fontweight="bold", color="#212121")
+
+    ax1.text(
+        5.0,
+        0.55,
+        "ObserverType 拡張: void(uint8_t buttons, int8_t displacement_x, int8_t displacement_y)\n"
+        "left_pressed = (buttons & 0x01) により Bit 0 (左ボタン) を抽出してエッジ判定へ供給",
+        ha="center",
+        va="center",
+        fontsize=8.6,
+        fontweight="bold",
+        color="#0D47A1",
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="#E8EAF6", edgecolor="#3949AB"),
+    )
+
+    # Right Panel: 4-State MouseObserver Drag FSM & Truth Table
+    ax2 = axes[1]
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+    ax2.set_title(
+        "2. MouseObserver 4状態エッジ検出ステートマシン (FSM)",
+        fontsize=11.3,
+        fontweight="bold",
+        color="#1A237E",
+        pad=10,
+    )
+
+    # State boxes
+    s_idle = FancyBboxPatch(
+        (0.4, 6.2), 3.6, 2.3, boxstyle="round,pad=0.15", facecolor="#ECEFF1", edgecolor="#455A64", lw=2.0
+    )
+    s_drag = FancyBboxPatch(
+        (5.9, 6.2), 3.7, 2.3, boxstyle="round,pad=0.15", facecolor="#E8F5E9", edgecolor="#2E7D32", lw=2.0
+    )
+    ax2.add_patch(s_idle)
+    ax2.add_patch(s_drag)
+
+    ax2.text(
+        2.2, 7.35,
+        "IDLE 状態\n(mouse_drag_layer_id == 0)\n通常カーソル移動のみ",
+        ha="center", va="center", fontsize=9.3, fontweight="bold", color="#263238",
+    )
+    ax2.text(
+        7.75, 7.35,
+        "DRAGGING 状態\n(mouse_drag_layer_id > 0)\nMoveRelative(..., posdiff)",
+        ha="center", va="center", fontsize=9.3, fontweight="bold", color="#1B5E20",
+    )
+
+    # Transition arrows
+    ax2.annotate(
+        "", xy=(5.85, 7.85), xytext=(4.05, 7.85),
+        arrowprops=dict(arrowstyle="->,head_width=0.35,head_length=0.45", lw=2.2, color="#D84315"),
+    )
+    ax2.text(
+        4.95, 8.95,
+        "Rising Edge (!prev && curr)\nFindLayerByPosition()",
+        ha="center", va="center", fontsize=8.3, fontweight="bold", color="#BF360C",
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="#FBE9E7", edgecolor="#D84315"),
+    )
+
+    ax2.annotate(
+        "", xy=(4.05, 6.75), xytext=(5.85, 6.75),
+        arrowprops=dict(arrowstyle="->,head_width=0.35,head_length=0.45", lw=2.2, color="#1565C0"),
+    )
+    ax2.text(
+        4.95, 5.7,
+        "Falling Edge (prev && !curr)\nmouse_drag_layer_id = 0",
+        ha="center", va="center", fontsize=8.3, fontweight="bold", color="#0D47A1",
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="#E3F2FD", edgecolor="#1565C0"),
+    )
+
+    # Truth table at bottom
+    rows = [
+        ("prev_left", "left_pressed", "イベント種別", "実行処理 (`MouseObserver`)"),
+        ("0 (False)", "0 (False)", "通常移動 (Idle)", "マウスカーソルのみ Move(mouse_layer_id, mouse_position)"),
+        ("0 (False)", "1 (True)", "押下開始 (Rising)", "FindLayerByPosition で最前面レイヤ ID を取得・保持"),
+        ("1 (True)", "1 (True)", "押下継続 (Hold)", "posdiff = mouse_position - oldpos で MoveRelative 実行"),
+        ("1 (True)", "0 (False)", "解放 (Falling)", "mouse_drag_layer_id = 0 にリセットしドラッグ終了"),
+    ]
+    col_x = [0.25, 1.75, 3.35, 5.35, 9.85]
+    y_start = 4.35
+    row_h = 0.72
+    for r_idx, row in enumerate(rows):
+        y = y_start - r_idx * row_h
+        is_hdr = r_idx == 0
+        bg_c = "#283593" if is_hdr else ("#FFF8E1" if r_idx in (2, 3) else "#FFFFFF")
+        txt_c = "#FFFFFF" if is_hdr else "#212121"
+        fw = "bold" if is_hdr or r_idx in (2, 3) else "normal"
+        for c_i in range(4):
+            cell = patches.Rectangle(
+                (col_x[c_i], y), col_x[c_i + 1] - col_x[c_i], row_h,
+                facecolor=bg_c, edgecolor="#B0BEC5", lw=1.0,
+            )
+            ax2.add_patch(cell)
+            ax2.text(
+                (col_x[c_i] + col_x[c_i + 1]) / 2 if c_i < 3 else col_x[c_i] + 0.12,
+                y + row_h / 2,
+                row[c_i],
+                ha="center" if c_i < 3 else "left",
+                va="center",
+                fontsize=7.9 if not is_hdr else 8.3,
+                fontweight=fw,
+                color=txt_c,
+            )
+
+    ax2.text(
+        5.0, 0.55,
+        "★ポイント: 生の (dx, dy) ではなくクランプ後差分 posdiff = mouse_position - oldpos を使うことで\n"
+        "  画面端到達時にカーソルとウィンドウの位置ズレ（Desync）が発生するのを数学的に防ぐ！",
+        ha="center", va="center", fontsize=8.3, fontweight="bold", color="#1B5E20",
+        bbox=dict(boxstyle="round,pad=0.32", facecolor="#E8F5E9", edgecolor="#43A047"),
+    )
+
+    plt.suptitle(
+        "第10章 10.6 USB HID マウスレポート拡張とドラッグ状態遷移ステートマシン (`osbook_day10f`)",
+        fontsize=13.0,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_17_find_layer_by_position_z_order_hit_test(
+    output_path: str | Path = "10/result/fig10_17_find_layer_by_position_z_order_hit_test.png",
+) -> Path:
+    """Generate Fig 10.17: FindLayerByPosition reverse Z-order scan & half-open hit test (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(
+        1, 2, figsize=(16.0, 6.8), gridspec_kw={"width_ratios": [1.05, 1.1]}
+    )
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: 2D Spatial Hit-Test Geometry & Half-Open Boundary [pos, pos + size)
+    ax1 = axes[0]
+    ax1.set_xlim(0, 320)
+    ax1.set_ylim(200, 0)
+    ax1.set_facecolor("#2D6E8E")
+    ax1.set_title(
+        "1. 2次元空間ヒットテストと半開区間境界 `[win_pos, win_end_pos)`",
+        fontsize=11.3,
+        fontweight="bold",
+        color="#1A237E",
+        pad=10,
+    )
+    ax1.set_xlabel("X 座標 (px)")
+    ax1.set_ylabel("Y 座標 (px)")
+
+    # DesktopBG label
+    ax1.text(240, 182, "DesktopBG (Z=0, ID=1)\n[0, 320) × [0, 200)", color="#FFFFFF", fontsize=8.5, fontweight="bold", ha="center")
+
+    # Console (Z=1, ID=2): [0, 156) x [0, 108)
+    con_rect = patches.Rectangle((0, 0), 156, 108, facecolor="#101820", edgecolor="#80CBC4", lw=2.0)
+    ax1.add_patch(con_rect)
+    ax1.text(12, 22, "Console (Z=1, ID=2)\n[0, 156) × [0, 108)", color="#B2DFDB", fontsize=8.5, fontweight="bold")
+
+    # HelloWindow (Z=2, ID=3): [130, 240) x [56, 104)
+    win_rect = patches.Rectangle((130, 56), 110, 48, facecolor="#C6C6C6", edgecolor="#FFEB3B", lw=2.2)
+    ax1.add_patch(win_rect)
+    ax1.add_patch(patches.Rectangle((133, 59), 104, 14, facecolor="#001184"))
+    ax1.text(185, 96, "HelloWindow (Z=2, ID=3) [130,240)×[56,104)", color="#111111", fontsize=7.2, fontweight="bold", ha="center", va="center")
+
+    # MouseCursor (Z=3, ID=4) at (180, 72)
+    m_rect = patches.Rectangle((180, 72), 12, 16, facecolor="#FFFFFF", edgecolor="#FF1744", lw=2.0, linestyle="--")
+    ax1.add_patch(m_rect)
+
+    # Probe points
+    probes = [
+        (180, 72, "P1 (180, 72) -> ID=3 (HelloWindow)\nMouse(ID=4)はexclude_idで除外", "#FF1744", (-55, -24)),
+        (60, 75, "P2 (60, 75) -> ID=2 (Console)", "#4CAF50", (-45, 25)),
+        (240, 80, "P3 (240, 80) -> x==win_end_pos.x\n半開区間で除外 -> ID=1 (BG!)", "#FFD600", (-5, 36)),
+        (260, 140, "P4 (260, 140) -> ID=1 (DesktopBG)", "#FF9800", (-85, 22)),
+    ]
+    for px, py, label, col, offset in probes:
+        ax1.scatter([px], [py], color=col, s=70, zorder=6, edgecolors="#000000", linewidths=1.2)
+        ax1.annotate(
+            label,
+            xy=(px, py),
+            xytext=(px + offset[0], py + offset[1]),
+            fontsize=7.7,
+            fontweight="bold",
+            color="#FFFFFF",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="#212121", edgecolor=col, alpha=0.92),
+            arrowprops=dict(arrowstyle="->", color=col, lw=1.4),
+            zorder=7,
+        )
+
+    # Right: Reverse Z-order scan (rbegin -> rend) trace
+    ax2 = axes[1]
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+    ax2.set_title(
+        "2. `layer_stack_.rbegin() → rend()` 逆順走査トレース (点 P1=(180,72))",
+        fontsize=11.3,
+        fontweight="bold",
+        color="#1A237E",
+        pad=10,
+    )
+
+    stack_steps = [
+        (7.7, "Z=3 (rbegin+0): ID=4 MouseCursor", "SKIP: layer->ID() == exclude_id (mouse_layer_id)", "#FFEBEE", "#C62828"),
+        (5.95, "Z=2 (rbegin+1): ID=3 HelloWindow", "HIT! 130<=180<240 && 56<=72<104 → 即 return *it", "#E8F5E9", "#2E7D32"),
+        (4.2, "Z=1 (rbegin+2): ID=2 Console", "(重複領域でも Z=2 で break するため到達しない)", "#ECEFF1", "#607D8B"),
+        (2.45, "Z=0 (rbegin+3): ID=1 DesktopBG", "(最下層: HelloWindow/Console外のクリックでヒット!)", "#FFF8E1", "#EF6C00"),
+    ]
+    for idx, (y_b, title, detail, fc, ec) in enumerate(stack_steps):
+        box = FancyBboxPatch(
+            (0.6, y_b), 8.9, 1.32, boxstyle="round,pad=0.12", facecolor=fc, edgecolor=ec, lw=1.8
+        )
+        ax2.add_patch(box)
+        ax2.text(0.85, y_b + 0.88, title, fontsize=9.4, fontweight="bold", color=ec)
+        ax2.text(0.85, y_b + 0.35, detail, fontsize=8.4, color="#212121")
+        if idx < len(stack_steps) - 1:
+            ax2.annotate(
+                "", xy=(5.0, y_b - 0.05), xytext=(5.0, y_b - 0.38),
+                arrowprops=dict(arrowstyle="<-", lw=1.6, color="#455A64"),
+            )
+
+    ax2.text(
+        5.0, 1.05,
+        "✓ なぜ layer_stack_ を逆順走査するのか？\n"
+        "  1. Painter's Algorithm で最後 (back) に描かれる要素が視覚的に最前面 (rbegin)\n"
+        "  2. Hide(id) された非表示レイヤは layer_stack_ から除外済なので自動的に無視\n"
+        "  3. const auto& win = layer->GetWindow(); if (!win) return false; で安全確保",
+        ha="center", va="center", fontsize=8.5, fontweight="bold", color="#0D47A1",
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="#E8EAF6", edgecolor="#3949AB"),
+    )
+
+    plt.suptitle(
+        "第10章 10.6 `LayerManager::FindLayerByPosition` による Zオーダー逆順ヒットテスト",
+        fontsize=13.0,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_18_window_drag_trajectory_and_bg_bug(
+    output_path: str | Path = "10/result/fig10_18_window_drag_trajectory_and_bg_bug.png",
+) -> Path:
+    """Generate Fig 10.18: Window drag simulation, edge clamping, and osbook_day10f BG drag bug (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.8))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Scenario A: Initial State
+    sim = WindowDragSim.create_mikanos_desktop_sim(320, 200, init_mouse_pos=(180, 66))
+    img_initial = sim.vram.copy()
+
+    # Scenario B: Drag HelloWindow smoothly to right-bottom edge & test posdiff clamping
+    sim.mouse_observer(0x01, 0, 0)          # Press on HelloWindow title bar (180, 66)
+    sim.mouse_observer(0x01, 70, 50)        # Drag (+70, +50) -> cursor (250, 116), win (200, 106)
+    sim.mouse_observer(0x01, 100, 0)        # Hit right edge: raw 350 clamped to 319 -> posdiff=(69,0)!
+    img_dragged = sim.vram.copy()
+    win_after_drag = (sim.db_sim.layers[3].x, sim.db_sim.layers[3].y)
+    mouse_after_drag = sim.mouse_position
+    sim.mouse_observer(0x00, -10, 10)       # Release
+
+    # Scenario C: Reproduce osbook_day10f Background Drag Bug!
+    sim_bug = WindowDragSim.create_mikanos_desktop_sim(320, 200, init_mouse_pos=(250, 140))
+    sim_bug.mouse_observer(0x01, 0, 0)      # Press on DesktopBG!
+    sim_bug.mouse_observer(0x01, -40, -28)  # Drag DesktopBG up-left by (-40, -28)!
+    img_bg_bug = sim_bug.vram.copy()
+
+    panels = [
+        (
+            axes[0],
+            img_initial,
+            "1. 初期状態: HelloWindow (130, 56)\nマウスカーソルをタイトルバー (180, 66) に配置",
+        ),
+        (
+            axes[1],
+            img_dragged,
+            f"2. 左ドラッグ後: HelloWindow {win_after_drag}\n右端クランプ時も posdiff でカーソル {mouse_after_drag} と完全同期",
+        ),
+        (
+            axes[2],
+            img_bg_bug,
+            "3. 10.6節の残存バグ (`osbook_day10f`)\n背景クリックで DesktopBG ごと (-40, -28) 移動してしまう！",
+        ),
+    ]
+
+    for idx, (ax, img, title) in enumerate(panels):
+        ax.imshow(img, interpolation="nearest")
+        ax.set_title(title, fontsize=10.3, fontweight="bold", color="#1A237E" if idx < 2 else "#B71C1C", pad=10)
+        ax.set_xlabel("X (px)")
+        ax.set_ylabel("Y (px)")
+        ax.grid(False)
+
+    # Annotate trajectory on panel 2 & bug region on panel 3
+    axes[1].annotate(
+        "",
+        xy=(mouse_after_drag[0], mouse_after_drag[1]),
+        xytext=(180, 66),
+        arrowprops=dict(arrowstyle="->,head_width=0.35", lw=2.2, color="#FFEB3B", ls="--"),
+    )
+    axes[1].text(
+        175, 48, "ドラッグ軌跡\n(背後のConsole/BGも自動復元)",
+        fontsize=7.8, fontweight="bold", color="#FFEB3B",
+        bbox=dict(boxstyle="round,pad=0.22", facecolor="#000000", alpha=0.65),
+    )
+
+    axes[2].annotate(
+        "背景がずれて下部・右端に\n旧画面の残像が露出!\n(10.7節で draggable_ 導入)",
+        xy=(280, 165),
+        xytext=(105, 132),
+        fontsize=7.9,
+        fontweight="bold",
+        color="#FFFFFF",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="#B71C1C", edgecolor="#FFEB3B"),
+        arrowprops=dict(arrowstyle="->", lw=2.0, color="#FFEB3B"),
+    )
+
+    plt.suptitle(
+        "第10章 10.6 ウィンドウドラッグ移動の物理シミュレーションと背景ドラッグバグの実証",
+        fontsize=13.0,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.99,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+plot_fig10_16_usb_hid_mouse_report_and_drag_fsm = generate_ch10_16_usb_hid_mouse_report_and_drag_fsm
+plot_fig10_17_find_layer_by_position_z_order_hit_test = generate_ch10_17_find_layer_by_position_z_order_hit_test
+plot_fig10_18_window_drag_trajectory_and_bg_bug = generate_ch10_18_window_drag_trajectory_and_bg_bug
