@@ -38256,3 +38256,488 @@ def generate_ch10_09_full_redraw_bandwidth_waste_and_bottleneck(
 plot_fig10_07_counter_window_and_text_region_geometry = generate_ch10_07_counter_window_and_text_region_geometry
 plot_fig10_08_screen_flicker_and_tearing_hardware_mechanism = generate_ch10_08_screen_flicker_and_tearing_hardware_mechanism
 plot_fig10_09_full_redraw_bandwidth_waste_and_bottleneck = generate_ch10_09_full_redraw_bandwidth_waste_and_bottleneck
+
+
+# =============================================================================
+# Chapter 10.4: Eliminating Flicker with Partial Draw & Layer Redraw Limitations
+# =============================================================================
+
+@dataclass
+class SimRect:
+    x: int
+    y: int
+    w: int
+    h: int
+
+    def __and__(self, other: "SimRect") -> "SimRect":
+        """Compute intersection of two rectangles."""
+        left = max(self.x, other.x)
+        right = min(self.x + self.w, other.x + other.w)
+        top = max(self.y, other.y)
+        bottom = min(self.y + self.h, other.y + other.h)
+        if left >= right or top >= bottom:
+            return SimRect(0, 0, 0, 0)
+        return SimRect(left, top, right - left, bottom - top)
+
+    @property
+    def area(self) -> int:
+        return max(0, self.w) * max(0, self.h)
+
+    @property
+    def is_empty(self) -> bool:
+        return self.w <= 0 or self.h <= 0
+
+
+@dataclass
+class PartialDrawLayerInfo:
+    id: int
+    name: str
+    x: int
+    y: int
+    w: int
+    h: int
+    is_transparent: bool = False
+    color: tuple[int, int, int] = (198, 198, 198)
+
+    @property
+    def rect(self) -> SimRect:
+        return SimRect(self.x, self.y, self.w, self.h)
+
+
+class PartialDrawLayerManagerSim:
+    """Simulates MikanOS LayerManager with Draw(id) and 3-way clipping in Chapter 10.4."""
+
+    def __init__(self, screen_w: int = 1024, screen_h: int = 768):
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        self.layers: list[PartialDrawLayerInfo] = []
+        self.layer_stack: list[int] = []  # IDs in bottom-to-top order
+
+    def add_layer(self, layer: PartialDrawLayerInfo, height: int | None = None) -> int:
+        self.layers.append(layer)
+        if height is None or height >= len(self.layer_stack):
+            self.layer_stack.append(layer.id)
+        else:
+            self.layer_stack.insert(height, layer.id)
+        return layer.id
+
+    def find_layer(self, layer_id: int) -> PartialDrawLayerInfo | None:
+        for l in self.layers:
+            if l.id == layer_id:
+                return l
+        return None
+
+    def draw_all(self, area: SimRect | None = None) -> dict:
+        """Full stack redraw within given area (bottom to top)."""
+        clip_area = area if area is not None else SimRect(0, 0, self.screen_w, self.screen_h)
+        layers_drawn = []
+        total_pixels = 0
+
+        for lid in self.layer_stack:
+            l = self.find_layer(lid)
+            if not l:
+                continue
+            inter = clip_area & l.rect
+            if not inter.is_empty:
+                layers_drawn.append(l.name)
+                total_pixels += inter.area
+
+        return {
+            "mode": "all",
+            "layers_drawn": layers_drawn,
+            "layers_skipped": [],
+            "total_pixels": total_pixels,
+            "bytes_transferred": total_pixels * 4,
+        }
+
+    def draw_layer(self, target_id: int) -> dict:
+        """Draw(id) logic: skips layers below target_id, clips to target window rect."""
+        target = self.find_layer(target_id)
+        if not target:
+            return {"mode": "layer", "error": "not_found"}
+
+        target_rect = target.rect
+        draw_active = False
+        layers_drawn = []
+        layers_skipped = []
+        total_pixels = 0
+
+        for lid in self.layer_stack:
+            l = self.find_layer(lid)
+            if not l:
+                continue
+
+            if lid == target_id:
+                draw_active = True
+
+            if draw_active:
+                inter = target_rect & l.rect
+                if not inter.is_empty:
+                    layers_drawn.append(l.name)
+                    total_pixels += inter.area
+            else:
+                layers_skipped.append(l.name)
+
+        return {
+            "mode": "layer",
+            "target_id": target_id,
+            "target_name": target.name,
+            "target_rect": (target_rect.x, target_rect.y, target_rect.w, target_rect.h),
+            "layers_drawn": layers_drawn,
+            "layers_skipped": layers_skipped,
+            "total_pixels": total_pixels,
+            "bytes_transferred": total_pixels * 4,
+        }
+
+    def move_layer(self, layer_id: int, new_x: int, new_y: int) -> dict:
+        """Simulate LayerManager::Move: old position full draw + new position targeted draw."""
+        l = self.find_layer(layer_id)
+        if not l:
+            return {"error": "not_found"}
+
+        old_rect = SimRect(l.x, l.y, l.w, l.h)
+        l.x = new_x
+        l.y = new_y
+
+        res_old = self.draw_all(old_rect)
+        res_new = self.draw_layer(layer_id)
+
+        return {
+            "old_draw": res_old,
+            "new_draw": res_new,
+            "total_pixels": res_old["total_pixels"] + res_new["total_pixels"],
+        }
+
+
+@dataclass
+class Rectangle3WayIntersectionSim:
+    """Simulates 3-way geometric clipping for FrameBuffer::Copy."""
+    dst_size: tuple[int, int]
+    src_size: tuple[int, int]
+    dst_pos: tuple[int, int]
+    src_area: tuple[int, int, int, int]  # x, y, w, h
+
+    def compute(self) -> dict:
+        dst_outline = SimRect(0, 0, self.dst_size[0], self.dst_size[1])
+        src_outline = SimRect(
+            self.dst_pos[0] - self.src_area[0],
+            self.dst_pos[1] - self.src_area[1],
+            self.src_size[0],
+            self.src_size[1]
+        )
+        src_area_shifted = SimRect(
+            self.dst_pos[0],
+            self.dst_pos[1],
+            self.src_area[2],
+            self.src_area[3]
+        )
+
+        copy_area = dst_outline & src_outline & src_area_shifted
+        src_start_x = copy_area.x - (self.dst_pos[0] - self.src_area[0])
+        src_start_y = copy_area.y - (self.dst_pos[1] - self.src_area[1])
+
+        return {
+            "dst_outline": (dst_outline.x, dst_outline.y, dst_outline.w, dst_outline.h),
+            "src_outline": (src_outline.x, src_outline.y, src_outline.w, src_outline.h),
+            "src_area_shifted": (src_area_shifted.x, src_area_shifted.y, src_area_shifted.w, src_area_shifted.h),
+            "copy_area": (copy_area.x, copy_area.y, copy_area.w, copy_area.h),
+            "src_start_pos": (src_start_x, src_start_y),
+            "pixels_copied": copy_area.area,
+        }
+
+
+@dataclass
+class FlickerEliminationScopeAnalyzer:
+    """Analyze solved vs. unsolved flicker issues in osbook_day10d."""
+
+    @staticmethod
+    def get_comparison_table() -> list[dict]:
+        return [
+            {
+                "region": "デスクトップ背景 (1024×768)",
+                "full_redraw": "再描画される (フリッカー発生)",
+                "partial_draw_id": "スキップされる (完全解消)",
+                "status": "解決 (SOLVED)",
+                "reason": "Draw(id) で id より下位の背景レイヤが走査されないため",
+            },
+            {
+                "region": "コンソール領域 (640×400)",
+                "full_redraw": "再描画される (フリッカー/文字乱れ)",
+                "partial_draw_id": "スキップされる (完全解消)",
+                "status": "解決 (SOLVED)",
+                "reason": "コンソールレイヤはウィンドウレイヤの下位(height=1)にあるためスキップ",
+            },
+            {
+                "region": "ウィンドウ外枠・タイトルバー",
+                "full_redraw": "毎フレーム再描画",
+                "partial_draw_id": "Draw(id) 内で描画されるが背景消去なし",
+                "status": "大幅改善 (IMPROVED)",
+                "reason": "ウィンドウ境界外の背景が消えないためチラつき大幅低減",
+            },
+            {
+                "region": "カウンタ文字 (24, 28, 80×16)",
+                "full_redraw": "激しく点滅・フリッカー",
+                "partial_draw_id": "激しく点滅・フリッカー (残存)",
+                "status": "未解決 (UNSOLVED)",
+                "reason": "FillRectangle で灰色に消去した直後、VRAMに直接文字を描く過渡状態が露出",
+            },
+        ]
+
+
+def generate_ch10_10_layer_partial_draw_mechanism_and_stack(
+    output_path: str = "10/result/fig10_10_layer_partial_draw_mechanism_and_stack.png"
+) -> Path:
+    """Generate high-res layer stack architecture and Draw(id) traversal mechanism diagram (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.0), gridspec_kw={"width_ratios": [1.1, 1.3]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: Layer Stack 3D/Z-Order Visualization
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. レイヤスタックの z-order 構造と Draw(id) 走査境界",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    # 4 layers in stack
+    layers_data = [
+        {"name": "Layer 3: マウスカーソル (Mouse)", "h": 3, "color": "#E91E63", "action": "描画対象 (上層)", "draw": True},
+        {"name": "Layer 2: カウンタウィンドウ (Main)", "h": 2, "color": "#1976D2", "action": "起点レイヤ (target_id)", "draw": True},
+        {"name": "Layer 1: コンソール (Console)", "h": 1, "color": "#757575", "action": "スキップ (再描画なし)", "draw": False},
+        {"name": "Layer 0: デスクトップ背景 (Desktop BG)", "h": 0, "color": "#008080", "action": "スキップ (再描画なし)", "draw": False},
+    ]
+
+    for item in layers_data:
+        h = item["h"]
+        y_pos = h * 1.5
+        box_color = "#E8F5E9" if item["draw"] else "#FFEBEE"
+        edge_color = "#2E7D32" if item["draw"] else "#C62828"
+        rect = plt.Rectangle((0.5, y_pos), 7.0, 1.1, facecolor=box_color, edgecolor=edge_color, lw=2, zorder=2)
+        ax1.add_patch(rect)
+
+        # Label inside layer box
+        badge = "【DRAW】" if item["draw"] else "【SKIP】"
+        ax1.text(0.8, y_pos + 0.55, f"h={h}: {item['name']}", fontsize=9.5, fontweight="bold", va="center")
+        ax1.text(7.2, y_pos + 0.55, f"{badge} {item['action']}", fontsize=8.5,
+                 fontweight="bold", color=edge_color, va="center", ha="right")
+
+    # Draw divider line between skipped and drawn layers
+    ax1.axhline(2.25, color="#D32F2F", lw=2.2, linestyle="--", zorder=3)
+    ax1.text(4.0, 2.35, "▲ ここより上のレイヤのみ描画 (bool draw = true) ▲",
+             color="#D32F2F", fontsize=8.5, fontweight="bold", ha="center",
+             bbox=dict(boxstyle="round,pad=0.2", facecolor="#FFFFFF", edgecolor="#D32F2F"))
+
+    ax1.set_xlim(0, 8.0)
+    ax1.set_ylim(-0.5, 6.2)
+    ax1.axis("off")
+
+    # Right: Algorithm Flowchart & Math Explanation
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. LayerManager::Draw(id) のアルゴリズムと数理モデル",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    code_snippet = (
+        "void LayerManager::Draw(unsigned int id) const {\n"
+        "  bool draw = false;\n"
+        "  Rectangle<int> window_area;\n"
+        "  for (auto layer : layer_stack_) {\n"
+        "    if (layer->ID() == id) {\n"
+        "      window_area.size = layer->GetWindow()->Size();\n"
+        "      window_area.pos = layer->GetPosition();\n"
+        "      draw = true;\n"
+        "    }\n"
+        "    if (draw) {\n"
+        "      layer->DrawTo(*screen_, window_area);\n"
+        "    }\n"
+        "  }\n"
+        "}"
+    )
+    ax2.text(0.05, 0.95, code_snippet, family="monospace", fontsize=8.2, va="top",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#ECEFF1", edgecolor="#607D8B", lw=1.2))
+
+    math_desc = (
+        "【数理的性質と計算量】\n"
+        "1. レイヤ探索と走査範囲:\n"
+        "   - レイヤスタック長 N に対し、対象レイヤのインデックス k (0 <= k < N)\n"
+        "   - 描画対象レイヤ数: N - k (背景 L0, コンソール L1 の2層を完全にスキップ)\n"
+        "2. 描画領域の局所化 (Bounding Box):\n"
+        "   - 描画範囲を対象ウィンドウ矩形 [x, x+w) * [y, y+h) に厳格に限定\n"
+        "   - 対象領域 = 160 * 52 = 8,320 ピクセル (全画面 786,432 ピクセルの約 1%)\n"
+        "3. 上位レイヤのクリッピング描画:\n"
+        "   - マウス等の上位レイヤは対象矩形との交差領域のみ描画"
+    )
+    ax2.text(0.05, 0.35, math_desc, fontsize=8.2, va="top",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#E8EAF6", edgecolor="#3F51B5", lw=1.2))
+
+    ax2.axis("off")
+
+    plt.suptitle("第10章 10.4 レイヤスタック構造と LayerManager::Draw(id) による限定再描画メカニズム",
+                 fontsize=13.0, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_11_rectangle_clipping_and_partial_copy_math(
+    output_path: str = "10/result/fig10_11_rectangle_clipping_and_partial_copy_math.png"
+) -> Path:
+    """Generate high-res 3-way rectangle intersection and FrameBuffer::Copy math diagram (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.0), gridspec_kw={"width_ratios": [1.2, 1.2]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: 3-Way Rectangle Intersection Geometry
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. FrameBuffer::Copy における3重矩形交差数理",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    # Coordinate system: [0, 400] x [0, 300]
+    ax1.set_xlim(-20, 380)
+    ax1.set_ylim(-20, 260)
+    ax1.invert_yaxis()
+    ax1.set_aspect("equal")
+
+    # 1. dst_outline: {{0, 0}, dst_size} (e.g., 320x200)
+    rect_dst = plt.Rectangle((0, 0), 320, 200, fill=False, edgecolor="#1565C0", lw=2, linestyle="--", label="dst_outline (描画先画面)")
+    ax1.add_patch(rect_dst)
+
+    # 2. src_outline: {dst_pos - src_area.pos, src_size}
+    # Let dst_pos = (150, 80), src_area = (20, 20, 120, 80), src_size = (160, 120)
+    # src_outline = (150 - 20, 80 - 20) = (130, 60), size = (160, 120)
+    rect_src_out = plt.Rectangle((130, 60), 160, 120, fill=False, edgecolor="#E65100", lw=2, linestyle="-.", label="src_outline (転送元全体枠)")
+    ax1.add_patch(rect_src_out)
+
+    # 3. src_area_shifted: {dst_pos, src_area.size} = {150, 80, 120, 80}
+    rect_src_shift = plt.Rectangle((150, 80), 120, 80, fill=False, edgecolor="#7B1FA2", lw=2, linestyle=":", label="src_area_shifted (要求領域)")
+    ax1.add_patch(rect_src_shift)
+
+    # Intersection: copy_area = (150, 80, 120, 80)
+    rect_copy = plt.Rectangle((150, 80), 120, 80, facecolor="#C8E6C9", edgecolor="#2E7D32", lw=2.5, alpha=0.6, label="copy_area (最終交差領域)")
+    ax1.add_patch(rect_copy)
+
+    ax1.text(210, 120, "copy_area\n(実コピー矩形)", color="#1B5E20", fontweight="bold", fontsize=9, ha="center", va="center")
+    ax1.legend(loc="lower left", fontsize=8.0)
+    ax1.set_xlabel("X座標 (px)")
+    ax1.set_ylabel("Y座標 (px)")
+
+    # Right: Scanline Memory Layout & Offset Math
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 走査線単位 memcpy とメモリアドレス計算式",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    formula_text = (
+        "【3重交差計算アルゴリズム】\n"
+        "const auto copy_area = dst_outline & src_outline & src_area_shifted;\n"
+        "const auto src_start_pos = copy_area.pos - (dst_pos - src_area.pos);\n\n"
+        "【アドレスポインタ算出】\n"
+        "uint8_t* dst_buf = FrameAddrAt(copy_area.pos, config_);\n"
+        "const uint8_t* src_buf = FrameAddrAt(src_start_pos, src.config_);\n\n"
+        "【走査線ループと一括 memcpy】\n"
+        "for (int y = 0; y < copy_area.size.y; ++y) {\n"
+        "  memcpy(dst_buf, src_buf, bytes_per_pixel * copy_area.size.x);\n"
+        "  dst_buf += BytesPerScanLine(config_);\n"
+        "  src_buf += BytesPerScanLine(src.config_);\n"
+        "}\n\n"
+        "【利点と最適化】\n"
+        "・1ピクセルずつの書き込みではなく、横一行を一括 memcpy 転送\n"
+        "・画面外やウィンドウ外のはみ出しを3重交差で数学的に完全除去\n"
+        "・CPUキャッシュ（L1/L2）およびメモリアライメントとの親和性が極めて高い"
+    )
+    ax2.text(0.05, 0.95, formula_text, fontsize=8.2, va="top",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#FFF8E1", edgecolor="#FFA000", lw=1.2))
+    ax2.axis("off")
+
+    plt.suptitle("第10章 10.4 矩形クリッピング3重交差幾何と FrameBuffer::Copy 走査線 memcpy 数理",
+                 fontsize=13.0, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_12_flicker_reduction_effect_and_limitations(
+    output_path: str = "10/result/fig10_12_flicker_reduction_effect_and_limitations.png"
+) -> Path:
+    """Generate high-res flicker reduction quantitative comparison and persistent limitation diagram (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.0), gridspec_kw={"width_ratios": [1.1, 1.2]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: Quantitative Pixel & Bandwidth Comparison Bar Chart
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 再描画ピクセル数と帯域の劇的削減 (126倍超の高速化)",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    categories = ["全画面再描画\nLayerManager::Draw()", "限定再描画\nLayerManager::Draw(id)"]
+    pixels = [1051112, 8320]
+    kbytes = [(p * 4) / 1024.0 for p in pixels]
+    colors = ["#D32F2F", "#388E3C"]
+
+    bars = ax1.bar(categories, kbytes, color=colors, width=0.45, edgecolor="#212121", lw=1.2)
+    ax1.set_yscale("log")
+    ax1.set_ylabel("転送データ量 (KiB, 対数スケール)")
+    ax1.grid(True, which="both", linestyle="--", alpha=0.5)
+
+    ax1.text(0, kbytes[0] * 1.3, f"{pixels[0]:,} px\n({kbytes[0]:,.1f} KiB / ~4.01 MB)",
+             ha="center", fontsize=9, fontweight="bold", color="#D32F2F")
+    ax1.text(1, kbytes[1] * 1.6, f"{pixels[1]:,} px\n({kbytes[1]:,.1f} KiB / ~32.5 KB)",
+             ha="center", fontsize=9, fontweight="bold", color="#388E3C")
+
+    ratio = pixels[0] / pixels[1]
+    ax1.annotate(f"約 {ratio:.1f} 倍の\nピクセル描画削減！\n(99.2% 削減)",
+                 xy=(1, kbytes[1] * 2), xytext=(0.5, kbytes[0] * 0.1),
+                 arrowprops=dict(facecolor="#388E3C", edgecolor="#1B5E20", width=2, headwidth=7),
+                 fontsize=10, fontweight="bold", color="#1B5E20", ha="center",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#E8F5E9", edgecolor="#388E3C"))
+
+    # Right: Solved vs. Unsolved Limitations & Chapter 10.5 Preview
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. チラつき解消の適用範囲と残存する「文字フリッカー」の限界",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    items = FlickerEliminationScopeAnalyzer.get_comparison_table()
+    y_start = 0.90
+    y_gap = 0.22
+
+    for i, it in enumerate(items):
+        y = y_start - i * y_gap
+        is_solved = "解決" in it["status"] or "改善" in it["status"]
+        badge_color = "#2E7D32" if is_solved else "#C62828"
+        bg_color = "#E8F5E9" if is_solved else "#FFEBEE"
+
+        card_text = (
+            f"● {it['region']} [{it['status']}]\n"
+            f"   ・全描画: {it['full_redraw']}\n"
+            f"   ・Draw(id): {it['partial_draw_id']}\n"
+            f"   ・理由: {it['reason']}"
+        )
+        ax2.text(0.02, y, card_text, fontsize=8.2, va="top",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor=bg_color, edgecolor=badge_color, lw=1.2))
+
+    ax2.axis("off")
+
+    plt.suptitle("第10章 10.4 レイヤ指定再描画 Draw(id) の定量的削減効果と残存フリッカーの限界分析",
+                 fontsize=13.0, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+plot_fig10_10_layer_partial_draw_mechanism_and_stack = generate_ch10_10_layer_partial_draw_mechanism_and_stack
+plot_fig10_11_rectangle_clipping_and_partial_copy_math = generate_ch10_11_rectangle_clipping_and_partial_copy_math
+plot_fig10_12_flicker_reduction_effect_and_limitations = generate_ch10_12_flicker_reduction_effect_and_limitations

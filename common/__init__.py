@@ -565,6 +565,17 @@ from common.os_sim import (
     plot_fig10_08_screen_flicker_and_tearing_hardware_mechanism,
     generate_ch10_09_full_redraw_bandwidth_waste_and_bottleneck,
     plot_fig10_09_full_redraw_bandwidth_waste_and_bottleneck,
+    SimRect,
+    PartialDrawLayerInfo,
+    PartialDrawLayerManagerSim,
+    Rectangle3WayIntersectionSim,
+    FlickerEliminationScopeAnalyzer,
+    generate_ch10_10_layer_partial_draw_mechanism_and_stack,
+    plot_fig10_10_layer_partial_draw_mechanism_and_stack,
+    generate_ch10_11_rectangle_clipping_and_partial_copy_math,
+    plot_fig10_11_rectangle_clipping_and_partial_copy_math,
+    generate_ch10_12_flicker_reduction_effect_and_limitations,
+    plot_fig10_12_flicker_reduction_effect_and_limitations,
 )
 
 __all__ = [
@@ -1132,4 +1143,15 @@ __all__ = [
     "plot_fig10_08_screen_flicker_and_tearing_hardware_mechanism",
     "generate_ch10_09_full_redraw_bandwidth_waste_and_bottleneck",
     "plot_fig10_09_full_redraw_bandwidth_waste_and_bottleneck",
+    "SimRect",
+    "PartialDrawLayerInfo",
+    "PartialDrawLayerManagerSim",
+    "Rectangle3WayIntersectionSim",
+    "FlickerEliminationScopeAnalyzer",
+    "generate_ch10_10_layer_partial_draw_mechanism_and_stack",
+    "plot_fig10_10_layer_partial_draw_mechanism_and_stack",
+    "generate_ch10_11_rectangle_clipping_and_partial_copy_math",
+    "plot_fig10_11_rectangle_clipping_and_partial_copy_math",
+    "generate_ch10_12_flicker_reduction_effect_and_limitations",
+    "plot_fig10_12_flicker_reduction_effect_and_limitations",
 ]
