@@ -576,6 +576,17 @@ from common.os_sim import (
     plot_fig10_11_rectangle_clipping_and_partial_copy_math,
     generate_ch10_12_flicker_reduction_effect_and_limitations,
     plot_fig10_12_flicker_reduction_effect_and_limitations,
+    BackBufferConfigResult,
+    BackBufferConfigSim,
+    DoubleBufferLayerSpec,
+    DoubleBufferingLayerSim,
+    VramAtomicityBenchmark,
+    generate_ch10_13_single_vs_double_buffering_pipeline,
+    plot_fig10_13_single_vs_double_buffering_pipeline,
+    generate_ch10_14_layermanager_back_buffer_architecture,
+    plot_fig10_14_layermanager_back_buffer_architecture,
+    generate_ch10_15_flicker_elimination_vram_atomicity_analysis,
+    plot_fig10_15_flicker_elimination_vram_atomicity_analysis,
 )
 
 __all__ = [
@@ -1154,4 +1165,15 @@ __all__ = [
     "plot_fig10_11_rectangle_clipping_and_partial_copy_math",
     "generate_ch10_12_flicker_reduction_effect_and_limitations",
     "plot_fig10_12_flicker_reduction_effect_and_limitations",
+    "BackBufferConfigResult",
+    "BackBufferConfigSim",
+    "DoubleBufferLayerSpec",
+    "DoubleBufferingLayerSim",
+    "VramAtomicityBenchmark",
+    "generate_ch10_13_single_vs_double_buffering_pipeline",
+    "plot_fig10_13_single_vs_double_buffering_pipeline",
+    "generate_ch10_14_layermanager_back_buffer_architecture",
+    "plot_fig10_14_layermanager_back_buffer_architecture",
+    "generate_ch10_15_flicker_elimination_vram_atomicity_analysis",
+    "plot_fig10_15_flicker_elimination_vram_atomicity_analysis",
 ]

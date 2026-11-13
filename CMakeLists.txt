@@ -265,6 +265,9 @@ add_test(NAME test_ch10_high_speed_counter COMMAND ch10_high_speed_counter --tes
 add_executable(ch10_partial_draw src/ch10/os_chapter10_partial_draw.cpp)
 add_test(NAME test_ch10_partial_draw COMMAND ch10_partial_draw --test)
 
+add_executable(ch10_double_buffering src/ch10/os_chapter10_double_buffering.cpp)
+add_test(NAME test_ch10_double_buffering COMMAND ch10_double_buffering)
+
 
 
 

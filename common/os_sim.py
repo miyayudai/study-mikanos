@@ -38741,3 +38741,658 @@ def generate_ch10_12_flicker_reduction_effect_and_limitations(
 plot_fig10_10_layer_partial_draw_mechanism_and_stack = generate_ch10_10_layer_partial_draw_mechanism_and_stack
 plot_fig10_11_rectangle_clipping_and_partial_copy_math = generate_ch10_11_rectangle_clipping_and_partial_copy_math
 plot_fig10_12_flicker_reduction_effect_and_limitations = generate_ch10_12_flicker_reduction_effect_and_limitations
+
+
+# =============================================================================
+# Chapter 10.5: Double Buffering & Back Buffer (`osbook_day10e`)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class BackBufferConfigResult:
+    """Result of FrameBuffer::Initialize configuration simulation."""
+
+    mode: str
+    horizontal_resolution: int
+    vertical_resolution: int
+    input_pixels_per_scan_line: int
+    effective_pixels_per_scan_line: int
+    bytes_per_pixel: int
+    scan_line_bytes: int
+    allocated_ram_bytes: int
+    owns_memory: bool
+
+
+class BackBufferConfigSim:
+    """Simulates FrameBuffer::Initialize dual-mode behavior and stride normalization."""
+
+    @staticmethod
+    def initialize(
+        horizontal_resolution: int,
+        vertical_resolution: int,
+        pixels_per_scan_line: int,
+        has_external_frame_buffer: bool,
+        bytes_per_pixel: int = 4,
+    ) -> BackBufferConfigResult:
+        """Simulate FrameBuffer::Initialize for VRAM (external) vs BackBuffer (nullptr)."""
+        if horizontal_resolution <= 0 or vertical_resolution <= 0:
+            raise ValueError("Resolution dimensions must be positive.")
+        if bytes_per_pixel not in (3, 4):
+            raise ValueError("bytes_per_pixel must be 3 or 4.")
+
+        if has_external_frame_buffer:
+            effective_stride = max(pixels_per_scan_line, horizontal_resolution)
+            allocated_ram = 0
+            mode = "external_vram"
+            owns_memory = False
+        else:
+            # FrameBuffer::Initialize resets pixels_per_scan_line = horizontal_resolution
+            effective_stride = horizontal_resolution
+            allocated_ram = bytes_per_pixel * horizontal_resolution * vertical_resolution
+            mode = "internal_back_buffer"
+            owns_memory = True
+
+        return BackBufferConfigResult(
+            mode=mode,
+            horizontal_resolution=horizontal_resolution,
+            vertical_resolution=vertical_resolution,
+            input_pixels_per_scan_line=pixels_per_scan_line,
+            effective_pixels_per_scan_line=effective_stride,
+            bytes_per_pixel=bytes_per_pixel,
+            scan_line_bytes=bytes_per_pixel * effective_stride,
+            allocated_ram_bytes=allocated_ram,
+            owns_memory=owns_memory,
+        )
+
+    @classmethod
+    def create_back_config_from_screen(
+        cls,
+        screen_width: int = 1024,
+        screen_height: int = 768,
+        screen_stride: int = 1024,
+    ) -> tuple[BackBufferConfigResult, BackBufferConfigResult]:
+        """Simulate screen->Config() followed by back_config.frame_buffer = nullptr."""
+        screen_cfg = cls.initialize(
+            horizontal_resolution=screen_width,
+            vertical_resolution=screen_height,
+            pixels_per_scan_line=screen_stride,
+            has_external_frame_buffer=True,
+        )
+        back_cfg = cls.initialize(
+            horizontal_resolution=screen_cfg.horizontal_resolution,
+            vertical_resolution=screen_cfg.vertical_resolution,
+            pixels_per_scan_line=screen_cfg.effective_pixels_per_scan_line,
+            has_external_frame_buffer=False,
+        )
+        return screen_cfg, back_cfg
+
+
+@dataclass
+class DoubleBufferLayerSpec:
+    """Layer specification with NumPy RGB buffer and optional color-key transparency."""
+
+    layer_id: int
+    name: str
+    x: int
+    y: int
+    width: int
+    height: int
+    pixels: np.ndarray  # shape (height, width, 3), dtype=uint8
+    transparent_color: tuple[int, int, int] | None = None
+
+    @property
+    def rect(self) -> SimRect:
+        """Return bounding box rectangle in screen coordinates."""
+        return SimRect(self.x, self.y, self.width, self.height)
+
+
+class DoubleBufferingLayerSim:
+    """Simulates Single-Buffered vs Double-Buffered LayerManager::Draw and Move.
+
+    Tracks pixel-level VRAM intermediate exposures (transient wrong states visible on
+    hardware VRAM during multi-layer compositing) and VRAM/RAM transfer counts.
+    """
+
+    def __init__(self, screen_w: int = 320, screen_h: int = 200) -> None:
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        self.screen_rect = SimRect(0, 0, screen_w, screen_h)
+        self.vram = np.zeros((screen_h, screen_w, 3), dtype=np.uint8)
+        self.back_buffer = np.zeros((screen_h, screen_w, 3), dtype=np.uint8)
+        self.layers: dict[int, DoubleBufferLayerSpec] = {}
+        self.layer_stack: list[int] = []
+
+    def add_layer(self, spec: DoubleBufferLayerSpec) -> None:
+        """Register a layer on top of the stack."""
+        self.layers[spec.layer_id] = spec
+        if spec.layer_id not in self.layer_stack:
+            self.layer_stack.append(spec.layer_id)
+
+    def _draw_layer_to_surface(
+        self, surface: np.ndarray, spec: DoubleBufferLayerSpec, area: SimRect
+    ) -> int:
+        """Composite a single layer onto target RGB surface inside area. Returns pixels written."""
+        inter = self.screen_rect & spec.rect & area
+        if inter.is_empty:
+            return 0
+
+        sx0 = inter.x - spec.x
+        sy0 = inter.y - spec.y
+        sx1 = sx0 + inter.w
+        sy1 = sy0 + inter.h
+
+        src_patch = spec.pixels[sy0:sy1, sx0:sx1]
+        dst_view = surface[inter.y : inter.y + inter.h, inter.x : inter.x + inter.w]
+
+        if spec.transparent_color is None:
+            dst_view[:, :] = src_patch
+            return inter.w * inter.h
+
+        tc = np.array(spec.transparent_color, dtype=np.uint8)
+        mask = np.any(src_patch != tc, axis=-1)
+        dst_view[mask] = src_patch[mask]
+        return int(np.count_nonzero(mask))
+
+    def _compute_expected_surface(self, area: SimRect, start_idx: int = 0) -> np.ndarray:
+        """Compute exact final composited surface inside area starting from existing back_buffer."""
+        expected = self.back_buffer.copy()
+        for lid in self.layer_stack[start_idx:]:
+            self._draw_layer_to_surface(expected, self.layers[lid], area)
+        return expected
+
+    def draw_area(self, area: SimRect, use_double_buffer: bool = True) -> dict[str, int]:
+        """Execute LayerManager::Draw(area) in single or double buffer mode."""
+        clipped = self.screen_rect & area
+        if clipped.is_empty:
+            return {
+                "vram_pixel_writes": 0,
+                "ram_pixel_writes": 0,
+                "vram_transient_exposures": 0,
+            }
+
+        expected_final = self._compute_expected_surface(clipped, start_idx=0)
+        y0, y1 = clipped.y, clipped.y + clipped.h
+        x0, x1 = clipped.x, clipped.x + clipped.w
+        expected_patch = expected_final[y0:y1, x0:x1]
+
+        if use_double_buffer:
+            ram_writes = 0
+            for lid in self.layer_stack:
+                ram_writes += self._draw_layer_to_surface(
+                    self.back_buffer, self.layers[lid], clipped
+                )
+            # Atomic transfer: back_buffer_ -> screen_
+            self.vram[y0:y1, x0:x1] = self.back_buffer[y0:y1, x0:x1]
+            vram_writes = clipped.w * clipped.h
+            # Check intermediate mismatches after atomic copy (always 0)
+            transient_exposures = int(
+                np.count_nonzero(np.any(self.vram[y0:y1, x0:x1] != expected_patch, axis=-1))
+            )
+            return {
+                "vram_pixel_writes": vram_writes,
+                "ram_pixel_writes": ram_writes,
+                "vram_transient_exposures": transient_exposures,
+            }
+
+        # Single-buffered mode: write every layer directly to VRAM
+        vram_writes = 0
+        transient_exposures = 0
+        for idx, lid in enumerate(self.layer_stack):
+            vram_writes += self._draw_layer_to_surface(self.vram, self.layers[lid], clipped)
+            if idx < len(self.layer_stack) - 1:
+                mismatches = np.any(self.vram[y0:y1, x0:x1] != expected_patch, axis=-1)
+                transient_exposures += int(np.count_nonzero(mismatches))
+        return {
+            "vram_pixel_writes": vram_writes,
+            "ram_pixel_writes": 0,
+            "vram_transient_exposures": transient_exposures,
+        }
+
+    def draw_layer(self, layer_id: int, use_double_buffer: bool = True) -> dict[str, int]:
+        """Execute LayerManager::Draw(id) in single or double buffer mode."""
+        if layer_id not in self.layer_stack:
+            return {
+                "vram_pixel_writes": 0,
+                "ram_pixel_writes": 0,
+                "vram_transient_exposures": 0,
+            }
+
+        start_idx = self.layer_stack.index(layer_id)
+        area = self.screen_rect & self.layers[layer_id].rect
+        if area.is_empty:
+            return {
+                "vram_pixel_writes": 0,
+                "ram_pixel_writes": 0,
+                "vram_transient_exposures": 0,
+            }
+
+        expected_final = self._compute_expected_surface(area, start_idx=start_idx)
+        y0, y1 = area.y, area.y + area.h
+        x0, x1 = area.x, area.x + area.w
+        expected_patch = expected_final[y0:y1, x0:x1]
+
+        if use_double_buffer:
+            ram_writes = 0
+            for lid in self.layer_stack[start_idx:]:
+                ram_writes += self._draw_layer_to_surface(
+                    self.back_buffer, self.layers[lid], area
+                )
+            self.vram[y0:y1, x0:x1] = self.back_buffer[y0:y1, x0:x1]
+            vram_writes = area.w * area.h
+            transient_exposures = int(
+                np.count_nonzero(np.any(self.vram[y0:y1, x0:x1] != expected_patch, axis=-1))
+            )
+            return {
+                "vram_pixel_writes": vram_writes,
+                "ram_pixel_writes": ram_writes,
+                "vram_transient_exposures": transient_exposures,
+            }
+
+        vram_writes = 0
+        transient_exposures = 0
+        sub_stack = self.layer_stack[start_idx:]
+        for idx, lid in enumerate(sub_stack):
+            vram_writes += self._draw_layer_to_surface(self.vram, self.layers[lid], area)
+            if idx < len(sub_stack) - 1:
+                mismatches = np.any(self.vram[y0:y1, x0:x1] != expected_patch, axis=-1)
+                transient_exposures += int(np.count_nonzero(mismatches))
+        return {
+            "vram_pixel_writes": vram_writes,
+            "ram_pixel_writes": 0,
+            "vram_transient_exposures": transient_exposures,
+        }
+
+    def move_layer(
+        self, layer_id: int, new_x: int, new_y: int, use_double_buffer: bool = True
+    ) -> dict[str, int]:
+        """Execute LayerManager::Move(id, new_pos) = Draw(old_area) + Draw(id)."""
+        spec = self.layers[layer_id]
+        old_area = spec.rect
+        spec.x = new_x
+        spec.y = new_y
+        r1 = self.draw_area(old_area, use_double_buffer=use_double_buffer)
+        r2 = self.draw_layer(layer_id, use_double_buffer=use_double_buffer)
+        return {
+            "vram_pixel_writes": r1["vram_pixel_writes"] + r2["vram_pixel_writes"],
+            "ram_pixel_writes": r1["ram_pixel_writes"] + r2["ram_pixel_writes"],
+            "vram_transient_exposures": (
+                r1["vram_transient_exposures"] + r2["vram_transient_exposures"]
+            ),
+        }
+
+
+class VramAtomicityBenchmark:
+    """Provides quantitative comparison metrics across Ch 10.3, 10.4, and 10.5."""
+
+    @staticmethod
+    def get_architecture_comparison() -> list[dict[str, object]]:
+        """Compare 10.3 (Full Redraw), 10.4 (Partial Draw), and 10.5 (Double Buffering)."""
+        return [
+            {
+                "section": "10.3 全画面再描画\n(osbook_day10c)",
+                "vram_copy_pixels": 1_051_112,
+                "vram_copy_kib": round((1_051_112 * 4) / 1024.0, 1),
+                "back_buffer_ram_mib": 0.0,
+                "transient_flicker_risk": "極大 (背景・文字・マウス全滅)",
+                "mouse_overlap_flicker_exposures": 1,
+                "bg_flash_on_counter": True,
+            },
+            {
+                "section": "10.4 限定再描画 Draw(id)\n(osbook_day10d)",
+                "vram_copy_pixels": 8_680,  # 8320 (main) + 360 (mouse)
+                "vram_copy_kib": round((8_680 * 4) / 1024.0, 1),
+                "back_buffer_ram_mib": 0.0,
+                "transient_flicker_risk": "中 (マウス重複・Move時に過渡露出)",
+                "mouse_overlap_flicker_exposures": 1,
+                "bg_flash_on_counter": False,
+            },
+            {
+                "section": "10.5 バックバッファ導入\n(osbook_day10e)",
+                "vram_copy_pixels": 8_320,  # single atomic Copy of window_area
+                "vram_copy_kib": round((8_320 * 4) / 1024.0, 1),
+                "back_buffer_ram_mib": 3.0,  # 1024 * 768 * 4 bytes = 3.0 MiB
+                "transient_flicker_risk": "ゼロ (VRAMへ完成画面のみ一括転送)",
+                "mouse_overlap_flicker_exposures": 0,
+                "bg_flash_on_counter": False,
+            },
+        ]
+
+
+def generate_ch10_13_single_vs_double_buffering_pipeline(
+    output_path: str = "10/result/fig10_13_single_vs_double_buffering_pipeline.png",
+) -> Path:
+    """Generate Fig 10.13 comparing Single-Buffered VRAM overwrites vs Double-Buffered atomic transfer (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.4))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: 10.4 Single-Buffer Draw(main_id) -> Mouse disappears transiently in VRAM
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title(
+        "1. 10.4節までの課題: シングルバッファリングのVRAM過渡状態露出",
+        fontsize=11.5,
+        fontweight="bold",
+        color="#B71C1C",
+        pad=12,
+    )
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+
+    steps_single = [
+        (8.6, "#FFF3E0", "#E65100", "Step 1: main_window->DrawTo(*screen_, window_area)\n  -> ウィンドウ領域 (160x52) を直接 VRAM へ memcpy\n  -> 【危険】マウスカーソルが VRAM 上から一瞬消滅！"),
+        (6.0, "#FFEBEE", "#C62828", "  [!] この瞬間にディスプレイが VRAM を走査すると…\n      マウスカーソルが消えた状態の映像が画面に表示 (フリッカー発生)"),
+        (3.6, "#E3F2FD", "#1565C0", "Step 2: mouse_layer->DrawTo(*screen_, window_area)\n  -> 1ピクセルずつ透過判定しながら VRAM にマウスを再描画\n  -> 同じ VRAM 領域への二重書き込み (Read/Write 競合)"),
+        (1.0, "#FCE4EC", "#880E4F", "Step 3: Move(mouse_id) 時も同様\n  -> 背景 -> コンソール -> ウィンドウ -> マウスを順に VRAM 直描き\n  -> 重なり領域が毎フレーム点滅する原因となる"),
+    ]
+    for y, bg, ec, txt in steps_single:
+        ax1.text(
+            0.4,
+            y,
+            txt,
+            fontsize=8.8,
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.55", facecolor=bg, edgecolor=ec, lw=1.6),
+        )
+    ax1.annotate(
+        "",
+        xy=(5.0, 6.2),
+        xytext=(5.0, 6.9),
+        arrowprops=dict(arrowstyle="->", lw=2.0, color="#C62828"),
+    )
+    ax1.annotate(
+        "",
+        xy=(5.0, 3.8),
+        xytext=(5.0, 4.7),
+        arrowprops=dict(arrowstyle="->", lw=2.0, color="#1565C0"),
+    )
+
+    # Right: 10.5 Double-Buffer Draw(main_id) -> Offscreen composition + Atomic Copy
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title(
+        "2. 10.5節の解決策: back_buffer_ によるオフスクリーン合成と一括転送",
+        fontsize=11.5,
+        fontweight="bold",
+        color="#1B5E20",
+        pad=12,
+    )
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+
+    steps_double = [
+        (8.6, "#E8F5E9", "#2E7D32", "Step 1: main_window->DrawTo(back_buffer_, window_area)\n  -> 書き込み先はメインメモリ (RAM) 上の back_buffer_\n  -> ハードウェア VRAM は無傷！マウスは表示されたまま"),
+        (6.0, "#E8F5E9", "#2E7D32", "Step 2: mouse_layer->DrawTo(back_buffer_, window_area)\n  -> 高速な RAM 上でマウスカーソルを重ね合わせ合成完了\n  -> back_buffer_ 内に「完全な完成映像」が揃う"),
+        (3.3, "#E0F2F1", "#00695C", "Step 3: screen_->Copy(window_area.pos, back_buffer_, window_area)\n  -> 走査線単位の memcpy で完成領域だけを VRAM へ1回だけ転送\n  -> 過渡状態 (マウス消失・背景露出) は VRAM に一切書き込まれない！"),
+        (0.9, "#E8EAF6", "#283593", "結果: 原子性 (Atomicity) の獲得\n  -> どのタイミングで画面リフレッシュされても破綻のない映像\n  -> Window::shadow_buffer_ + LayerManager::back_buffer_ の2段構え"),
+    ]
+    for y, bg, ec, txt in steps_double:
+        ax2.text(
+            0.4,
+            y,
+            txt,
+            fontsize=8.8,
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.55", facecolor=bg, edgecolor=ec, lw=1.6),
+        )
+    ax2.annotate(
+        "",
+        xy=(5.0, 6.2),
+        xytext=(5.0, 6.9),
+        arrowprops=dict(arrowstyle="->", lw=2.0, color="#2E7D32"),
+    )
+    ax2.annotate(
+        "",
+        xy=(5.0, 3.5),
+        xytext=(5.0, 4.4),
+        arrowprops=dict(arrowstyle="->", lw=2.0, color="#00695C"),
+    )
+
+    plt.suptitle(
+        "第10章 10.5 シングルバッファリングのVRAM過渡状態露出 vs バックバッファによる原子的転送",
+        fontsize=13.0,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_14_layermanager_back_buffer_architecture(
+    output_path: str = "10/result/fig10_14_layermanager_back_buffer_architecture.png",
+) -> Path:
+    """Generate Fig 10.14 showing FrameBuffer dual-mode, mutable back_buffer_, and 2-stage buffer hierarchy (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.4), gridspec_kw={"width_ratios": [1.15, 1.0]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: 2-stage Offscreen Buffer Pipeline (Window::shadow_buffer_ -> LayerManager::back_buffer_ -> screen_)
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title(
+        "1. MikanOS 2段階オフスクリーンバッファのデータフロー",
+        fontsize=11.5,
+        fontweight="bold",
+        color="#1A237E",
+        pad=12,
+    )
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+
+    boxes = [
+        (0.5, 7.3, 4.1, 2.0, "#E3F2FD", "#1565C0", "Window (各ウィンドウ単位)\nshadow_buffer_ (RAM)\n・不透過ウィンドウの内容を保持\n・main_window->Writer() で描画"),
+        (5.4, 7.3, 4.1, 2.0, "#FFF8E1", "#F57F17", "Mouse Window (透過あり)\ndata_ ピクセル配列 (RAM)\n・transparent_color_ 判定\n・非透過ピクセルのみ書き込み"),
+        (1.2, 4.0, 7.6, 2.2, "#E8F5E9", "#2E7D32", "LayerManager::back_buffer_ (mutable FrameBuffer in RAM)\n・画面全体 (1024x768 = 3.00 MiB) の作業用合成キャンバス\n・Draw(area) / Draw(id) の全レイヤ合成を高速RAM上で完結\n・const メソッド内から更新するため mutable 修飾子を付与"),
+        (1.2, 0.8, 7.6, 2.1, "#FCE4EC", "#C2185B", "FrameBuffer screen_ (UEFI GOP Hardware VRAM / MMIO)\n・screen_->Copy(window_area.pos, back_buffer_, window_area)\n・完成済み領域のみを PCIe 経由で一括 memcpy 転送\n・下位レイヤの絵は back_buffer_ 内に常時温存される"),
+    ]
+    for x, y, w, h, fc, ec, txt in boxes:
+        rect = plt.Rectangle((x, y), w, h, facecolor=fc, edgecolor=ec, lw=1.8)
+        ax1.add_patch(rect)
+        ax1.text(x + w / 2, y + h / 2, txt, ha="center", va="center", fontsize=8.4, color="#1A1A1A")
+
+    ax1.annotate("", xy=(3.5, 6.25), xytext=(2.5, 7.25), arrowprops=dict(arrowstyle="->", lw=2.0, color="#1565C0"))
+    ax1.annotate("", xy=(6.5, 6.25), xytext=(7.5, 7.25), arrowprops=dict(arrowstyle="->", lw=2.0, color="#F57F17"))
+    ax1.text(1.3, 6.75, "FrameBuffer::Copy", fontsize=8.0, color="#1565C0", fontweight="bold")
+    ax1.text(7.2, 6.75, "Writer().Write", fontsize=8.0, color="#E65100", fontweight="bold")
+    ax1.annotate("", xy=(5.0, 2.95), xytext=(5.0, 3.95), arrowprops=dict(arrowstyle="->", lw=2.5, color="#C2185B"))
+    ax1.text(5.2, 3.4, "screen_->Copy(area.pos, back_buffer_, area)\n(走査線単位一括 memcpy)", fontsize=8.2, color="#C2185B", fontweight="bold")
+
+    # Right: FrameBuffer::Initialize Dual Mode & Stride Normalization
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title(
+        "2. SetWriter による初期化とストライドパディング吸収",
+        fontsize=11.5,
+        fontweight="bold",
+        color="#1A237E",
+        pad=12,
+    )
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+
+    code_box = (
+        "void LayerManager::SetWriter(FrameBuffer* screen) {\n"
+        "  screen_ = screen;\n"
+        "  FrameBufferConfig back_config = screen->Config();\n"
+        "  back_config.frame_buffer = nullptr;  // ★ここが鍵！\n"
+        "  back_buffer_.Initialize(back_config);\n"
+        "}\n\n"
+        "【FrameBuffer::Initialize の分岐】\n"
+        "if (config_.frame_buffer) {       // screen_ (VRAM)\n"
+        "  buffer_.resize(0);              // 追加RAM確保なし\n"
+        "} else {                          // back_buffer_ (RAM)\n"
+        "  buffer_.resize(4 * W * H);      // 1024x768x4 = 3.00 MiB\n"
+        "  config_.frame_buffer = buffer_.data();\n"
+        "  config_.pixels_per_scan_line = W; // パディング除去！\n"
+        "}"
+    )
+    ax2.text(
+        0.3,
+        9.4,
+        code_box,
+        fontsize=8.3,
+        va="top",
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="#FFFDE7", edgecolor="#FBC02D", lw=1.4),
+    )
+
+    # Visual Stride Diagram
+    ax2.text(0.4, 3.7, "ハードウェア VRAM (パディングあり例: stride=1088 > W=1024)", fontsize=8.6, fontweight="bold", color="#C2185B")
+    ax2.add_patch(plt.Rectangle((0.4, 2.8), 7.2, 0.7, facecolor="#F8BBD0", edgecolor="#C2185B", lw=1.3))
+    ax2.add_patch(plt.Rectangle((7.6, 2.8), 1.6, 0.7, facecolor="#EEEEEE", edgecolor="#757575", lw=1.2, hatch="//"))
+    ax2.text(4.0, 3.15, "有効表示領域 (W × 4B)", ha="center", va="center", fontsize=8.2)
+    ax2.text(8.4, 3.15, "Padding", ha="center", va="center", fontsize=8.0)
+
+    ax2.text(0.4, 2.1, "バックバッファ RAM (stride == W == 1024 で密配置)", fontsize=8.6, fontweight="bold", color="#2E7D32")
+    ax2.add_patch(plt.Rectangle((0.4, 1.2), 7.2, 0.7, facecolor="#C8E6C9", edgecolor="#2E7D32", lw=1.3))
+    ax2.text(4.0, 1.55, "密な連続メモリ (W × H × 4B = 3.00 MiB)", ha="center", va="center", fontsize=8.2)
+    ax2.text(0.4, 0.5, "※ Copy() 時に各バッファ自身の BytesPerScanLine を参照するため安全に変換", fontsize=8.0, color="#37474F")
+
+    plt.suptitle(
+        "第10章 10.5 LayerManager::back_buffer_ アーキテクチャと FrameBuffer 再利用設計",
+        fontsize=13.0,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_15_flicker_elimination_vram_atomicity_analysis(
+    output_path: str = "10/result/fig10_15_flicker_elimination_vram_atomicity_analysis.png",
+) -> Path:
+    """Generate Fig 10.15 quantitative benchmark & pixel timeline comparing 10.3, 10.4, and 10.5 (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.0), gridspec_kw={"width_ratios": [1.05, 1.15]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: VRAM Copy Bandwidth (KiB) vs Intermediate Flicker Exposures across 10.3, 10.4, 10.5
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title(
+        "1. 第10.3〜10.5節の VRAM 転送量と過渡フリッカー発生回数比較",
+        fontsize=11.5,
+        fontweight="bold",
+        color="#1A237E",
+        pad=12,
+    )
+
+    records = VramAtomicityBenchmark.get_architecture_comparison()
+    labels = [r["section"] for r in records]
+    kib_vals = [float(r["vram_copy_kib"]) for r in records]
+    colors = ["#D32F2F", "#F57C00", "#2E7D32"]
+
+    bars = ax1.bar(labels, kib_vals, color=colors, width=0.45, edgecolor="#212121", lw=1.2)
+    ax1.set_yscale("log")
+    ax1.set_ylabel("1フレームあたり VRAM 転送量 (KiB, 対数スケール)")
+    ax1.grid(True, which="both", linestyle="--", alpha=0.45)
+
+    for bar, r in zip(bars, records):
+        val = float(r["vram_copy_kib"])
+        exp = r["mouse_overlap_flicker_exposures"]
+        ax1.text(
+            bar.get_x() + bar.get_width() / 2,
+            val * 1.35,
+            f"{val:,.1f} KiB\n過渡露出: {exp}回/frame",
+            ha="center",
+            va="bottom",
+            fontsize=8.6,
+            fontweight="bold",
+            color="#212121",
+        )
+
+    ax1.set_ylim(10, 25000)
+
+    # Right: Simulated pixel state timeline under overlapping mouse cursor during Draw(main_id)
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title(
+        "2. マウス重複ピクセル (352, 112) における VRAM 表示状態のタイムライン",
+        fontsize=11.5,
+        fontweight="bold",
+        color="#1A237E",
+        pad=12,
+    )
+
+    t = np.arange(0, 7)
+    # 0 = mouse vanished (window gray exposed!), 1 = correct mouse pixel shown
+    single_buf_vram = [1, 0, 1, 0, 1, 0, 1]  # alternates every Draw(main_id)
+    double_buf_vram = [1, 1, 1, 1, 1, 1, 1]  # always shows final composited mouse pixel!
+
+    ax2.step(t, np.array(single_buf_vram) + 1.4, where="post", lw=2.8, color="#D32F2F", label="10.4 シングルバッファ (VRAM直描き)")
+    ax2.step(t, double_buf_vram, where="post", lw=2.8, color="#2E7D32", label="10.5 ダブルバッファ (back_buffer_ 合成)")
+
+    ax2.fill_between(
+        t,
+        1.4,
+        np.array(single_buf_vram) + 1.4,
+        step="post",
+        color="#FFCDD2",
+        alpha=0.55,
+    )
+    ax2.set_yticks([0.0, 1.0, 1.4, 2.4])
+    ax2.set_yticklabels([
+        "NG (下層露出)",
+        "OK (マウス表示)",
+        "NG (マウス消失!)",
+        "OK (マウス表示)",
+    ], fontsize=8.8)
+    ax2.set_xticks(t)
+    ax2.set_xticklabels(["t0\n初期", "t1\nWin描画", "t2\nMouse", "t3\nWin描画", "t4\nMouse", "t5\nWin描画", "t6\nMouse"], fontsize=8.3)
+    ax2.set_ylim(-0.3, 2.9)
+    ax2.set_xlabel("描画イベント進行ステップ")
+    ax2.legend(loc="upper right", fontsize=8.8)
+
+    ax2.text(
+        1.5,
+        1.55,
+        "★VRAM上でマウスが一瞬消えるため\n  人間にはチカチカ点滅して見える",
+        fontsize=8.3,
+        color="#B71C1C",
+        fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="#FFEBEE", edgecolor="#D32F2F"),
+    )
+    ax2.text(
+        2.0,
+        0.35,
+        "★RAM上で合成完了後に1回でコピー\n  VRAMには常に正しい完成色のみ存在！",
+        fontsize=8.3,
+        color="#1B5E20",
+        fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="#E8F5E9", edgecolor="#2E7D32"),
+    )
+
+    plt.suptitle(
+        "第10章 10.5 バックバッファ導入によるフリッカー完全根絶と VRAM 原子的更新の実証",
+        fontsize=13.0,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+plot_fig10_13_single_vs_double_buffering_pipeline = generate_ch10_13_single_vs_double_buffering_pipeline
+plot_fig10_14_layermanager_back_buffer_architecture = generate_ch10_14_layermanager_back_buffer_architecture
+plot_fig10_15_flicker_elimination_vram_atomicity_analysis = generate_ch10_15_flicker_elimination_vram_atomicity_analysis
