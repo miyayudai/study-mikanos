@@ -596,6 +596,14 @@ from common.os_sim import (
     plot_fig10_17_find_layer_by_position_z_order_hit_test,
     generate_ch10_18_window_drag_trajectory_and_bg_bug,
     plot_fig10_18_window_drag_trajectory_and_bg_bug,
+    DraggableLayerTraceEntry,
+    DraggableLayerSim,
+    generate_ch10_19_layer_draggable_flag_architecture,
+    plot_fig10_19_layer_draggable_flag_architecture,
+    generate_ch10_20_occluding_non_draggable_click_through_analysis,
+    plot_fig10_20_occluding_non_draggable_click_through_analysis,
+    generate_ch10_21_draggable_layer_desktop_simulation,
+    plot_fig10_21_draggable_layer_desktop_simulation,
 )
 
 __all__ = [
@@ -1194,4 +1202,12 @@ __all__ = [
     "plot_fig10_17_find_layer_by_position_z_order_hit_test",
     "generate_ch10_18_window_drag_trajectory_and_bg_bug",
     "plot_fig10_18_window_drag_trajectory_and_bg_bug",
+    "DraggableLayerTraceEntry",
+    "DraggableLayerSim",
+    "generate_ch10_19_layer_draggable_flag_architecture",
+    "plot_fig10_19_layer_draggable_flag_architecture",
+    "generate_ch10_20_occluding_non_draggable_click_through_analysis",
+    "plot_fig10_20_occluding_non_draggable_click_through_analysis",
+    "generate_ch10_21_draggable_layer_desktop_simulation",
+    "plot_fig10_21_draggable_layer_desktop_simulation",
 ]

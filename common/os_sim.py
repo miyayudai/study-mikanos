@@ -40138,3 +40138,670 @@ def generate_ch10_18_window_drag_trajectory_and_bg_bug(
 plot_fig10_16_usb_hid_mouse_report_and_drag_fsm = generate_ch10_16_usb_hid_mouse_report_and_drag_fsm
 plot_fig10_17_find_layer_by_position_z_order_hit_test = generate_ch10_17_find_layer_by_position_z_order_hit_test
 plot_fig10_18_window_drag_trajectory_and_bg_bug = generate_ch10_18_window_drag_trajectory_and_bg_bug
+
+
+
+# =============================================================================
+# Chapter 10.7: Draggable Layer Flags (`osbook_day10g`)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class DraggableLayerTraceEntry:
+    """Single step trace of osbook_day10g MouseObserver with draggable_ gating."""
+
+    step: int
+    buttons: int
+    dx: int
+    dy: int
+    old_mouse_pos: tuple[int, int]
+    new_mouse_pos: tuple[int, int]
+    posdiff: tuple[int, int]
+    prev_left: bool
+    curr_left: bool
+    transition: str
+    hit_layer_id: int | None
+    hit_layer_name: str | None
+    hit_layer_is_draggable: bool | None
+    drag_accepted: bool
+    drag_layer_id: int
+    drag_layer_pos: tuple[int, int] | None
+
+
+class DraggableLayerSim:
+    """Simulates MikanOS osbook_day10g Layer::draggable_ & MouseObserver gating.
+
+    Mirrors `Layer::SetDraggable(bool)` / `Layer::IsDraggable() const` with safe
+    default `draggable_ = False` (whitelist policy), pure visual `FindLayerByPosition`,
+    and `MouseObserver` short-circuit guard `if (layer && layer->IsDraggable())`.
+    """
+
+    def __init__(
+        self,
+        screen_w: int = 320,
+        screen_h: int = 200,
+        mouse_layer_id: int = 4,
+        init_mouse_pos: tuple[int, int] = (200, 120),
+    ) -> None:
+        self.db_sim = DoubleBufferingLayerSim(screen_w=screen_w, screen_h=screen_h)
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        self.mouse_layer_id = mouse_layer_id
+        self.mouse_position: tuple[int, int] = init_mouse_pos
+        self.mouse_drag_layer_id: int = 0
+        self.previous_buttons: int = 0
+        self.has_window: dict[int, bool] = {}
+        self.draggable: dict[int, bool] = {}
+        self.step_count: int = 0
+        self.trace: list[DraggableLayerTraceEntry] = []
+
+    @property
+    def vram(self) -> np.ndarray:
+        """Expose current hardware VRAM surface."""
+        return self.db_sim.vram
+
+    @property
+    def back_buffer(self) -> np.ndarray:
+        """Expose current RAM back_buffer_ surface."""
+        return self.db_sim.back_buffer
+
+    def add_layer(
+        self,
+        spec: DoubleBufferLayerSpec,
+        *,
+        has_window: bool = True,
+        draggable: bool = False,
+        height: int | None = None,
+    ) -> "DraggableLayerSim":
+        """Register a layer with fail-safe default `draggable=False`."""
+        self.has_window[spec.layer_id] = has_window
+        self.draggable[spec.layer_id] = draggable
+        self.db_sim.add_layer(spec)
+        if height is not None:
+            self.up_down(spec.layer_id, height)
+        return self
+
+    def set_draggable(self, layer_id: int, draggable: bool) -> "DraggableLayerSim":
+        """Mirror `Layer& Layer::SetDraggable(bool draggable)` (Fluent Interface)."""
+        if layer_id not in self.db_sim.layers:
+            raise KeyError(f"Unknown layer_id: {layer_id}")
+        self.draggable[layer_id] = bool(draggable)
+        return self
+
+    def is_draggable(self, layer_id: int) -> bool:
+        """Mirror `bool Layer::IsDraggable() const`."""
+        if layer_id not in self.db_sim.layers:
+            raise KeyError(f"Unknown layer_id: {layer_id}")
+        return self.draggable.get(layer_id, False)
+
+    def up_down(self, layer_id: int, new_height: int) -> None:
+        """Adjust layer Z-order or hide if new_height < 0 (matches LayerManager::UpDown)."""
+        stack = self.db_sim.layer_stack
+        if new_height < 0:
+            if layer_id in stack:
+                stack.remove(layer_id)
+            return
+        if layer_id in stack:
+            stack.remove(layer_id)
+        clamped_h = min(new_height, len(stack))
+        stack.insert(clamped_h, layer_id)
+
+    def draw_all(self) -> dict[str, int]:
+        """Perform full-screen double-buffered Draw."""
+        return self.db_sim.draw_area(
+            SimRect(0, 0, self.screen_w, self.screen_h), use_double_buffer=True
+        )
+
+    def move_relative(self, layer_id: int, dx: int, dy: int) -> dict[str, int]:
+        """Mirror LayerManager::MoveRelative(id, pos_diff)."""
+        spec = self.db_sim.layers[layer_id]
+        return self.db_sim.move_layer(
+            layer_id, spec.x + dx, spec.y + dy, use_double_buffer=True
+        )
+
+    def find_layer_by_position(
+        self,
+        pos: tuple[int, int],
+        exclude_id: int,
+        *,
+        naive_filter_draggable: bool = False,
+    ) -> tuple[int | None, list[dict[str, Any]]]:
+        """Mirror `LayerManager::FindLayerByPosition(pos, exclude_id)`.
+
+        When `naive_filter_draggable=False` (MikanOS actual design), returns the topmost
+        visual layer without checking `IsDraggable()`, allowing callers to enforce
+        occlusion and handle non-draggable hits properly.
+        Setting `naive_filter_draggable=True` reproduces the Click-Through anti-pattern.
+        """
+        px, py = pos
+        scan_trace: list[dict[str, Any]] = []
+        matched: int | None = None
+
+        for z_idx in range(len(self.db_sim.layer_stack) - 1, -1, -1):
+            lid = self.db_sim.layer_stack[z_idx]
+            spec = self.db_sim.layers[lid]
+            if lid == exclude_id:
+                scan_trace.append({
+                    "z": z_idx, "layer_id": lid, "name": spec.name,
+                    "draggable": self.is_draggable(lid), "result": "SKIP (exclude_id)",
+                })
+                continue
+            if naive_filter_draggable and not self.is_draggable(lid):
+                scan_trace.append({
+                    "z": z_idx, "layer_id": lid, "name": spec.name,
+                    "draggable": False, "result": "SKIP (!IsDraggable) [BUG]",
+                })
+                continue
+            if not self.has_window.get(lid, True):
+                scan_trace.append({
+                    "z": z_idx, "layer_id": lid, "name": spec.name,
+                    "draggable": self.is_draggable(lid), "result": "SKIP (!win)",
+                })
+                continue
+            x0, y0 = spec.x, spec.y
+            x1, y1 = x0 + spec.width, y0 + spec.height
+            inside = (x0 <= px < x1) and (y0 <= py < y1)
+            if inside:
+                scan_trace.append({
+                    "z": z_idx, "layer_id": lid, "name": spec.name,
+                    "draggable": self.is_draggable(lid),
+                    "result": f"HIT [{x0},{x1})x[{y0},{y1})",
+                })
+                matched = lid
+                break
+            scan_trace.append({
+                "z": z_idx, "layer_id": lid, "name": spec.name,
+                "draggable": self.is_draggable(lid),
+                "result": f"MISS [{x0},{x1})x[{y0},{y1})",
+            })
+        return matched, scan_trace
+
+    def mouse_observer(
+        self, buttons: int, displacement_x: int, displacement_y: int
+    ) -> DraggableLayerTraceEntry:
+        """Execute exact osbook_day10g MouseObserver logic on a single HID report."""
+        self.step_count += 1
+        oldpos = self.mouse_position
+        raw_x = oldpos[0] + displacement_x
+        raw_y = oldpos[1] + displacement_y
+        clamped_x = max(0, min(self.screen_w - 1, raw_x))
+        clamped_y = max(0, min(self.screen_h - 1, raw_y))
+        self.mouse_position = (clamped_x, clamped_y)
+        posdiff = (clamped_x - oldpos[0], clamped_y - oldpos[1])
+
+        self.db_sim.move_layer(
+            self.mouse_layer_id, clamped_x, clamped_y, use_double_buffer=True
+        )
+
+        prev_left = bool(self.previous_buttons & 0x01)
+        curr_left = bool(buttons & 0x01)
+        hit_id: int | None = None
+        hit_name: str | None = None
+        hit_draggable: bool | None = None
+        drag_accepted = False
+
+        if (not prev_left) and curr_left:
+            hit_id, _ = self.find_layer_by_position(
+                self.mouse_position, self.mouse_layer_id
+            )
+            if hit_id is not None:
+                hit_name = self.db_sim.layers[hit_id].name
+                hit_draggable = self.is_draggable(hit_id)
+                if hit_draggable:
+                    self.mouse_drag_layer_id = hit_id
+                    drag_accepted = True
+                    transition = "RISING_EDGE (Drag Accepted)"
+                else:
+                    transition = "RISING_EDGE (Rejected: !IsDraggable)"
+            else:
+                transition = "RISING_EDGE (Rejected: nullptr)"
+        elif prev_left and curr_left:
+            if self.mouse_drag_layer_id > 0:
+                transition = "HOLD (Dragging)"
+                self.move_relative(self.mouse_drag_layer_id, posdiff[0], posdiff[1])
+            else:
+                transition = "HOLD (No Target)"
+        elif prev_left and (not curr_left):
+            transition = "FALLING_EDGE (Drag End)"
+            self.mouse_drag_layer_id = 0
+        else:
+            transition = "IDLE (Cursor Move)"
+
+        self.previous_buttons = buttons & 0xFF
+        drag_pos = (
+            (
+                self.db_sim.layers[self.mouse_drag_layer_id].x,
+                self.db_sim.layers[self.mouse_drag_layer_id].y,
+            )
+            if self.mouse_drag_layer_id > 0
+            else None
+        )
+        entry = DraggableLayerTraceEntry(
+            step=self.step_count,
+            buttons=buttons,
+            dx=displacement_x,
+            dy=displacement_y,
+            old_mouse_pos=oldpos,
+            new_mouse_pos=self.mouse_position,
+            posdiff=posdiff,
+            prev_left=prev_left,
+            curr_left=curr_left,
+            transition=transition,
+            hit_layer_id=hit_id,
+            hit_layer_name=hit_name,
+            hit_layer_is_draggable=hit_draggable,
+            drag_accepted=drag_accepted,
+            drag_layer_id=self.mouse_drag_layer_id,
+            drag_layer_pos=drag_pos,
+        )
+        self.trace.append(entry)
+        return entry
+
+    @classmethod
+    def create_mikanos_desktop_sim(
+        cls,
+        screen_w: int = 320,
+        screen_h: int = 200,
+        init_mouse_pos: tuple[int, int] = (180, 72),
+    ) -> "DraggableLayerSim":
+        """Build 4-layer MikanOS desktop matching osbook_day10g (`HelloWindow` only draggable)."""
+        base = WindowDragSim.create_mikanos_desktop_sim(
+            screen_w=screen_w, screen_h=screen_h, init_mouse_pos=init_mouse_pos
+        )
+        sim = cls(
+            screen_w=screen_w,
+            screen_h=screen_h,
+            mouse_layer_id=4,
+            init_mouse_pos=init_mouse_pos,
+        )
+        # Copy the 4 layer pixel arrays with exact osbook_day10g draggable_ flags
+        for z_idx, lid in enumerate(base.db_sim.layer_stack):
+            spec = base.db_sim.layers[lid]
+            is_drag = lid == 3  # Only main_window_layer_id calls .SetDraggable(true)
+            sim.add_layer(
+                DoubleBufferLayerSpec(
+                    spec.layer_id,
+                    spec.name,
+                    spec.x,
+                    spec.y,
+                    spec.width,
+                    spec.height,
+                    spec.pixels.copy(),
+                    transparent_color=spec.transparent_color,
+                ),
+                has_window=True,
+                draggable=is_drag,
+                height=z_idx,
+            )
+        sim.draw_all()
+        return sim
+
+
+def generate_ch10_19_layer_draggable_flag_architecture(
+    output_path: str | Path = "10/result/fig10_19_layer_draggable_flag_architecture.png",
+) -> Path:
+    """Generate Fig 10.19: Layer::draggable_ design, NSDMI, & MouseObserver guard (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(
+        1, 2, figsize=(16.2, 6.8), gridspec_kw={"width_ratios": [1.0, 1.15]}
+    )
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left Panel: Layer Class Memory Layout & NSDMI + Fluent Interface
+    ax1 = axes[0]
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 10)
+    ax1.axis("off")
+    ax1.set_title(
+        "1. `Layer` クラスのメンバ拡張と均一初期化 (`layer.hpp`)",
+        fontsize=11.3,
+        fontweight="bold",
+        color="#1A237E",
+        pad=10,
+    )
+
+    fields = [
+        ("unsigned int id_;", "4 bytes (offset 0x00)", "レイヤ一意識別子 (コンストラクタ引数)", "#E3F2FD", "#1565C0"),
+        ("Vector2D<int> pos_{};", "8 bytes (offset 0x04)", "原点座標 {0, 0} へゼロ初期化保証 (NSDMI)", "#E8F5E9", "#2E7D32"),
+        ("std::shared_ptr<Window> window_{};", "16 bytes (offset 0x10)", "所有/共有ウィンドウ (nullptr 初期化 / 4B pad後)", "#EDE7F6", "#4527A0"),
+        ("bool draggable_{false};", "1 byte (+7B tail pad, 0x20)", "★新規追加: デフォルト false のホワイトリスト設計", "#FFF8E1", "#E65100"),
+    ]
+    y_top = 7.7
+    for idx, (decl, sz, desc, fc, ec) in enumerate(fields):
+        yb = y_top - idx * 1.48
+        box = FancyBboxPatch(
+            (0.35, yb), 9.3, 1.22,
+            boxstyle="round,pad=0.1", facecolor=fc, edgecolor=ec, lw=1.8,
+        )
+        ax1.add_patch(box)
+        ax1.text(0.55, yb + 0.84, decl, fontsize=9.5, fontweight="bold", color=ec)
+        ax1.text(9.45, yb + 0.84, sz, fontsize=8.2, fontweight="bold", color="#37474F", ha="right")
+        ax1.text(0.55, yb + 0.30, desc, fontsize=8.4, color="#212121")
+
+    # Fluent Interface Method Chaining Diagram
+    chain_box = FancyBboxPatch(
+        (0.35, 0.45), 9.3, 2.35,
+        boxstyle="round,pad=0.12", facecolor="#E8EAF6", edgecolor="#3949AB", lw=1.7,
+    )
+    ax1.add_patch(chain_box)
+    ax1.text(
+        0.55, 2.48,
+        "Fluent Interface (メソッドチェーン) による宣言的レイヤ構築 (`main.cpp`)",
+        fontsize=9.1, fontweight="bold", color="#1A237E",
+    )
+    ax1.text(
+        0.55, 1.48,
+        "auto main_window_layer_id = layer_manager->NewLayer()  // Layer&\n"
+        "  .SetWindow(main_window)   // return *this (Layer&)\n"
+        "  .SetDraggable(true)       // <-- Explicitly enable dragging\n"
+        "  .Move({300, 100})         // return *this (Layer&)\n"
+        "  .ID();                    // Extract unsigned int ID",
+        fontsize=8.1,
+        fontfamily="monospace",
+        color="#212121",
+        va="center",
+    )
+
+    # Right Panel: 4 Layers Whitelist Table + MouseObserver Short-Circuit Guard
+    ax2 = axes[1]
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 10)
+    ax2.axis("off")
+    ax2.set_title(
+        "2. デスクトップ4レイヤの許可一覧と `MouseObserver` 短絡ガード",
+        fontsize=11.3,
+        fontweight="bold",
+        color="#1A237E",
+        pad=10,
+    )
+
+    rows = [
+        ("Layer ID / 名称", "Z", "draggable_", "クリック＆ドラッグ時の挙動 (`osbook_day10g`)"),
+        ("ID=1 DesktopBG", "0", "false (既定)", "FindLayerヒット → !IsDraggable() で拒否 → 背景固定"),
+        ("ID=2 Console", "1", "false (既定)", "FindLayerヒット → !IsDraggable() で拒否 → コンソール固定"),
+        ("ID=3 HelloWindow", "2", "true (明示)", "FindLayerヒット → IsDraggable()==true → ドラッグ移動OK!"),
+        ("ID=4 MouseCursor", "3", "false (既定)", "exclude_id == mouse_layer_id のため走査段階で除外"),
+    ]
+    col_x = [0.25, 2.35, 2.95, 4.45, 9.75]
+    y_tbl = 8.45
+    rh = 0.72
+    for r_i, row in enumerate(rows):
+        y = y_tbl - r_i * rh
+        is_hdr = r_i == 0
+        bg_c = "#283593" if is_hdr else ("#E8F5E9" if r_i == 3 else "#FFFFFF")
+        txt_c = "#FFFFFF" if is_hdr else "#212121"
+        fw = "bold" if is_hdr or r_i == 3 else "normal"
+        for c_i in range(4):
+            rect = patches.Rectangle(
+                (col_x[c_i], y), col_x[c_i + 1] - col_x[c_i], rh,
+                facecolor=bg_c, edgecolor="#B0BEC5", lw=1.0,
+            )
+            ax2.add_patch(rect)
+            ax2.text(
+                (col_x[c_i] + col_x[c_i + 1]) / 2 if c_i in (1, 2) else col_x[c_i] + 0.1,
+                y + rh / 2,
+                row[c_i],
+                ha="center" if c_i in (1, 2) else "left",
+                va="center",
+                fontsize=7.7 if not is_hdr else 8.1,
+                fontweight=fw,
+                color=txt_c,
+            )
+
+    # Short-circuit guard flowchart
+    flow_steps = [
+        (4.15, "if (!previous_left_pressed && left_pressed)", "左ボタンの立ち上がりエッジ（押下開始）を検出", "#FFF3E0", "#E65100"),
+        (2.65, "auto layer = layer_manager->FindLayerByPosition(mouse_position, mouse_layer_id);", "視覚上の最前面レイヤを探索（非表示・window無し・マウスは除外）", "#E3F2FD", "#1565C0"),
+        (1.05, "if (layer && layer->IsDraggable()) { mouse_drag_layer_id = layer->ID(); }", "短絡評価: layer != nullptr かつ IsDraggable() == true のときだけドラッグ開始！", "#E8F5E9", "#2E7D32"),
+    ]
+    for idx, (yb, code, note, fc, ec) in enumerate(flow_steps):
+        box = FancyBboxPatch(
+            (0.35, yb), 9.3, 1.08,
+            boxstyle="round,pad=0.1", facecolor=fc, edgecolor=ec, lw=1.8,
+        )
+        ax2.add_patch(box)
+        ax2.text(0.55, yb + 0.72, code, fontsize=8.3, fontfamily="monospace", fontweight="bold", color=ec)
+        ax2.text(0.55, yb + 0.25, note, fontsize=8.1, color="#212121")
+        if idx < len(flow_steps) - 1:
+            ax2.annotate(
+                "", xy=(5.0, yb - 0.35), xytext=(5.0, yb - 0.02),
+                arrowprops=dict(arrowstyle="->", lw=1.8, color="#455A64"),
+            )
+
+    ax2.text(
+        5.0, 0.35,
+        "★Fail-Safe Default (安全側既定): 新規レイヤは既定で固定(false)のため、ドラッグ許可漏れは起きても誤移動バグは起きない",
+        ha="center", va="center", fontsize=8.0, fontweight="bold", color="#BF360C",
+    )
+
+    plt.suptitle(
+        "第10章 10.7 `Layer::draggable_` フラグ設計と `MouseObserver` 短絡評価ガード (`osbook_day10g`)",
+        fontsize=13.0,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_20_occluding_non_draggable_click_through_analysis(
+    output_path: str | Path = "10/result/fig10_20_occluding_non_draggable_click_through_analysis.png",
+) -> Path:
+    """Generate Fig 10.20: SRP Occlusion vs Click-Through anti-pattern comparison (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(16.0, 6.6))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    scenarios = [
+        (
+            axes[0],
+            "1. MikanOS の設計 (`FindLayerByPosition` + `MouseObserver` 判定)",
+            True,
+            "重なり点 P(140, 70) をクリックすると…\n"
+            "① FindLayerByPosition → 手前の Console(Z=2) を返す\n"
+            "② MouseObserver → Console.IsDraggable() == false を検出\n"
+            "③ mouse_drag_layer_id = 0 のまま (背景ウィンドウへ貫通しない!)",
+            "#E8F5E9",
+            "#2E7D32",
+        ),
+        (
+            axes[1],
+            "2. アンチパターン (`FindLayerByPosition` 内で `!IsDraggable()` スキップ)",
+            False,
+            "重なり点 P(140, 70) をクリックすると…\n"
+            "① Z=2 Console は !IsDraggable() でスキップされてしまう\n"
+            "② Z=1 HelloWindow にヒット → 不可視部分を貫通ドラッグ!\n"
+            "③ Click-Through バグ発生 (さらにクリックイベントも届かない)",
+            "#FFEBEE",
+            "#C62828",
+        ),
+    ]
+
+    for ax, title, is_srp, desc, box_fc, box_ec in scenarios:
+        ax.set_xlim(0, 320)
+        ax.set_ylim(210, 0)
+        ax.set_facecolor("#2D6E8E")
+        ax.set_title(title, fontsize=10.8, fontweight="bold", color=box_ec, pad=10)
+        ax.set_xlabel("X 座標 (px)")
+        ax.set_ylabel("Y 座標 (px)")
+
+        # DesktopBG Z=0 (place label in clean top-right empty area)
+        ax.text(245, 25, "DesktopBG (Z=0)\ndraggable=false", color="#FFFFFF", fontsize=8.2, ha="center", fontweight="bold")
+
+        # HelloWindow Z=1 (below Console for occlusion experiment)
+        hw = patches.Rectangle((120, 48), 116, 52, facecolor="#C6C6C6", edgecolor="#FFEB3B", lw=2.2)
+        ax.add_patch(hw)
+        ax.add_patch(patches.Rectangle((123, 51), 110, 14, facecolor="#001184"))
+        ax.text(196, 85, "HelloWindow\n(Z=1)\ndraggable=true", color="#111111", fontsize=7.6, fontweight="bold", ha="center", va="center")
+
+        # Console Z=2 (above HelloWindow: non-draggable occluder!)
+        con = patches.Rectangle((12, 12), 148, 102, facecolor="#101820", edgecolor="#80CBC4", lw=2.2)
+        ax.add_patch(con)
+        ax.text(78, 36, "Console / 固定パネル (Z=2)\ndraggable = false (手前で遮蔽)", color="#B2DFDB", fontsize=8.0, fontweight="bold", ha="center")
+
+        # Overlap highlight
+        ov = patches.Rectangle(
+            (120, 48), 40, 52,
+            facecolor="#FF5252" if not is_srp else "#69F0AE",
+            alpha=0.28, edgecolor="#FFFFFF", lw=1.4, ls="--",
+        )
+        ax.add_patch(ov)
+
+        # Click point P(140, 70)
+        px, py = 140, 70
+        ax.scatter([px], [py], color="#FFD600", s=95, zorder=8, edgecolors="#000000", linewidths=1.5)
+        ax.annotate(
+            "クリック点 P(140, 70)\n" + ("→ Console が正しく遮蔽 (Drag=0)" if is_srp else "→ Console を貫通し HelloWindow(ID=3) を掴む!"),
+            xy=(px, py),
+            xytext=(146, 134),
+            fontsize=8.1,
+            fontweight="bold",
+            color="#FFFFFF",
+            bbox=dict(boxstyle="round,pad=0.28", facecolor=box_ec, edgecolor="#FFEB3B"),
+            arrowprops=dict(arrowstyle="->", lw=2.0, color="#FFEB3B"),
+            zorder=9,
+        )
+
+        # Explanation footer inside axis
+        ax.text(
+            160, 180, desc,
+            ha="center", va="center", fontsize=7.8, fontweight="bold", color="#212121",
+            bbox=dict(boxstyle="round,pad=0.35", facecolor=box_fc, edgecolor=box_ec, alpha=0.95),
+            zorder=10,
+        )
+
+    plt.suptitle(
+        "第10章 10.7 単一責任の原則 (SRP): 非ドラッグレイヤによる遮蔽 (Occlusion) vs Click-Through バグ",
+        fontsize=12.8,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_21_draggable_layer_desktop_simulation(
+    output_path: str | Path = "10/result/fig10_21_draggable_layer_desktop_simulation.png",
+) -> Path:
+    """Generate Fig 10.21: osbook_day10g 3-scenario framebuffer simulation (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.8))
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Scenario 1: Attempt to drag DesktopBG (250, 140) -> (-40, -28)
+    sim_bg = DraggableLayerSim.create_mikanos_desktop_sim(320, 200, init_mouse_pos=(250, 140))
+    sim_bg.mouse_observer(0x01, 0, 0)
+    sim_bg.mouse_observer(0x01, -40, -28)
+    img_bg_fixed = sim_bg.vram.copy()
+    bg_pos = (sim_bg.db_sim.layers[1].x, sim_bg.db_sim.layers[1].y)
+
+    # Scenario 2: Attempt to drag Console (50, 50) -> (+30, +25)
+    sim_con = DraggableLayerSim.create_mikanos_desktop_sim(320, 200, init_mouse_pos=(50, 50))
+    sim_con.mouse_observer(0x01, 0, 0)
+    sim_con.mouse_observer(0x01, 30, 25)
+    img_con_fixed = sim_con.vram.copy()
+    con_pos = (sim_con.db_sim.layers[2].x, sim_con.db_sim.layers[2].y)
+
+    # Scenario 3: Drag HelloWindow (180, 66) -> (+70, +50) -> (+100, 0 clamped)
+    sim_win = DraggableLayerSim.create_mikanos_desktop_sim(320, 200, init_mouse_pos=(180, 66))
+    sim_win.mouse_observer(0x01, 0, 0)
+    sim_win.mouse_observer(0x01, 70, 50)
+    sim_win.mouse_observer(0x01, 100, 0)
+    img_win_moved = sim_win.vram.copy()
+    win_pos = (sim_win.db_sim.layers[3].x, sim_win.db_sim.layers[3].y)
+    mouse_end = sim_win.mouse_position
+
+    panels = [
+        (
+            axes[0],
+            img_bg_fixed,
+            f"1. 背景クリック＆ドラッグ試行\nDesktopBG 座標={bg_pos} (完全固定 / drag_id=0)",
+            "#1B5E20",
+        ),
+        (
+            axes[1],
+            img_con_fixed,
+            f"2. コンソールクリック＆ドラッグ試行\nConsole 座標={con_pos} (完全固定 / drag_id=0)",
+            "#1B5E20",
+        ),
+        (
+            axes[2],
+            img_win_moved,
+            f"3. HelloWindow (`SetDraggable(true)`)\n移動後座標={win_pos}, カーソル={mouse_end}",
+            "#1A237E",
+        ),
+    ]
+
+    for ax, img, title, col in panels:
+        ax.imshow(img, interpolation="nearest")
+        ax.set_title(title, fontsize=10.1, fontweight="bold", color=col, pad=10)
+        ax.set_xlabel("X (px)")
+        ax.set_ylabel("Y (px)")
+        ax.grid(False)
+
+    axes[0].annotate(
+        "カーソルのみ (-40, -28) 移動\n背景・残像ゼロ!",
+        xy=sim_bg.mouse_position,
+        xytext=(125, 155),
+        fontsize=7.8,
+        fontweight="bold",
+        color="#FFFFFF",
+        bbox=dict(boxstyle="round,pad=0.26", facecolor="#1B5E20", edgecolor="#A5D6A7"),
+        arrowprops=dict(arrowstyle="->", lw=1.8, color="#FFEB3B"),
+    )
+    axes[1].annotate(
+        "カーソルのみ (+30, +25) 移動\nConsole は不動!",
+        xy=sim_con.mouse_position,
+        xytext=(90, 140),
+        fontsize=7.8,
+        fontweight="bold",
+        color="#FFFFFF",
+        bbox=dict(boxstyle="round,pad=0.26", facecolor="#1B5E20", edgecolor="#A5D6A7"),
+        arrowprops=dict(arrowstyle="->", lw=1.8, color="#FFEB3B"),
+    )
+    axes[2].annotate(
+        "",
+        xy=mouse_end,
+        xytext=(180, 66),
+        arrowprops=dict(arrowstyle="->,head_width=0.35", lw=2.2, color="#FFEB3B", ls="--"),
+    )
+    axes[2].text(
+        170, 44,
+        "HelloWindow のみ\n自在にドラッグ移動!",
+        fontsize=7.8,
+        fontweight="bold",
+        color="#FFEB3B",
+        bbox=dict(boxstyle="round,pad=0.24", facecolor="#000000", alpha=0.68),
+    )
+
+    plt.suptitle(
+        "第10章 10.7 `osbook_day10g` フレームバッファ実証: 背景・コンソール固定とウィンドウ限定ドラッグ",
+        fontsize=13.0,
+        fontweight="bold",
+        color="#0D47A1",
+        y=0.99,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+plot_fig10_19_layer_draggable_flag_architecture = generate_ch10_19_layer_draggable_flag_architecture
+plot_fig10_20_occluding_non_draggable_click_through_analysis = generate_ch10_20_occluding_non_draggable_click_through_analysis
+plot_fig10_21_draggable_layer_desktop_simulation = generate_ch10_21_draggable_layer_desktop_simulation

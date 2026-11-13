@@ -271,6 +271,9 @@ add_test(NAME test_ch10_double_buffering COMMAND ch10_double_buffering)
 add_executable(ch10_dragging_windows src/ch10/os_chapter10_dragging_windows.cpp)
 add_test(NAME test_ch10_dragging_windows COMMAND ch10_dragging_windows)
 
+add_executable(ch10_draggable_layer src/ch10/os_chapter10_draggable_layer.cpp)
+add_test(NAME test_ch10_draggable_layer COMMAND ch10_draggable_layer)
+
 
 
 
