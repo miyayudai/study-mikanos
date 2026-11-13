@@ -259,6 +259,9 @@ add_test(NAME test_ch10_mouse_refactor COMMAND ch10_mouse_refactor --test)
 add_executable(ch10_first_window src/ch10/os_chapter10_first_window.cpp)
 add_test(NAME test_ch10_first_window COMMAND ch10_first_window --test)
 
+add_executable(ch10_high_speed_counter src/ch10/os_chapter10_high_speed_counter.cpp)
+add_test(NAME test_ch10_high_speed_counter COMMAND ch10_high_speed_counter --test)
+
 
 
 

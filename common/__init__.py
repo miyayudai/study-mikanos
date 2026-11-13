@@ -556,6 +556,15 @@ from common.os_sim import (
     plot_fig10_04_window_bevel_and_light_source_math,
     plot_fig10_05_close_button_bitmap_matrix,
     plot_fig10_06_first_window_composition_render,
+    HighSpeedCounterSimulator,
+    FlickerTearingSimulator,
+    BandwidthWasteAnalyzer,
+    generate_ch10_07_counter_window_and_text_region_geometry,
+    plot_fig10_07_counter_window_and_text_region_geometry,
+    generate_ch10_08_screen_flicker_and_tearing_hardware_mechanism,
+    plot_fig10_08_screen_flicker_and_tearing_hardware_mechanism,
+    generate_ch10_09_full_redraw_bandwidth_waste_and_bottleneck,
+    plot_fig10_09_full_redraw_bandwidth_waste_and_bottleneck,
 )
 
 __all__ = [
@@ -1114,4 +1123,13 @@ __all__ = [
     "plot_fig10_04_window_bevel_and_light_source_math",
     "plot_fig10_05_close_button_bitmap_matrix",
     "plot_fig10_06_first_window_composition_render",
+    "HighSpeedCounterSimulator",
+    "FlickerTearingSimulator",
+    "BandwidthWasteAnalyzer",
+    "generate_ch10_07_counter_window_and_text_region_geometry",
+    "plot_fig10_07_counter_window_and_text_region_geometry",
+    "generate_ch10_08_screen_flicker_and_tearing_hardware_mechanism",
+    "plot_fig10_08_screen_flicker_and_tearing_hardware_mechanism",
+    "generate_ch10_09_full_redraw_bandwidth_waste_and_bottleneck",
+    "plot_fig10_09_full_redraw_bandwidth_waste_and_bottleneck",
 ]

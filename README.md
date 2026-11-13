@@ -2,8 +2,8 @@
 
 ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20Python%203.10%2B-blue.svg)
 ![Architecture](https://img.shields.io/badge/Target-x86__64%20%7C%20UEFI-orange.svg)
-![Tests](https://img.shields.io/badge/tests-645%20passed-brightgreen.svg)
-![Progress](https://img.shields.io/badge/curriculum-35.5%25%20(81%2F228)-yellow.svg)
+![Tests](https://img.shields.io/badge/tests-653%20passed-brightgreen.svg)
+![Progress](https://img.shields.io/badge/curriculum-36.0%25%20(82%2F228)-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
@@ -97,7 +97,7 @@ cmake --build build
 | **第7章** | 割り込みとFIFO | 10 | `day07a`–`07b` | IDT、MSI割り込み、リングバッファ `ArrayQueue` | [`7_Exercises.ipynb`](7/7_Exercises.ipynb) | `[x]` 完了 (11/11) |
 | **第8章** | メモリ管理 | 7 | `day08a`–`08c` | カーネルスタック移動、GDT、初期ページング、`BitmapMemoryManager` | [`8_Exercises.ipynb`](8/8_Exercises.ipynb) | `[x]` 完了 (8/8) |
 | **第9章** | 重ね合わせ処理 | 7 | `day09a`–`09e` | `sbrk`と`new`、`LayerManager`、差分再描画・スクロール高速化 | [`9_Exercises.ipynb`](9/9_Exercises.ipynb) | `[x]` 完了 (8/8) |
-| **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[x]` 進行中 (2/8) |
+| **第10章** | ウィンドウ | 7 | `day10a`–`10g` | ウィンドウ描画、シャドウバッファによるチラつき解消、ドラッグ移動 | `10_Exercises.ipynb` | `[x]` 進行中 (3/8) |
 | **第11章** | タイマとACPI | 5 | `day11a`–`11e` | Local APICタイマ、`TimerManager`、RSDPとACPI PMタイマ | `11_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
 | **第12章** | キー入力 | 6 | `day12a`–`12f` | FADT、タイマ較正、USBキーボードHID、テキストボックス | `12_Exercises.ipynb` | `[ ]` 未着手 (0/7) |
 | **第13章** | マルチタスク(1) | 5 | `day13a`–`13d` | `TaskContext`、`SwitchContext`アセンブリ、`TaskManager` | `13_Exercises.ipynb` | `[ ]` 未着手 (0/6) |
@@ -259,6 +259,7 @@ cmake --build build
 |---|---|:---:|
 | [`10.1_Refactoring_Mouse_Class.ipynb`](10/10.1_Refactoring_Mouse_Class.ipynb) | 10.1 もっとマウス（`osbook_day10a`・マウス絶対座標追跡と画面矩形クランプ数理・ホットスポット消失問題の解決・透過色レイヤの幾何交差クリッピング数理・`Window::DrawTo` 二重ループ境界不等式導出・VRAM境界外アクセス完全防止・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/10/10.1_Refactoring_Mouse_Class.ipynb) |
 | [`10.2_Drawing_First_GUI_Window.ipynb`](10/10.2_Drawing_First_GUI_Window.ipynb) | 10.2 はじめてのウィンドウ（`osbook_day10b`・GUIウィンドウシステムの解剖・クライアント領域と非クライアント装飾の分離・左上平行光源モデルと3Dベベル立体枠の幾何光学数理・閉じるボタン16×14ドット絵パレット展開アルゴリズム・レイヤ登録とZオーダー繰り上がり・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/10/10.2_Drawing_First_GUI_Window.ipynb) |
+| [`10.3_High_Speed_Counter_Flicker_Problem.ipynb`](10/10.3_High_Speed_Counter_Flicker_Problem.ipynb) | 10.3 高速カウンタ（`osbook_day10c`・動的描画ストレステスト・ウィンドウ160×52リファクタリング・10桁ゼロ埋め書式化とFillRectangle消去数理・ペインターズ則直接上書きと60Hz垂直走査線の競合・画面フリッカーとティアリングの物理メカニズム・全画面再描画3.14MB vs 差分5.12KBの614倍帯域浪費・CPU 100%ビジーループ解剖・C++20/Python検証） | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/miyayudai/study-mikanos/blob/main/10/10.3_High_Speed_Counter_Flicker_Problem.ipynb) |
 
 
 

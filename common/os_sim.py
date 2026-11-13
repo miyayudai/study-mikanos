@@ -37788,3 +37788,471 @@ def plot_fig10_06_first_window_composition_render(output_path: Path | str) -> Pa
     return output_path
 
 
+
+
+# Python code to append to common/os_sim.py
+
+# ==============================================================================
+# Chapter 10.3: High-Speed Counter & Screen Flicker / Tearing Simulation
+# ==============================================================================
+
+@dataclass
+class HighSpeedCounterSimulator:
+    """Simulator for MikanOS High-Speed Counter Window & Busy-Loop Redraw (osbook_day10c)."""
+    width: int = 160
+    height: int = 52
+    title: str = "Hello Window"
+    count: int = 0
+    counter_pos: tuple[int, int] = (24, 28)
+    counter_size: tuple[int, int] = (80, 16)  # 8 * 10, 16
+    buffer: np.ndarray = field(init=False)
+    decorator: WindowBevelDecoratorSim = field(init=False)
+
+    def __post_init__(self):
+        # Window with height=52 and no client strings
+        self.decorator = WindowBevelDecoratorSim(
+            width=self.width,
+            height=self.height,
+            title=self.title,
+            lines=[]
+        )
+        self.buffer = self.decorator.buffer.copy()
+        self.update_counter(self.count)
+
+    def _render_ascii_glyph(self, x: int, y: int, char: str, color: tuple[int, int, int]):
+        """Render a single 8x16 ASCII glyph using built-in font bitmap representation."""
+        idx = ord(char)
+        font = get_hankaku_font_data()
+        if 0 <= idx < 256 and idx in font:
+            glyph_rows = font[idx]
+            for row in range(16):
+                bits = glyph_rows[row]
+                for col in range(8):
+                    if (bits << col) & 0x80:
+                        px = x + col
+                        py = y + row
+                        if 0 <= px < self.width and 0 <= py < self.height:
+                            self.buffer[py, px] = color
+
+    def update_counter(self, new_count: int) -> dict:
+        """Update counter value: FillRectangle erase followed by WriteString rendering."""
+        self.count = new_count
+        cx, cy = self.counter_pos
+        cw, ch = self.counter_size
+
+        # 1. FillRectangle with light gray (0xc6, 0xc6, 0xc6)
+        fill_color = (0xc6, 0xc6, 0xc6)
+        x0 = max(0, cx)
+        y0 = max(0, cy)
+        x1 = min(self.width, cx + cw)
+        y1 = min(self.height, cy + ch)
+        self.buffer[y0:y1, x0:x1] = fill_color
+        erased_pixels = (x1 - x0) * (y1 - y0)
+
+        # 2. WriteString with black (0, 0, 0), format "%010u"
+        formatted_str = f"{new_count:010d}"
+        font_pixels = 0
+        for i, ch_char in enumerate(formatted_str):
+            char_x = cx + i * 8
+            self._render_ascii_glyph(char_x, cy, ch_char, (0, 0, 0))
+
+        # Count drawn text pixels
+        font = get_hankaku_font_data()
+        for ch_char in formatted_str:
+            idx = ord(ch_char)
+            if idx in font:
+                for row_bits in font[idx]:
+                    font_pixels += bin(row_bits).count("1")
+
+        return {
+            "count": self.count,
+            "formatted": formatted_str,
+            "erased_pixels": erased_pixels,
+            "font_pixels": font_pixels,
+            "total_updated_region_pixels": erased_pixels,
+        }
+
+    def composite_onto_desktop(
+        self,
+        desktop_w: int = 640,
+        desktop_h: int = 400,
+        win_pos: tuple[int, int] = (300, 100),
+        mouse_pos: tuple[int, int] = (200, 200)
+    ) -> np.ndarray:
+        """Composite background (0x008080), counter window, and mouse cursor onto virtual screen."""
+        screen = np.full((desktop_h, desktop_w, 3), (0x00, 0x80, 0x80), dtype=np.uint8)
+
+        # Draw window
+        wx, wy = win_pos
+        x0, y0 = max(0, wx), max(0, wy)
+        x1, y1 = min(desktop_w, wx + self.width), min(desktop_h, wy + self.height)
+        if x1 > x0 and y1 > y0:
+            screen[y0:y1, x0:x1] = self.buffer[y0 - wy:y1 - wy, x0 - wx:x1 - wx]
+
+        # Draw simple mouse cursor (16x24 arrow)
+        mx, my = mouse_pos
+        for r in range(24):
+            for c in range(min(16, r + 1)):
+                px, py = mx + c, my + r
+                if 0 <= px < desktop_w and 0 <= py < desktop_h:
+                    if c == 0 or c == r or r == 16:
+                        screen[py, px] = (0, 0, 0)
+                    else:
+                        screen[py, px] = (255, 255, 255)
+
+        return screen
+
+
+@dataclass
+class FlickerTearingSimulator:
+    """Mathematical simulation of screen flickering and tearing due to painter's algorithm without double buffering."""
+    screen_width: int = 1024
+    screen_height: int = 768
+    refresh_rate_hz: float = 60.0  # 60 Hz display refresh
+    window_rect: tuple[int, int, int, int] = (300, 100, 160, 52)  # x, y, w, h
+    draw_duration_ms: float = 8.0  # Time taken for full LayerManager::Draw()
+
+    @property
+    def frame_period_ms(self) -> float:
+        return 1000.0 / self.refresh_rate_hz
+
+    def scanline_y(self, t_ms: float) -> float:
+        """Position of display raster beam scanline at time t_ms."""
+        phase = (t_ms % self.frame_period_ms) / self.frame_period_ms
+        return phase * self.screen_height
+
+    def simulate_exposure(self, num_cycles: int = 10, draw_interval_ms: float = 1.0) -> dict:
+        """
+        Simulate raster beam scanline vs. direct VRAM overwrites.
+        When scanline enters window area [y, y+h] while VRAM is in Phase 1 (desktop background drawn,
+        window not yet drawn), a flicker frame (exposed background) is perceived.
+        """
+        win_y0 = self.window_rect[1]
+        win_y1 = win_y0 + self.window_rect[3]
+
+        total_time_ms = num_cycles * self.frame_period_ms
+        time_steps = np.linspace(0, total_time_ms, int(total_time_ms * 100))
+
+        scan_y_history = []
+        exposed_state_history = []  # 0: Background exposed (flicker!), 1: Window visible
+
+        for t in time_steps:
+            scan_y = self.scanline_y(t)
+            scan_y_history.append(scan_y)
+
+            # Determine draw progress within the current draw cycle
+            # Phase 1: 0% - 40% time: background drawing (overwrites VRAM with green)
+            # Phase 2: 40% - 90% time: window drawing (overwrites VRAM with window)
+            # Phase 3: 90% - 100% time: mouse drawing
+            cycle_phase = (t % draw_interval_ms) / draw_interval_ms
+
+            if win_y0 <= scan_y <= win_y1:
+                # Scanline is inside window vertical band
+                if cycle_phase < 0.40:
+                    exposed_state_history.append(0)  # Flicker!
+                else:
+                    exposed_state_history.append(1)  # Normal window visible
+            else:
+                exposed_state_history.append(1)
+
+        flicker_ratio = exposed_state_history.count(0) / len(exposed_state_history)
+        return {
+            "time_ms": time_steps,
+            "scanline_y": np.array(scan_y_history),
+            "exposed_state": np.array(exposed_state_history),
+            "flicker_exposure_ratio": flicker_ratio,
+            "window_y_bounds": (win_y0, win_y1),
+        }
+
+
+@dataclass
+class BandwidthWasteAnalyzer:
+    """Quantitative bandwidth analysis of full redraw vs. localized text diffing."""
+    screen_w: int = 1024
+    screen_h: int = 768
+    bpp: int = 4  # 32 bits = 4 bytes per pixel
+    counter_w: int = 80
+    counter_h: int = 16
+
+    @property
+    def full_redraw_bytes(self) -> int:
+        return self.screen_w * self.screen_h * self.bpp
+
+    @property
+    def diff_redraw_bytes(self) -> int:
+        return self.counter_w * self.counter_h * self.bpp
+
+    @property
+    def waste_factor(self) -> float:
+        return self.full_redraw_bytes / self.diff_redraw_bytes
+
+    def calculate_bandwidth_mb_s(self, updates_per_sec: float) -> tuple[float, float]:
+        """Return (full_redraw_mb_s, diff_redraw_mb_s)."""
+        full_mb_s = (self.full_redraw_bytes * updates_per_sec) / (1024 * 1024)
+        diff_mb_s = (self.diff_redraw_bytes * updates_per_sec) / (1024 * 1024)
+        return full_mb_s, diff_mb_s
+
+
+def generate_ch10_07_counter_window_and_text_region_geometry(
+    output_path: str = "10/result/fig10_07_counter_window_and_text_region_geometry.png"
+) -> Path:
+    """Generate high-res architecture diagram of counter window geometry and text erasing math (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.0), gridspec_kw={"width_ratios": [1.1, 1.3]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: Window and Counter Area Rendering
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 高速カウンタウィンドウ構造と消去・描画矩形配置 (160×52)",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    sim = HighSpeedCounterSimulator(width=160, height=52, title="Hello Window", count=1)
+    ax1.imshow(sim.buffer)
+    ax1.set_xticks(range(0, 161, 20))
+    ax1.set_yticks(range(0, 53, 10))
+    ax1.set_xlabel("ウィンドウ相対 X座標 (px)")
+    ax1.set_ylabel("ウィンドウ相対 Y座標 (px)")
+
+    # Highlight erase/redraw rect: (24, 28, 80, 16)
+    rect_erase = plt.Rectangle((24, 28), 80, 16, fill=False, edgecolor="#D32F2F", lw=2, linestyle="-")
+    ax1.add_patch(rect_erase)
+    ax1.text(64, 25, "消去矩形 FillRectangle (24, 28, 80, 16)", color="#D32F2F", fontsize=8, fontweight="bold", ha="center")
+
+    ax1.annotate("タイトルバー (0x000084)\n高さ: 18px", xy=(80, 9), xytext=(80, -6),
+                 color="#0D47A1", fontsize=8, fontweight="bold", ha="center",
+                 arrowprops=dict(arrowstyle="->", color="#0D47A1", lw=1.2))
+
+    ax1.annotate("閉じるボタン (16×14)\n(139, 5)", xy=(147, 12), xytext=(120, -6),
+                 color="#C2185B", fontsize=8, fontweight="bold", ha="center",
+                 arrowprops=dict(arrowstyle="->", color="#C2185B", lw=1.2))
+
+    # Right: 10-digit Grid Decomposition & Math
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 10桁ゼロ埋め数字と8×16ピクセルグリッドの幾何数理",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    ax2.set_xlim(-5, 95)
+    ax2.set_ylim(-3, 22)
+    ax2.invert_yaxis()
+    ax2.set_aspect("equal")
+
+    # Draw 10 character boxes (each 8x16)
+    formatted_str = f"{1:010d}"
+    font = get_hankaku_font_data()
+
+    for i, ch in enumerate(formatted_str):
+        bx = i * 8
+        rect_char = plt.Rectangle((bx, 0), 8, 16, fill=True, facecolor="#F0F0F0", edgecolor="#9E9E9E", lw=1)
+        ax2.add_patch(rect_char)
+        ax2.text(bx + 4, -1, f"桁{i}", fontsize=7.5, ha="center", va="bottom", color="#424242")
+
+        # Draw glyph bits
+        idx = ord(ch)
+        if idx in font:
+            for row in range(16):
+                bits = font[idx][row]
+                for col in range(8):
+                    if (bits << col) & 0x80:
+                        dot = plt.Rectangle((bx + col, row), 1, 1, facecolor="#000000", edgecolor="none")
+                        ax2.add_patch(dot)
+
+    # Annotate total dimensions
+    ax2.annotate("", xy=(0, 18), xytext=(80, 18),
+                 arrowprops=dict(arrowstyle="<->", color="#D32F2F", lw=1.8))
+    ax2.text(40, 19.5, "総幅: 8 px × 10 桁 = 80 ピクセル", ha="center", fontsize=9, fontweight="bold", color="#D32F2F")
+
+    ax2.annotate("", xy=(-2, 0), xytext=(-2, 16),
+                 arrowprops=dict(arrowstyle="<->", color="#1976D2", lw=1.8))
+    ax2.text(-4, 8, "高さ 16px", va="center", ha="right", fontsize=8.5, fontweight="bold", color="#1976D2", rotation=90)
+
+    # Explanation text box
+    math_desc = (
+        "【幾何数理・座標計算式】\n"
+        "・ウィンドウ寸法: W = 160 px, H = 52 px (第10.2節 68px から16px縮小)\n"
+        "・カウンタ位置: pos = (24, 28) -> タイトルバー下端 y=20 から余白 8px\n"
+        "・消去領域: size = (8 × 10, 16) = (80, 16) -> 1,280 ピクセル一括塗りつぶし\n"
+        "・再描画コスト: 1,280ピクセル消去 + 約180〜250ピクセル文字ビット描画\n"
+        "・問題点: カウンタ更新毎に layer_manager->Draw() で全画面を再描画！"
+    )
+    ax2.text(0, -2.8, math_desc, fontsize=8.2, va="top", ha="left",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#E8EAF6", edgecolor="#3F51B5", lw=1.2))
+
+    plt.suptitle("第10章 10.3 高速カウンタウィンドウ幾何構造とピクセル消去・文字描画数理",
+                 fontsize=13.5, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_08_screen_flicker_and_tearing_hardware_mechanism(
+    output_path: str = "10/result/fig10_08_screen_flicker_and_tearing_hardware_mechanism.png"
+) -> Path:
+    """Generate high-res hardware raster scan vs. direct VRAM overwrite flicker & tearing diagram (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.0), gridspec_kw={"width_ratios": [1.1, 1.1]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    # Left: Raster scan vs. VRAM overwrite timeline
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. ラスタ走査線とペインターズ直接上書きの競合（フリッカー発生）",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    sim = FlickerTearingSimulator(screen_height=768, refresh_rate_hz=60.0, window_rect=(300, 100, 160, 52))
+    res = sim.simulate_exposure(num_cycles=2, draw_interval_ms=5.0)
+
+    t = res["time_ms"]
+    scan_y = res["scanline_y"]
+    w_y0, w_y1 = res["window_y_bounds"]
+
+    ax1.plot(t, scan_y, color="#1976D2", lw=2, label=r"走査線 $y_{scan}(t)$ (60Hz, 16.67ms周期)")
+    ax1.axhspan(w_y0, w_y1, color="#FFCDD2", alpha=0.5, label="ウィンドウ Y領域 [100, 152]")
+
+    flicker_mask = (res["exposed_state"] == 0) & (scan_y >= w_y0) & (scan_y <= w_y1)
+    if np.any(flicker_mask):
+        ax1.scatter(t[flicker_mask], scan_y[flicker_mask], color="#D32F2F", s=15, zorder=5,
+                    label="フリッカー露出（背景色直接表示）")
+
+    ax1.set_xlabel("時間 (ms)")
+    ax1.set_ylabel("垂直走査線 Y座標 (px)")
+    ax1.set_ylim(0, 768)
+    ax1.invert_yaxis()
+    ax1.legend(loc="lower right", fontsize=8.5)
+    ax1.grid(True, linestyle="--", alpha=0.6)
+
+    ax1.text(1, 60, "V-Sync (垂直同期) なしで直接 VRAM を書き換えるため、\n走査線が描画途中の「背景消去直後」を通過し、激しいチラつき知覚",
+             fontsize=8, bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFF9C4", edgecolor="#FBC02D"))
+
+    # Right: Tearing & Human Visual Perception
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. ティアリング（画面引き裂き）と臨界融合頻度 (CFF)",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    screen_torn = np.full((120, 160, 3), (0x00, 0x80, 0x80), dtype=np.uint8)
+    screen_torn[20:60, 30:130] = (198, 198, 198)
+    screen_torn[60:90, 40:140] = (198, 198, 198)
+
+    ax2.imshow(screen_torn, extent=[0, 160, 120, 0])
+    ax2.axhline(60, color="#E91E63", lw=2.5, linestyle="--")
+    ax2.text(80, 56, "ティアリング境界線 y_tear（走査線通過中のフレーム更新）",
+             color="#E91E63", fontsize=8.5, fontweight="bold", ha="center",
+             bbox=dict(boxstyle="round,pad=0.2", facecolor="#FFFFFF", edgecolor="#E91E63"))
+
+    desc_tearing = (
+        "【物理現象と視覚数理】\n"
+        "① 画面のチラつき (Flickering):\n"
+        "   ・ペインターズ則: 背景描画 -> ウィンドウ描画 -> マウス描画\n"
+        "   ・背景描画直後のフレーム露出により輝度が急変 (パルス状点滅)\n"
+        "   ・人間の臨界融合頻度 (CFF: 50〜60Hz) 付近で激しい不快感・眼精疲労\n\n"
+        "② ティアリング (Tearing):\n"
+        "   ・走査線走査中に VRAM 更新 -> 画面上下で異なるフレームが混在\n"
+        "   ・移動中ウィンドウやカウンタ数字が分断されて表示される現象\n\n"
+        "③ 根本原因: シングルバッファリング (VRAM 直接書き込み) と V-Sync 欠落"
+    )
+    ax2.text(5, 125, desc_tearing, fontsize=8.2, va="top", ha="left",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#E1F5FE", edgecolor="#0288D1", lw=1.2))
+
+    ax2.set_xlim(0, 160)
+    ax2.set_ylim(190, 0)
+    ax2.axis("off")
+
+    plt.suptitle("第10章 10.3 ディスプレイ走査線・VRAM直接上書きの競合とフリッカー・ティアリング発生メカニズム",
+                 fontsize=13.0, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
+def generate_ch10_09_full_redraw_bandwidth_waste_and_bottleneck(
+    output_path: str = "10/result/fig10_09_full_redraw_bandwidth_waste_and_bottleneck.png"
+) -> Path:
+    """Generate high-res bandwidth waste and CPU busy-loop saturation diagram (DPI 300)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_plot_style()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.0), gridspec_kw={"width_ratios": [1.1, 1.2]})
+    fig.patch.set_facecolor("#FAFAFA")
+
+    analyzer = BandwidthWasteAnalyzer(screen_w=1024, screen_h=768, bpp=4, counter_w=80, counter_h=16)
+
+    # Left: Redraw Data Size Comparison (Full vs. Diff)
+    ax1 = axes[0]
+    ax1.set_facecolor("#FFFFFF")
+    ax1.set_title("1. 再描画データ量の比較 (全画面 3.14MB vs. カウンタ差分 5.12KB)",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    categories = ["全画面再描画\nLayerManager::Draw()", "カウンタ差分更新\nFillRectangle+WriteString"]
+    sizes_kb = [analyzer.full_redraw_bytes / 1024.0, analyzer.diff_redraw_bytes / 1024.0]
+    colors = ["#D32F2F", "#388E3C"]
+
+    bars = ax1.bar(categories, sizes_kb, color=colors, width=0.45, edgecolor="#212121", lw=1.2)
+    ax1.set_yscale("log")
+    ax1.set_ylabel("転送データ量 (KiB, 対数スケール)")
+    ax1.grid(True, which="both", linestyle="--", alpha=0.5)
+
+    ax1.text(0, sizes_kb[0] * 1.3, f"{sizes_kb[0]:,.1f} KiB\n(約 3.14 MB)",
+             ha="center", fontsize=9.5, fontweight="bold", color="#D32F2F")
+    ax1.text(1, sizes_kb[1] * 1.5, f"{sizes_kb[1]:,.1f} KiB\n(約 5.12 KB)",
+             ha="center", fontsize=9.5, fontweight="bold", color="#388E3C")
+
+    waste = analyzer.waste_factor
+    ax1.annotate(f"約 {waste:.1f} 倍の\n無駄なデータ転送！",
+                 xy=(1, sizes_kb[1] * 2), xytext=(0.5, sizes_kb[0] * 0.1),
+                 arrowprops=dict(facecolor="#D32F2F", edgecolor="#B71C1C", width=2, headwidth=7),
+                 fontsize=10, fontweight="bold", color="#D32F2F", ha="center",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFEBEE", edgecolor="#D32F2F"))
+
+    # Right: Bus Bandwidth & CPU Saturation
+    ax2 = axes[1]
+    ax2.set_facecolor("#FFFFFF")
+    ax2.set_title("2. 更新頻度に対するメモリバス帯域負荷とCPUビジーループ飽和",
+                  fontsize=11.5, fontweight="bold", color="#1A237E", pad=12)
+
+    freqs = np.array([10, 60, 200, 500, 1000, 2000, 5000])  # updates per sec
+    full_bws = [(analyzer.full_redraw_bytes * f) / (1024 * 1024) for f in freqs]
+    diff_bws = [(analyzer.diff_redraw_bytes * f) / (1024 * 1024) for f in freqs]
+
+    ax2.plot(freqs, full_bws, "o-", color="#D32F2F", lw=2.2, label="全画面再描画 帯域 (MB/s)")
+    ax2.plot(freqs, diff_bws, "s-", color="#388E3C", lw=2.2, label="差分更新 帯域 (MB/s)")
+    ax2.set_xscale("log")
+    ax2.set_yscale("log")
+    ax2.set_xlabel("1秒あたりのカウンタ更新回数 (Hz, 対数スケール)")
+    ax2.set_ylabel("必要メモリバス帯域 (MB/s, 対数スケール)")
+    ax2.grid(True, which="both", linestyle="--", alpha=0.5)
+    ax2.legend(loc="upper left", fontsize=8.5)
+
+    ax2.axhline(15750, color="#7B1FA2", linestyle=":", lw=1.5)
+    ax2.text(20, 17000, "PCIe 3.0 x16 上限帯域 (~15.75 GB/s)", color="#7B1FA2", fontsize=8, fontweight="bold")
+
+    desc_bw = (
+        "【ボトルネック解剖】\n"
+        "・`__asm__(\"sti\"); continue;` によるCPU 100% ビジーループ\n"
+        "・1,000回/秒描画で 3.14 GB/s のメモリ帯域を浪費 (キャッシュ汚染・発熱)\n"
+        "・イベントキューに溜まったマウスパケットの処理が遅延\n"
+        "・次節への布石: 10.4 差分再描画 Draw(id) -> 10.5 ダブルバッファリング"
+    )
+    ax2.text(12, 0.05, desc_bw, fontsize=8.2, va="bottom", ha="left",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#EDE7F6", edgecolor="#512DA8", lw=1.2))
+
+    plt.suptitle("第10章 10.3 全画面再描画によるメモリ帯域浪費・ボトルネックとCPUビジーループ飽和",
+                 fontsize=13.0, fontweight="bold", color="#0D47A1", y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+plot_fig10_07_counter_window_and_text_region_geometry = generate_ch10_07_counter_window_and_text_region_geometry
+plot_fig10_08_screen_flicker_and_tearing_hardware_mechanism = generate_ch10_08_screen_flicker_and_tearing_hardware_mechanism
+plot_fig10_09_full_redraw_bandwidth_waste_and_bottleneck = generate_ch10_09_full_redraw_bandwidth_waste_and_bottleneck
